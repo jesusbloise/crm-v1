@@ -1,30 +1,40 @@
 // app/deals/new.tsx
 import { listAccounts } from "@/src/api/accounts";
 import { listContacts } from "@/src/api/contacts";
-import { createDeal, DealStage } from "@/src/api/deals";
+import { createDeal, type DealStage } from "@/src/api/deals";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
+/* Etapas */
 const STAGES: DealStage[] = ["nuevo","calificado","propuesta","negociacion","ganado","perdido"];
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-// 🎨 Tema
-const ORANGE = "#FF6A00";
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const FIELD = "#1a1b1d";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
+/* 🎨 Tema (consistente con Home y Board) */
+const BG       = "#0b0c10";
+const CARD     = "#14151a";
+const FIELD    = "#121318";
+const BORDER   = "#272a33";
+const TEXT     = "#e8ecf1";
+const SUBTLE   = "#a9b0bd";
+const ACCENT   = "#7c3aed";   // morado principal
+const ACCENT_2 = "#22d3ee";   // cian (no imprescindible aquí)
+const DANGER   = "#ef4444";
+
+/* (Opcional, por si luego usamos secciones claras)
+const LIGHT_CARD   = "#ECEFF4";
+const LIGHT_BORDER = "#CBD5E1";
+const DARK_TEXT    = "#0F172A";
+const DARK_SUBTLE  = "#475569";
+*/
 
 export default function NewDeal() {
   const qc = useQueryClient();
@@ -50,7 +60,7 @@ export default function NewDeal() {
         account_id: accountId || null,
         contact_id: contactId || null,
         close_date: null,
-        created_at: 0, // lo ignora el server
+        created_at: 0,
         updated_at: 0,
       } as any);
     },
@@ -69,7 +79,15 @@ export default function NewDeal() {
 
   return (
     <View style={{ flex: 1, backgroundColor: BG }}>
-      <Stack.Screen options={{ title: "Nueva Oportunidad" }} />
+      <Stack.Screen
+        options={{
+          title: "Nueva Oportunidad",
+          headerStyle: { backgroundColor: BG },
+          headerTintColor: TEXT,
+          headerTitleStyle: { color: TEXT, fontWeight: "800" },
+        }}
+      />
+
       <ScrollView contentContainerStyle={styles.container}>
         {err ? <Text style={styles.err}>⚠️ {err}</Text> : null}
 
@@ -99,11 +117,12 @@ export default function NewDeal() {
               key={s}
               onPress={() => setStage(s)}
               style={[styles.pill, stage === s && styles.pillActive]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: stage === s }}
+              hitSlop={8}
             >
-              <Text
-                style={[styles.pillText, stage === s && styles.pillTextActive]}
-              >
-                {s}
+              <Text style={[styles.pillText, stage === s && styles.pillTextActive]}>
+                {labelStage(s)}
               </Text>
             </Pressable>
           ))}
@@ -116,16 +135,26 @@ export default function NewDeal() {
           <Text style={styles.subtle}>No hay cuentas.</Text>
         ) : (
           <View style={styles.listBox}>
-            {accounts.map((a) => {
+            {accounts.map((a, idx) => {
               const selected = accountId === a.id;
+              const isLast = idx === accounts.length - 1;
               return (
                 <Pressable
                   key={a.id}
                   onPress={() => setAccountId(selected ? undefined : a.id)}
-                  style={[styles.row, selected && styles.rowActive]}
+                  style={[
+                    styles.row,
+                    !isLast && styles.rowDivider,
+                    selected && styles.rowActive,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
                 >
-                  <Text style={styles.rowTitle}>{a.name}</Text>
-                  {a.phone ? <Text style={styles.rowSub}>{a.phone}</Text> : null}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowTitle}>{a.name}</Text>
+                    {a.phone ? <Text style={styles.rowSub}>{a.phone}</Text> : null}
+                  </View>
+                  <View style={[styles.dot, selected && styles.dotActive]} />
                 </Pressable>
               );
             })}
@@ -139,16 +168,26 @@ export default function NewDeal() {
           <Text style={styles.subtle}>No hay contactos.</Text>
         ) : (
           <View style={styles.listBox}>
-            {contacts.map((c) => {
+            {contacts.map((c, idx) => {
               const selected = contactId === c.id;
+              const isLast = idx === contacts.length - 1;
               return (
                 <Pressable
                   key={c.id}
                   onPress={() => setContactId(selected ? undefined : c.id)}
-                  style={[styles.row, selected && styles.rowActive]}
+                  style={[
+                    styles.row,
+                    !isLast && styles.rowDivider,
+                    selected && styles.rowActive,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
                 >
-                  <Text style={styles.rowTitle}>{c.name}</Text>
-                  {c.email ? <Text style={styles.rowSub}>{c.email}</Text> : null}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowTitle}>{c.name}</Text>
+                    {c.email ? <Text style={styles.rowSub}>{c.email}</Text> : null}
+                  </View>
+                  <View style={[styles.dot, selected && styles.dotActive]} />
                 </Pressable>
               );
             })}
@@ -156,9 +195,14 @@ export default function NewDeal() {
         )}
 
         <Pressable
-          style={styles.saveBtn}
+          style={({ pressed }) => [
+            styles.saveBtn,
+            pressed && styles.pressed,
+            m.isPending && { opacity: 0.9 },
+          ]}
           onPress={() => m.mutate()}
           disabled={m.isPending}
+          accessibilityRole="button"
         >
           <Text style={styles.saveBtnText}>
             {m.isPending ? "Guardando..." : "Guardar"}
@@ -169,6 +213,20 @@ export default function NewDeal() {
   );
 }
 
+function labelStage(s: DealStage) {
+  switch (s) {
+    case "nuevo": return "Nuevo";
+    case "calificado": return "Calificado";
+    case "propuesta": return "Propuesta";
+    case "negociacion": return "Negociación";
+    case "ganado": return "Ganado";
+    case "perdido": return "Perdido";
+    default: return "—";
+  }
+}
+
+const DOT_SIZE = 10;
+
 const styles = StyleSheet.create({
   container: { padding: 16, gap: 12 },
   label: { fontWeight: "800", color: TEXT },
@@ -178,53 +236,82 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 10,
-    padding: 10,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     backgroundColor: FIELD,
     color: TEXT,
   },
 
+  /* Chips de etapa */
   pillsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   pill: {
     borderWidth: 1,
     borderColor: BORDER,
     borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     backgroundColor: CARD,
   },
-  pillActive: { backgroundColor: ORANGE, borderColor: ORANGE },
-  pillText: { fontSize: 12, color: TEXT },
+  pillActive: {
+    backgroundColor: ACCENT,
+    borderColor: ACCENT,
+  },
+  pillText: { fontSize: 12, color: TEXT, fontWeight: "700" },
   pillTextActive: { color: "#fff", fontWeight: "900" },
 
+  /* Lista de cuentas/contactos */
   listBox: {
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 12,
+    borderRadius: 14,
     overflow: "hidden",
     backgroundColor: CARD,
   },
   row: {
-    padding: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  rowDivider: {
     borderBottomWidth: 1,
     borderBottomColor: BORDER,
   },
-  rowActive: { backgroundColor: "#241b15" }, // toque oscuro al seleccionar
+  rowActive: {
+    backgroundColor: "rgba(124,58,237,0.16)",  // tinte morado suave
+    borderLeftWidth: 2,
+    borderLeftColor: ACCENT,
+  },
   rowTitle: { fontWeight: "800", color: TEXT },
   rowSub: { fontSize: 12, color: SUBTLE },
 
+  dot: {
+    width: DOT_SIZE,
+    height: DOT_SIZE,
+    borderRadius: DOT_SIZE / 2,
+    borderWidth: 1,
+    borderColor: "#3a3f4a",
+    backgroundColor: "#121318",
+  },
+  dotActive: { backgroundColor: ACCENT_2, borderColor: ACCENT_2 },
+
+  /* Botón guardar (morado) */
   saveBtn: {
-    backgroundColor: ORANGE,
-    padding: 12,
-    borderRadius: 10,
+    backgroundColor: ACCENT,
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: "center",
     marginTop: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
   },
   saveBtnText: { color: "#fff", fontWeight: "900" },
 
   err: { color: "#fecaca" },
+  pressed: { opacity: 0.92 },
 });
-
 
 // // app/deals/new.tsx
 // import { listAccounts } from "@/src/api/accounts";

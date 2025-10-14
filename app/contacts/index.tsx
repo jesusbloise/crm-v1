@@ -3,24 +3,25 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Stack } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    Pressable,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
-const ORANGE = "#FF6A00";
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
-const INPUT = "#1b1b1e";
-const INPUT_BORDER = "#2a2a2c";
+/* 🎨 Tema consistente (Home/Board/New) */
+const BG       = "#0b0c10";
+const CARD     = "#14151a";
+const BORDER   = "#272a33";
+const FIELD    = "#121318";
+const TEXT     = "#e8ecf1";
+const SUBTLE   = "#a9b0bd";
+const ACCENT   = "#7c3aed";   // morado
+const ACCENT_2 = "#22d3ee";   // cian (detalles pequeños)
 
 function strip(s?: string) { return (s ?? "").trim(); }
 function normalize(s?: string) {
@@ -61,12 +62,19 @@ export default function ContactsList() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "Contactos" }} />
+      <Stack.Screen
+        options={{
+          title: "Contactos",
+          headerStyle: { backgroundColor: BG },
+          headerTintColor: TEXT,
+          headerTitleStyle: { color: TEXT, fontWeight: "800" },
+        }}
+      />
       <View style={styles.screen}>
         {/* Acciones */}
         <View style={styles.headerRow}>
           <Link href="/contacts/new" asChild>
-            <Pressable style={styles.newBtn}>
+            <Pressable style={({pressed})=>[styles.newBtn, pressed && {opacity:0.92}]}>
               <Text style={styles.newBtnText}>+ Nuevo Contacto</Text>
             </Pressable>
           </Link>
@@ -90,7 +98,7 @@ export default function ContactsList() {
           )}
         </View>
 
-        {/* Pestañas — micro chips, sin márgenes verticales */}
+        {/* Pestañas — micro chips */}
         <View style={styles.tabsFlow}>
           {tabs.map((t) => {
             const active = activePos === t.label;
@@ -126,7 +134,7 @@ export default function ContactsList() {
           <View style={styles.errorWrap}>
             <Text style={styles.errorTitle}>No se pudieron cargar los contactos</Text>
             {!!errorMsg && <Text style={styles.errorSub}>{errorMsg}</Text>}
-            <Pressable onPress={() => q.refetch()} style={({pressed})=>[styles.retryBtn, pressed && {opacity:0.9}]}>
+            <Pressable onPress={() => q.refetch()} style={({pressed})=>[styles.retryBtn, pressed && {opacity:0.92}]}>
               <Text style={styles.retryText}>Reintentar</Text>
             </Pressable>
           </View>
@@ -147,7 +155,7 @@ export default function ContactsList() {
             }
             renderItem={({ item }: any) => (
               <Link href={{ pathname: "/contacts/[id]", params: { id: item.id } }} asChild>
-                <Pressable style={styles.row}>
+                <Pressable style={({pressed})=>[styles.row, pressed && {opacity:0.96}]}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.name}>{item.name}</Text>
                     <Text style={styles.sub}>
@@ -168,23 +176,31 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, padding: 16 },
   headerRow: { flexDirection: "row", justifyContent: "flex-start", marginBottom: 10 },
 
-  // Botón nuevo
-  newBtn: { backgroundColor: ORANGE, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10 },
+  // Botón nuevo (morado)
+  newBtn: {
+    backgroundColor: ACCENT,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
   newBtnText: { color: "#fff", fontWeight: "900" },
 
   // Buscador
   searchWrap: {
     position: "relative",
-    backgroundColor: INPUT,
-    borderColor: INPUT_BORDER,
+    backgroundColor: FIELD,
+    borderColor: BORDER,
     borderWidth: 1,
     borderRadius: 12,
-    marginBottom: 6, // pega las tabs al buscador
+    marginBottom: 6,
   },
   searchInput: { paddingVertical: 10, paddingHorizontal: 14, color: TEXT, fontSize: 14 },
   clearBtn: {
     position: "absolute", right: 8, top: 8, width: 28, height: 28,
-    borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: BORDER,
+    borderRadius: 14, alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)",
   },
   clearText: { color: TEXT, fontSize: 18, lineHeight: 18, fontWeight: "700" },
 
@@ -202,13 +218,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#232326",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderRadius: 13,
     paddingVertical: 3,
     paddingHorizontal: 8,
     minHeight: 26,
   },
-  tabChipActive: { backgroundColor: ORANGE, borderColor: ORANGE },
+  tabChipActive: { backgroundColor: ACCENT, borderColor: ACCENT },
   tabChipPressed: { opacity: 0.9 },
   tabText: {
     color: "rgba(243,244,246,0.9)",
@@ -217,7 +233,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.1,
     maxWidth: 120,
   },
-  tabTextActive: { color: BG },
+  tabTextActive: { color: "#fff" },
   badge: {
     marginLeft: 6,
     width: 16,
@@ -229,7 +245,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
   },
-  badgeActive: { backgroundColor: "rgba(0,0,0,0.15)", borderColor: "rgba(0,0,0,0.25)" },
+  badgeActive: { backgroundColor: "rgba(0,0,0,0.18)", borderColor: "rgba(0,0,0,0.28)" },
   badgeText: { fontSize: 10, fontWeight: "800", color: "rgba(243,244,246,0.9)", lineHeight: 12 },
   badgeTextActive: { color: "#fff" },
 
@@ -249,7 +265,10 @@ const styles = StyleSheet.create({
   errorWrap: { alignItems: "center", paddingVertical: 24, gap: 8 },
   errorTitle: { color: "#fecaca", fontWeight: "800" },
   errorSub: { color: "#9ca3af", fontSize: 12, textAlign: "center", paddingHorizontal: 12 },
-  retryBtn: { marginTop: 6, backgroundColor: ORANGE, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10 },
+  retryBtn: {
+    marginTop: 6, backgroundColor: ACCENT, paddingHorizontal: 14, paddingVertical: 10,
+    borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.16)",
+  },
   retryText: { color: "#fff", fontWeight: "900" },
 });
 

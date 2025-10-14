@@ -6,22 +6,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Stack, router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
-    FlatList,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
-const ORANGE = "#FF6A00";
-const RED = "#ef4444";
-const GRAYBTN = "#374151";
+/* 🎨 Tema consistente */
+const BG       = "#0b0c10";
+const CARD     = "#14151a";
+const FIELD    = "#121318";
+const BORDER   = "#272a33";
+const TEXT     = "#e8ecf1";
+const SUBTLE   = "#a9b0bd";
+const ACCENT   = "#7c3aed";   // primario (morado)
+const DANGER   = "#ef4444";   // eliminar / errores
 
 export default function ContactDetail() {
   const { id } = useLocalSearchParams<{ id?: string | string[] }>();
@@ -35,7 +36,7 @@ export default function ContactDetail() {
             title: "Detalle Contacto",
             headerStyle: { backgroundColor: BG },
             headerTintColor: TEXT,
-            headerTitleStyle: { color: TEXT },
+            headerTitleStyle: { color: TEXT, fontWeight: "800" },
           }}
         />
         <View style={styles.screen}>
@@ -102,7 +103,7 @@ export default function ContactDetail() {
           title: "Detalle Contacto",
           headerStyle: { backgroundColor: BG },
           headerTintColor: TEXT,
-          headerTitleStyle: { color: TEXT },
+          headerTitleStyle: { color: TEXT, fontWeight: "800" },
         }}
       />
       <View style={styles.screen}>
@@ -113,10 +114,16 @@ export default function ContactDetail() {
             <Text style={{ color: "#fecaca", marginBottom: 8 }}>
               Error: {String((q.error as any)?.message || q.error)}
             </Text>
-            <Pressable style={[styles.btn, { backgroundColor: ORANGE }]} onPress={() => q.refetch()}>
+            <Pressable
+              style={[styles.btn, styles.btnPrimary]}
+              onPress={() => q.refetch()}
+            >
               <Text style={styles.btnText}>Reintentar</Text>
             </Pressable>
-            <Pressable style={[styles.btn, { backgroundColor: GRAYBTN }]} onPress={() => router.back()}>
+            <Pressable
+              style={[styles.btn, styles.btnGhost]}
+              onPress={() => router.back()}
+            >
               <Text style={styles.btnText}>Volver</Text>
             </Pressable>
           </>
@@ -125,9 +132,21 @@ export default function ContactDetail() {
         ) : (
           <>
             <Text style={styles.title}>{q.data.name}</Text>
-            {q.data.position ? <Text style={styles.text}>Cargo: <Text style={styles.bold}>{q.data.position}</Text></Text> : null}
-            {q.data.email ? <Text style={styles.text}>Email: <Text style={styles.bold}>{q.data.email}</Text></Text> : null}
-            {q.data.phone ? <Text style={styles.text}>Tel: <Text style={styles.bold}>{q.data.phone}</Text></Text> : null}
+            {q.data.position ? (
+              <Text style={styles.text}>
+                Cargo: <Text style={styles.bold}>{q.data.position}</Text>
+              </Text>
+            ) : null}
+            {q.data.email ? (
+              <Text style={styles.text}>
+                Email: <Text style={[styles.bold, styles.link]}>{q.data.email}</Text>
+              </Text>
+            ) : null}
+            {q.data.phone ? (
+              <Text style={styles.text}>
+                Tel: <Text style={styles.bold}>{q.data.phone}</Text>
+              </Text>
+            ) : null}
 
             {/* Empresa (texto libre, opcional) */}
             <Text style={[styles.label, { marginTop: 12 }]}>Empresa (texto)</Text>
@@ -139,7 +158,7 @@ export default function ContactDetail() {
               placeholderTextColor={SUBTLE}
             />
 
-            {/* Cuenta (relación) */}
+            {/* Cuenta (relación) — chips compactas y sin margen vertical */}
             <Text style={[styles.label, { marginTop: 12 }]}>Cuenta (opcional)</Text>
             {qAcc.isLoading ? (
               <Text style={{ color: SUBTLE }}>Cargando cuentas…</Text>
@@ -152,25 +171,27 @@ export default function ContactDetail() {
                 horizontal
                 data={qAcc.data ?? []}
                 keyExtractor={(a) => a.id}
-                contentContainerStyle={{ paddingVertical: 4 }}
+                contentContainerStyle={{ paddingVertical: 0 }}  // 👈 sin margen arriba/abajo
+                showsHorizontalScrollIndicator={false}
+                ItemSeparatorComponent={() => <View style={{ width: 8 }} />}
                 renderItem={({ item }) => {
                   const selected = accountId === item.id;
                   return (
                     <Pressable
-                      onPress={() => setAccountId(item.id)}
-                      style={[
-                        styles.chip,
-                        selected && { backgroundColor: ORANGE, borderColor: ORANGE },
-                      ]}
+                      onPress={() => setAccountId(selected ? undefined : item.id)}
+                      style={[styles.chip, selected && styles.chipActive]}
+                      accessibilityRole="button"
                     >
-                      <Text style={[styles.chipText, selected && { color: "#fff", fontWeight: "900" }]}>
+                      <Text style={[styles.chipText, selected && styles.chipTextActive]} numberOfLines={1}>
                         {item.name}
                       </Text>
                     </Pressable>
                   );
                 }}
                 ListEmptyComponent={
-                  <Text style={{ color: SUBTLE }}>No hay cuentas. Crea una en “Cuentas”.</Text>
+                  <Text style={{ color: SUBTLE }}>
+                    No hay cuentas. Crea una en “Cuentas”.
+                  </Text>
                 }
               />
             )}
@@ -183,7 +204,9 @@ export default function ContactDetail() {
               {qDeals.isLoading ? (
                 <Text style={{ color: SUBTLE, padding: 12 }}>Cargando oportunidades…</Text>
               ) : dealsByContact.length === 0 ? (
-                <Text style={{ color: SUBTLE, padding: 12 }}>Sin oportunidades para este contacto.</Text>
+                <Text style={{ color: SUBTLE, padding: 12 }}>
+                  Sin oportunidades para este contacto.
+                </Text>
               ) : (
                 dealsByContact.map((d: Deal) => (
                   <Link key={d.id} href={`/deals/${d.id}`} asChild>
@@ -202,7 +225,7 @@ export default function ContactDetail() {
 
             {/* Acciones */}
             <Pressable
-              style={[styles.btn, { backgroundColor: ORANGE }]}
+              style={[styles.btn, styles.btnPrimary, mUpd.isPending && { opacity: 0.9 }]}
               onPress={() => mUpd.mutate()}
               disabled={mUpd.isPending}
             >
@@ -212,7 +235,7 @@ export default function ContactDetail() {
             </Pressable>
 
             <Pressable
-              style={[styles.btn, { backgroundColor: RED }]}
+              style={[styles.btn, styles.btnDanger, mDel.isPending && { opacity: 0.9 }]}
               onPress={() => mDel.mutate()}
               disabled={mDel.isPending}
             >
@@ -244,28 +267,35 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontWeight: "900", color: TEXT },
   text: { color: TEXT, marginTop: 2 },
   bold: { fontWeight: "800" },
+  link: { color: ACCENT, textDecorationLine: "underline" },
   label: { color: TEXT, fontWeight: "800" },
 
   input: {
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: CARD,
+    backgroundColor: FIELD,
     color: TEXT,
     borderRadius: 12,
     padding: 10,
     marginTop: 6,
   },
 
+  // 🔽 Chips compactas
   chip: {
+    minHeight: 28,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
+    paddingVertical: 4,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: BORDER,
-    marginRight: 8,
     backgroundColor: CARD,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "flex-start", // evita estirarse verticalmente
   },
-  chipText: { color: TEXT },
+  chipActive: { backgroundColor: ACCENT, borderColor: ACCENT },
+  chipText: { color: TEXT, fontWeight: "800", fontSize: 12, maxWidth: 160 },
+  chipTextActive: { color: "#fff" },
 
   section: { marginTop: 12, fontWeight: "900", fontSize: 16, color: TEXT },
   box: {
@@ -288,7 +318,15 @@ const styles = StyleSheet.create({
 
   btn: { marginTop: 12, padding: 12, borderRadius: 12, alignItems: "center" },
   btnText: { color: "#fff", fontWeight: "900" },
+  btnPrimary: { backgroundColor: ACCENT, borderWidth: 1, borderColor: "rgba(255,255,255,0.16)" },
+  btnDanger: { backgroundColor: DANGER },
+  btnGhost: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
 });
+
 
 
 // // app/contacts/[id].tsx

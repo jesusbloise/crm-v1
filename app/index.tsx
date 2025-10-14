@@ -1,18 +1,24 @@
-
 import { useQuery } from "@tanstack/react-query";
 import { Stack, useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Image,
+  Platform,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// opcionales (si no están, funciona igual)
+let Haptics: any;
+let LinearGradient: any;
+try { Haptics = require("expo-haptics"); } catch {}
+try { LinearGradient = require("expo-linear-gradient").LinearGradient; } catch {}
 
 import { listAccounts } from "@/src/api/accounts";
 import { listContacts } from "@/src/api/contacts";
@@ -21,23 +27,28 @@ import { listLeads } from "@/src/api/leads";
 
 const LOGO = require("../assets/images/ATOMICA-Logo-02.png");
 
-const ORANGE = "#FF6A00";
-const ORANGE_DARK = "#D95700";
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
+/* 🎨 Paleta pro morado/cian */
+const PRIMARY = "#7C3AED";   // morado (acciones)
+const ACCENT  = "#22D3EE";   // cian (detalles)
+const BG      = "#0F1115";   // fondo
+const CARD    = "#171923";   // tarjetas
+const BORDER  = "#2B3140";   // bordes
+const TEXT    = "#F3F4F6";   // texto principal
+const SUBTLE  = "#A4ADBD";   // subtítulos
+const SUCCESS = "#10B981";
+const DANGER  = "#EF4444";
 
 const STAGES: DealStage[] = ["nuevo","calificado","propuesta","negociacion","ganado","perdido"];
+type StageFilter = "todos" | DealStage;
 
 export default function Home() {
   const router = useRouter();
 
+  // Data
   const qDeals = useQuery({ queryKey: ["deals"], queryFn: listDeals });
   const qAcc   = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
   const qCon   = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
-  const qLeads = useQuery({ queryKey: ["leads"], queryFn: listLeads });
+  const qLeads = useQuery({ queryKey: ["leads"],  queryFn: listLeads });
 
   const loading  = qDeals.isLoading || qAcc.isLoading || qCon.isLoading || qLeads.isLoading;
   const hasError = qDeals.isError   || qAcc.isError   || qCon.isError   || qLeads.isError;
@@ -45,14 +56,20 @@ export default function Home() {
   const deals = qDeals.data ?? [];
   const won   = deals.filter(d => d.stage === "ganado").length;
 
-  const recent = [...deals]
-    .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
-    .slice(0, 5);
-
   const accounts = qAcc.data ?? [];
-  const accountName = (id?: string | null) => accounts.find(a => a.id === id)?.name;
+  const accountName = useCallback(
+    (id?: string | null) => accounts.find(a => a.id === id)?.name,
+    [accounts]
+  );
 
+  const [filter, setFilter] = useState<StageFilter>("todos");
+  const [refreshing, setRefreshing] = useState(false);
   const [logoOk, setLogoOk] = useState(true);
+
+  const filtered = useMemo(() => {
+    const base = [...deals].sort((a,b)=>(b.updated_at??0)-(a.updated_at??0));
+    return filter === "todos" ? base : base.filter(d => d.stage === filter);
+  }, [deals, filter]);
 
   const firstErrorMsg =
     (qDeals.error as any)?.message ||
@@ -61,142 +78,189 @@ export default function Home() {
     (qLeads.error as any)?.message ||
     "";
 
-  const refetchAll = () => {
-    qDeals.refetch(); qAcc.refetch(); qCon.refetch(); qLeads.refetch();
+  const refetchAll = useCallback(async () => {
+    try {
+      setRefreshing(true);
+      await Promise.all([qDeals.refetch(), qAcc.refetch(), qCon.refetch(), qLeads.refetch()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [qDeals, qAcc, qCon, qLeads]);
+
+  const onNav = (path: string) => () => {
+    Haptics?.impactAsync?.(Haptics.ImpactFeedbackStyle.Light);
+    router.push(path as any);
   };
+
+  // Header gradient (fallback a View si no está LinearGradient)
+  const HeaderBg: React.ComponentType<any> = LinearGradient ?? View;
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
       <Stack.Screen options={{ title: "Inicio" }} />
 
-      <ScrollView
-        contentContainerStyle={styles.container}
-        contentInsetAdjustmentBehavior="automatic"
-      >
-        {/* Header / logo */}
-        <View style={styles.header}>
-          {logoOk ? (
-            <Image
-              source={LOGO}
-              style={styles.logo}
-              resizeMode="contain"
-              onError={() => setLogoOk(false)}
-            />
-          ) : (
-            <Text style={styles.appTitle}>ATOMICA CRM</Text>
-          )}
+      {/* Banner error */}
+      {hasError && (
+        <View style={styles.banner}>
+          <Text style={styles.bannerTitle}>Sin conexión al servidor</Text>
+          <Text style={styles.bannerText} numberOfLines={2}>
+            Verifica que el backend esté encendido.
+            {firstErrorMsg ? ` ${firstErrorMsg}` : ""}
+          </Text>
+          <Pressable style={({pressed})=>[styles.bannerBtn, pressed&&styles.pressed]} onPress={refetchAll}>
+            <Text style={styles.bannerBtnText}>Reintentar</Text>
+          </Pressable>
         </View>
+      )}
 
-        {loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color="#fff" />
-          </View>
-        ) : hasError ? (
-          <View style={styles.center}>
-            <Text style={styles.error}>Error cargando datos. Verifica el servidor.</Text>
-            {!!firstErrorMsg && (
-              <Text style={{ color: "#9ca3af", marginTop: 6, fontSize: 12, textAlign: "center" }}>
-                {firstErrorMsg}
-              </Text>
-            )}
-            <Pressable onPress={refetchAll} style={({pressed})=>[styles.quickBtn,{marginTop:12}, pressed&&styles.pressed]}>
-              <Text style={styles.quickText}>Reintentar</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <>
-            {/* KPIs */}
-            <View style={styles.kpiRow}>
-              <KPI label="Oportunidades" value={deals.length} />
-              <KPI label="Prospectos" value={(qLeads.data ?? []).length} />
-              <KPI label="Cuentas" value={(qAcc.data ?? []).length} />
-              <KPI label="Contactos" value={(qCon.data ?? []).length} />
-              <KPI label="Ganadas" value={won} />
-            </View>
-
-            {/* Accesos rápidos */}
-            <View style={styles.grid}>
-              <NavCard title="Oportunidades"  desc="Gestiona tu pipeline"  onPress={() => router.push("/deals")} />
-              <NavCard title="Cuentas"        desc="Empresas y clientes"   onPress={() => router.push("/accounts")} />
-              <NavCard title="Contactos"      desc="Personas y relaciones" onPress={() => router.push("/contacts")} />
-              <NavCard title="Prospectos"     desc="Captura y califica"    onPress={() => router.push("/leads")} />
-            </View>
-
-            {/* Recientes */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Recientes</Text>
-              <View style={{ rowGap: 10 }}>
-                {recent.map(d => (
-                  <Pressable
-                    key={d.id}
-                    style={({ pressed }) => [styles.recentCard, pressed && styles.pressed]}
-                    onPress={() => router.push(`/deals/${d.id}`)}
-                    accessibilityRole="button"
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.recentTitle} numberOfLines={2}>{d.title}</Text>
-                      <Text style={styles.recentSub} numberOfLines={1}>
-                        {accountName(d.account_id) ?? "—"}
-                      </Text>
-
-                      <View style={styles.stageStrip}>
-                        {STAGES.map((s, idx) => {
-                          const currentIndex = Math.max(0, STAGES.indexOf((d.stage as DealStage) || "nuevo"));
-                          const active = idx <= currentIndex;
-                          return (
-                            <View key={s} style={[styles.stageDot, active && styles.stageDotActive]} />
-                          );
-                        })}
-                      </View>
-                    </View>
-
-                    <View style={styles.badge}>
-                      <Text style={styles.badgeText}>{labelStage(d.stage)}</Text>
-                    </View>
-                  </Pressable>
-                ))}
-                {recent.length === 0 && (
-                  <Text style={styles.muted}>Aún no hay oportunidades. Crea la primera 📌</Text>
-                )}
+      {loading ? (
+        <View style={styles.center}>
+          <ActivityIndicator />
+          <Text style={{ color: SUBTLE, marginTop: 8 }}>Cargando panel…</Text>
+        </View>
+      ) : (
+        <>
+          {/* Encabezado con degradé y KPIs compactos */}
+          <HeaderBg
+            style={styles.headerWrap}
+            {...(LinearGradient ? { colors: [PRIMARY, ACCENT], start:{x:0,y:0}, end:{x:1,y:1} } : {})}
+          >
+            <View style={styles.headerTop}>
+              {logoOk ? (
+                <Image source={LOGO} style={styles.logo} resizeMode="contain" onError={()=>setLogoOk(false)} />
+              ) : (
+                <Text style={styles.appTitle}>ATOMICA CRM</Text>
+              )}
+              <View style={styles.avatarCircle}>
+                <Text style={{ color: "#0b1120", fontWeight: "900" }}>A</Text>
               </View>
             </View>
 
-            {/* CTA crear rápido */}
-            <View style={styles.quickRow}>
-              <Pressable
-                style={({ pressed }) => [styles.quickBtn, pressed && styles.pressed]}
-                onPress={() => router.push("/deals/new")}
-              >
-                <Text style={styles.quickText}>＋ Nueva Oportunidad</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [styles.quickBtnSecondary, pressed && styles.pressed]}
-                onPress={() => router.push("/leads/new")}
-              >
-                <Text style={styles.quickText}>＋ Nuevo Prospecto</Text>
-              </Pressable>
+            <Text style={styles.hello}>¡Bienvenido!</Text>
+            <Text style={styles.subHello}>Gestiona tu pipeline y prospectos</Text>
+
+            <View style={styles.kpiRow}>
+              <KPI label="Oportunidades" value={deals.length} />
+              <KPI label="Prospectos"    value={(qLeads.data ?? []).length} />
+              <KPI label="Ganadas"       value={won} accent />
             </View>
-          </>
-        )}
-      </ScrollView>
+
+            <View style={styles.quickRowTop}>
+              <QuickBtn label="Nueva Oportunidad" onPress={onNav("/deals/new")} />
+              <QuickBtnSecondary label="Nuevo Prospecto" onPress={onNav("/leads/new")} />
+            </View>
+          </HeaderBg>
+
+          {/* Filtros por etapa */}
+          <View style={styles.filterRow}>
+            <Chip
+              label="Todos"
+              active={filter === "todos"}
+              onPress={() => { Haptics?.selectionAsync?.(); setFilter("todos"); }}
+            />
+            {STAGES.map(s => (
+              <Chip
+                key={s}
+                label={labelStage(s)}
+                active={filter === s}
+                onPress={() => { Haptics?.selectionAsync?.(); setFilter(s); }}
+              />
+            ))}
+          </View>
+
+          {/* Lista */}
+          <FlatList
+            data={filtered}
+            keyExtractor={(item) => item.id}
+            refreshControl={
+              <RefreshControl tintColor="#fff" colors={["#fff"]} refreshing={refreshing} onRefresh={refetchAll} />
+            }
+            renderItem={({ item: d }) => (
+              <Pressable
+                style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+                android_ripple={{ color: "rgba(255,255,255,0.06)" }}
+                onPress={() => router.push(`/deals/${d.id}`)}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.title} numberOfLines={2}>{d.title}</Text>
+                  <Text style={styles.sub} numberOfLines={1}>{accountName(d.account_id) ?? "—"}</Text>
+
+                  <View style={styles.stageStrip}>
+                    {STAGES.map((s, idx) => {
+                      const currentIndex = Math.max(0, STAGES.indexOf((d.stage as DealStage) || "nuevo"));
+                      const active = idx <= currentIndex;
+                      return <View key={s} style={[styles.stageDot, active && styles.stageDotActive]} />;
+                    })}
+                  </View>
+                </View>
+
+                <View style={[
+                  styles.badge,
+                  d.stage === "ganado" && { borderColor: SUCCESS, backgroundColor: "rgba(16,185,129,0.14)" },
+                  d.stage === "perdido" && { borderColor: DANGER,  backgroundColor: "rgba(239,68,68,0.12)" },
+                ]}>
+                  <Text style={styles.badgeText}>{labelStage(d.stage)}</Text>
+                </View>
+              </Pressable>
+            )}
+            ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+            ListEmptyComponent={
+              <View style={{ alignItems: "center", paddingVertical: 24 }}>
+                <Text style={{ color: SUBTLE }}>No hay registros para este filtro.</Text>
+              </View>
+            }
+            contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+          />
+
+          {/* FABs */}
+          <View style={styles.fabs}>
+            <Pressable style={({pressed})=>[styles.fab, pressed&&styles.pressed]} onPress={onNav("/deals/new")}>
+              <Text style={styles.fabText}>＋</Text>
+            </Pressable>
+            <Pressable style={({pressed})=>[styles.fabSm, pressed&&styles.pressed]} onPress={onNav("/leads/new")}>
+              <Text style={styles.fabTextSm}>P</Text>
+            </Pressable>
+          </View>
+        </>
+      )}
     </SafeAreaView>
   );
 }
 
-function KPI({ label, value }: { label: string; value: number }) {
+/* ——— UI helpers ——— */
+
+function KPI({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
   return (
-    <View style={styles.kpi}>
+    <View style={[styles.kpi, accent && { borderColor: "rgba(255,255,255,0.22)", backgroundColor: "rgba(0,0,0,0.12)" }]}>
       <Text style={styles.kpiValue} numberOfLines={1}>{value}</Text>
       <Text style={styles.kpiLabel} numberOfLines={1}>{label}</Text>
     </View>
   );
 }
 
-function NavCard({ title, desc, onPress }: { title: string; desc: string; onPress: () => void }) {
+function QuickBtn({ label, onPress }: { label: string; onPress: () => void }) {
   return (
-    <Pressable style={({ pressed }) => [styles.card, pressed && styles.pressed]} onPress={onPress}>
-      <Text style={styles.cardTitle}>{title}</Text>
-      <Text style={styles.cardDesc}>{desc}</Text>
+    <Pressable style={({pressed})=>[styles.quickBtn, pressed&&styles.pressed]} onPress={onPress}>
+      <Text style={styles.quickText}>{label}</Text>
+    </Pressable>
+  );
+}
+function QuickBtnSecondary({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable style={({pressed})=>[styles.quickBtnSecondary, pressed&&styles.pressed]} onPress={onPress}>
+      <Text style={styles.quickText}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={({pressed})=>[
+      styles.chip,
+      active && styles.chipActive,
+      pressed && styles.pressed
+    ]}>
+      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </Pressable>
   );
 }
@@ -213,262 +277,360 @@ function labelStage(s?: Deal["stage"]) {
   }
 }
 
-const cardShadowWeb = Platform.select({
-  web: { boxShadow: "0 6px 24px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.05)" } as any,
-  default: {},
+/* ——— Styles ——— */
+const shadow = Platform.select({
+  ios: { shadowColor: "#000", shadowOpacity: 0.28, shadowRadius: 14, shadowOffset: { width: 0, height: 10 } },
+  android: { elevation: 6 },
+  web: { boxShadow: "0 14px 40px rgba(0,0,0,0.40)" } as any,
 });
 
 const DOT_W = 12;
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG },
-  container: { padding: 16, rowGap: 16 },
 
-  header: { alignItems: "center", marginTop: 4, marginBottom: 2 },
-  logo: { width: 200, height: 64 },
-  appTitle: { color: "#fff", fontWeight: "900", fontSize: 18 },
+  /* Header */
+  headerWrap: {
+    paddingHorizontal: 16, paddingTop: 10, paddingBottom: 18,
+    borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.06)",
+    borderBottomLeftRadius: 18, borderBottomRightRadius: 18,
+  },
+  headerTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  logo: { width: 150, height: 46 },
+  appTitle: { color: TEXT, fontWeight: "900", fontSize: 18 },
+  avatarCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#f1f5f9", alignItems: "center", justifyContent: "center" },
 
-  // KPIs fila única
-  kpiRow: { flexDirection: "row", columnGap: 10 },
+  hello: { color: "#0b1120", fontWeight: "900", fontSize: 20, marginTop: 10 },
+  subHello: { color: "rgba(255,255,255,0.92)", marginTop: 2 },
+
+  // banner error
+  banner: { backgroundColor: "#3a1c1c", borderBottomWidth: 1, borderColor: "#6b1d1d", paddingHorizontal: 16, paddingVertical: 12 },
+  bannerTitle: { color: "#fecaca", fontWeight: "800" },
+  bannerText: { color: "#fca5a5", marginTop: 4 },
+  bannerBtn: { alignSelf: "flex-start", marginTop: 8, backgroundColor: DANGER, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  bannerBtnText: { color: "#fff", fontWeight: "800" },
+
+  // KPIs
+  kpiRow: { flexDirection: "row", columnGap: 10, marginTop: 12 },
   kpi: {
-    flex: 1, minWidth: 0, backgroundColor: "#171718", borderRadius: 14,
-    paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: BORDER, alignItems: "center",
-    ...cardShadowWeb,
+    flex: 1, minWidth: 0, backgroundColor: "rgba(255,255,255,0.10)", borderRadius: 14,
+    paddingVertical: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", alignItems: "center",
+    ...shadow,
   },
   kpiValue: { fontSize: 18, fontWeight: "900", color: "#fff" },
-  kpiLabel: { color: "#a3a3a3", marginTop: 2, fontSize: 12 },
+  kpiLabel: { color: "#E5E7EB", marginTop: 2, fontSize: 12 },
 
-  section: { marginTop: 2 },
-  sectionTitle: { fontWeight: "900", fontSize: 16, color: "#fff", marginBottom: 10 },
-  muted: { color: "rgba(255,255,255,0.65)" },
-
-  grid: { flexDirection: "row", flexWrap: "wrap", columnGap: 12, rowGap: 12 },
-  card: {
-    flexGrow: 1, minWidth: 160, backgroundColor: "#1a1b1d", borderRadius: 16,
-    padding: 14, borderWidth: 1, borderColor: BORDER, ...cardShadowWeb,
+  // quick actions (header)
+  quickRowTop: { flexDirection: "row", columnGap: 10, marginTop: 12 },
+  quickBtn: {
+    flex: 1, borderRadius: 12, padding: 14, alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(11,17,32,0.55)", borderWidth: 1, borderColor: "rgba(255,255,255,0.25)"
   },
-  pressed: { opacity: 0.9 },
-
-  cardTitle: { color: "#fff", fontWeight: "900", fontSize: 16 },
-  cardDesc: { color: "rgba(255,255,255,0.78)", marginTop: 2, fontSize: 12 },
-
-  recentCard: {
-    backgroundColor: CARD, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: BORDER,
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between", columnGap: 12, ...cardShadowWeb,
+  quickBtnSecondary: {
+    flex: 1, borderRadius: 12, padding: 14, alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(11,17,32,0.35)", borderWidth: 1, borderColor: "rgba(255,255,255,0.20)"
   },
-  recentTitle: { fontWeight: "800", flex: 1, marginRight: 12, color: TEXT },
-  recentSub: { color: SUBTLE, fontSize: 12 },
-
-  stageStrip: { flexDirection: "row", alignItems: "center", columnGap: 6, marginTop: 2 },
-  stageDot: { width: DOT_W, height: 6, borderRadius: 3, backgroundColor: "#2a2a2c" },
-  stageDotActive: { backgroundColor: ORANGE },
-
-  badge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: "#232325", borderWidth: 1, borderColor: "#343437" },
-  badgeText: { fontSize: 12, fontWeight: "800", color: "#e5e7eb" },
-
-  quickRow: { flexDirection: "row", columnGap: 10, marginTop: 6 },
-  quickBtn: { flex: 1, borderRadius: 12, padding: 14, alignItems: "center", justifyContent: "center", backgroundColor: ORANGE },
-  quickBtnSecondary: { flex: 1, borderRadius: 12, padding: 14, alignItems: "center", justifyContent: "center", backgroundColor: ORANGE_DARK },
   quickText: { color: "#fff", fontWeight: "900" },
 
-  center: { alignItems: "center", justifyContent: "center", paddingVertical: 40 },
-  error: { color: "#fecaca", textAlign: "center" },
+  // filters
+  filterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 },
+  chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: "#1f2430", borderWidth: 1, borderColor: BORDER },
+  chipActive: { backgroundColor: "rgba(124,58,237,0.20)", borderColor: PRIMARY },
+  chipText: { color: SUBTLE, fontWeight: "700", fontSize: 12 },
+  chipTextActive: { color: "#E9D5FF" },
+
+  // list cards
+  card: {
+    backgroundColor: CARD, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: BORDER,
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between", columnGap: 12, marginHorizontal: 16, ...shadow,
+  },
+  title: { fontWeight: "800", flex: 1, marginRight: 12, color: TEXT },
+  sub: { color: SUBTLE, fontSize: 12, marginTop: 2 },
+
+  stageStrip: { flexDirection: "row", alignItems: "center", columnGap: 6, marginTop: 6 },
+  stageDot: { width: DOT_W, height: 6, borderRadius: 3, backgroundColor: "#2B2F3A" },
+  stageDotActive: { backgroundColor: ACCENT },
+
+  badge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: "#121723", borderWidth: 1, borderColor: "#2B3140" },
+  badgeText: { fontSize: 12, fontWeight: "800", color: TEXT },
+
+  pressed: { opacity: 0.88 },
+
+  // fabs
+  fabs: { position: "absolute", right: 16, bottom: 24, alignItems: "flex-end", gap: 10 },
+  fab: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: PRIMARY, ...shadow },
+  fabText: { color: "#fff", fontSize: 28, lineHeight: 28, fontWeight: "900" },
+  fabSm: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: ACCENT, ...shadow },
+  fabTextSm: { color: "#0b1120", fontSize: 16, fontWeight: "900" },
+
+  center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 40 },
 });
+
+
 
 // import { useQuery } from "@tanstack/react-query";
 // import { Stack, useRouter } from "expo-router";
-// import React, { useState } from "react";
+// import React, { useCallback, useMemo, useState } from "react";
 // import {
-//     ActivityIndicator,
-//     Image,
-//     Platform,
-//     Pressable,
-//     ScrollView,
-//     StyleSheet,
-//     Text,
-//     View,
+//   ActivityIndicator,
+//   FlatList,
+//   Image,
+//   Platform,
+//   Pressable,
+//   RefreshControl,
+//   StyleSheet,
+//   Text,
+//   View,
 // } from "react-native";
 // import { SafeAreaView } from "react-native-safe-area-context";
+
+// // opcionales (si no están, funciona igual)
+// let Haptics: any;
+// let LinearGradient: any;
+// try { Haptics = require("expo-haptics"); } catch {}
+// try { LinearGradient = require("expo-linear-gradient").LinearGradient; } catch {}
 
 // import { listAccounts } from "@/src/api/accounts";
 // import { listContacts } from "@/src/api/contacts";
 // import { listDeals, type Deal, type DealStage } from "@/src/api/deals";
 // import { listLeads } from "@/src/api/leads";
 
-// // Asegúrate que la ruta exista exactamente (mayúsculas/minúsculas)
 // const LOGO = require("../assets/images/ATOMICA-Logo-02.png");
 
-// const ORANGE = "#FF6A00";
-// const ORANGE_DARK = "#D95700";
-// const BG = "#0e0e0f";
-// const CARD = "#151517";
-// const BORDER = "#2a2a2c";
-// const TEXT = "#f3f4f6";
-// const SUBTLE = "rgba(255,255,255,0.7)";
+// /* 🎨 Theme */
+// const BG = "#0b0c10";
+// const CARD = "#14151a";
+// const BORDER = "#272a33";
+// const TEXT = "#e8ecf1";
+// const SUBTLE = "#a9b0bd";
+// const ACCENT = "#7c3aed";      // violeta
+// const ACCENT_2 = "#22d3ee";    // cian
+// const SUCCESS = "#10b981";     // verde
+// const DANGER = "#ef4444";      // rojo
 
 // const STAGES: DealStage[] = ["nuevo","calificado","propuesta","negociacion","ganado","perdido"];
+// type StageFilter = "todos" | DealStage;
 
 // export default function Home() {
 //   const router = useRouter();
 
+//   // Data
 //   const qDeals = useQuery({ queryKey: ["deals"], queryFn: listDeals });
 //   const qAcc   = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
 //   const qCon   = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
-//   const qLeads = useQuery({ queryKey: ["leads"], queryFn: listLeads });
-
-//   const deals = qDeals.data ?? [];
-//   const won   = deals.filter(d => d.stage === "ganado").length;
-
-//   const recent = [...deals]
-//     .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
-//     .slice(0, 5);
+//   const qLeads = useQuery({ queryKey: ["leads"],  queryFn: listLeads });
 
 //   const loading  = qDeals.isLoading || qAcc.isLoading || qCon.isLoading || qLeads.isLoading;
 //   const hasError = qDeals.isError   || qAcc.isError   || qCon.isError   || qLeads.isError;
 
-//   const accounts = qAcc.data ?? [];
-//   const accountName = (id?: string | null) =>
-//     accounts.find(a => a.id === id)?.name;
+//   const deals = qDeals.data ?? [];
+//   const won   = deals.filter(d => d.stage === "ganado").length;
 
-//   // 🔧 iOS: si la imagen falla, mostramos un fallback
+//   const accounts = qAcc.data ?? [];
+//   const accountName = useCallback(
+//     (id?: string | null) => accounts.find(a => a.id === id)?.name,
+//     [accounts]
+//   );
+
+//   const [filter, setFilter] = useState<StageFilter>("todos");
+//   const [refreshing, setRefreshing] = useState(false);
 //   const [logoOk, setLogoOk] = useState(true);
+
+//   const filtered = useMemo(() => {
+//     const base = [...deals].sort((a,b)=>(b.updated_at??0)-(a.updated_at??0));
+//     return filter === "todos" ? base : base.filter(d => d.stage === filter);
+//   }, [deals, filter]);
+
+//   const firstErrorMsg =
+//     (qDeals.error as any)?.message ||
+//     (qAcc.error as any)?.message ||
+//     (qCon.error as any)?.message ||
+//     (qLeads.error as any)?.message ||
+//     "";
+
+//   const refetchAll = useCallback(async () => {
+//     try {
+//       setRefreshing(true);
+//       await Promise.all([qDeals.refetch(), qAcc.refetch(), qCon.refetch(), qLeads.refetch()]);
+//     } finally {
+//       setRefreshing(false);
+//     }
+//   }, [qDeals, qAcc, qCon, qLeads]);
+
+//   const onNav = (path: string) => () => {
+//     Haptics?.impactAsync?.(Haptics.ImpactFeedbackStyle.Light);
+//     router.push(path as any);
+//   };
+
+//   // Header gradient (fallback a View si no está LinearGradient)
+//   const HeaderBg: React.ComponentType<any> = LinearGradient ?? View;
 
 //   return (
 //     <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
 //       <Stack.Screen options={{ title: "Inicio" }} />
 
-//       <ScrollView
-//         contentContainerStyle={styles.container}
-//         contentInsetAdjustmentBehavior="automatic" // iOS ajusta bajo el header
-//       >
-//         {/* Header / logo */}
-//         <View style={styles.header}>
-//           {logoOk ? (
-//             <Image
-//               source={LOGO}
-//               style={styles.logo}
-//               resizeMode="contain"
-//               onError={() => setLogoOk(false)}
-//             />
-//           ) : (
-//             <Text style={styles.appTitle}>ATOMICA CRM</Text>
-//           )}
+//       {/* Banner error */}
+//       {hasError && (
+//         <View style={styles.banner}>
+//           <Text style={styles.bannerTitle}>Sin conexión al servidor</Text>
+//           <Text style={styles.bannerText} numberOfLines={2}>
+//             Verifica que el backend esté encendido.
+//             {firstErrorMsg ? ` ${firstErrorMsg}` : ""}
+//           </Text>
+//           <Pressable style={({pressed})=>[styles.bannerBtn, pressed&&styles.pressed]} onPress={refetchAll}>
+//             <Text style={styles.bannerBtnText}>Reintentar</Text>
+//           </Pressable>
 //         </View>
+//       )}
 
-//         {loading ? (
-//           <View style={styles.center}><ActivityIndicator color="#fff" /></View>
-//         ) : hasError ? (
-//           <View style={styles.center}>
-//             <Text style={styles.error}>
-//               Error cargando datos. Verifica el servidor.
-//             </Text>
-//           </View>
-//         ) : (
-//           <>
-//             {/* KPIs: una sola línea */}
-//             <View style={styles.kpiRow}>
-//               <KPI label="Oportunidades" value={deals.length} />
-//               <KPI label="Prospectos" value={(qLeads.data ?? []).length} />
-//               <KPI label="Cuentas" value={(qAcc.data ?? []).length} />
-//               <KPI label="Contactos" value={(qCon.data ?? []).length} />
-//               <KPI label="Ganadas" value={won} />
-//             </View>
-
-//             {/* Accesos rápidos */}
-//             <View style={styles.grid}>
-//               <NavCard title="Oportunidades"  desc="Gestiona tu pipeline"  onPress={() => router.push("/deals")} />
-//               <NavCard title="Cuentas"        desc="Empresas y clientes"   onPress={() => router.push("/accounts")} />
-//               <NavCard title="Contactos"      desc="Personas y relaciones" onPress={() => router.push("/contacts")} />
-//               <NavCard title="Prospectos"     desc="Captura y califica"    onPress={() => router.push("/leads")} />
-//             </View>
-
-//             {/* Recientes */}
-//             <View style={styles.section}>
-//               <Text style={styles.sectionTitle}>Recientes</Text>
-//               <View style={styles.recentsWrap}>
-//                 {recent.map(d => (
-//                   <Pressable
-//                     key={d.id}
-//                     style={({ pressed }) => [styles.recentCard, pressed && styles.pressed]}
-//                     onPress={() => router.push(`/deals/${d.id}`)}
-//                     accessibilityRole="button"
-//                   >
-//                     <View style={{ flex: 1 }}>
-//                       <Text style={styles.recentTitle} numberOfLines={2}>{d.title}</Text>
-//                       <Text style={styles.recentSub} numberOfLines={1}>
-//                         {accountName(d.account_id) ?? "—"}
-//                       </Text>
-
-//                       <View style={styles.stageStrip}>
-//                         {STAGES.map((s, idx) => {
-//                           const currentIndex = Math.max(0, STAGES.indexOf((d.stage as DealStage) || "nuevo"));
-//                           const active = idx <= currentIndex;
-//                           return (
-//                             <View
-//                               key={s}
-//                               style={[styles.stageDot, active && styles.stageDotActive]}
-//                               accessibilityLabel={`${s}${active ? " (completado)" : ""}`}
-//                             />
-//                           );
-//                         })}
-//                       </View>
-//                     </View>
-
-//                     <View style={styles.badge}>
-//                       <Text style={styles.badgeText}>{labelStage(d.stage)}</Text>
-//                     </View>
-//                   </Pressable>
-//                 ))}
-//                 {recent.length === 0 && (
-//                   <Text style={styles.muted}>Aún no hay oportunidades. Crea la primera 📌</Text>
-//                 )}
+//       {loading ? (
+//         <View style={styles.center}>
+//           <ActivityIndicator />
+//           <Text style={{ color: SUBTLE, marginTop: 8 }}>Cargando panel…</Text>
+//         </View>
+//       ) : (
+//         <>
+//           {/* Encabezado con degradé y KPIs compactos */}
+//           <HeaderBg
+//             style={styles.headerWrap}
+//             {...(LinearGradient ? { colors: [ACCENT, ACCENT_2], start:{x:0,y:0}, end:{x:1,y:1} } : {})}
+//           >
+//             <View style={styles.headerTop}>
+//               {logoOk ? (
+//                 <Image source={LOGO} style={styles.logo} resizeMode="contain" onError={()=>setLogoOk(false)} />
+//               ) : (
+//                 <Text style={styles.appTitle}>ATOMICA CRM</Text>
+//               )}
+//               <View style={styles.avatarCircle}>
+//                 <Text style={{ color: "#0b1120", fontWeight: "900" }}>A</Text>
 //               </View>
 //             </View>
 
-//             {/* CTA crear rápido */}
-//             <View style={styles.quickRow}>
-//               <Pressable
-//                 style={({ pressed }) => [styles.quickBtn, pressed && styles.pressed]}
-//                 onPress={() => router.push("/deals/new")}
-//                 accessibilityRole="button"
-//               >
-//                 <Text style={styles.quickText}>＋ Nueva Oportunidad</Text>
-//               </Pressable>
-//               <Pressable
-//                 style={({ pressed }) => [styles.quickBtnSecondary, pressed && styles.pressed]}
-//                 onPress={() => router.push("/leads/new")}
-//                 accessibilityRole="button"
-//               >
-//                 <Text style={styles.quickText}>＋ Nuevo Prospecto</Text>
-//               </Pressable>
+//             <Text style={styles.hello}>¡Bienvenido!</Text>
+//             <Text style={styles.subHello}>Gestiona tu pipeline y prospectos</Text>
+
+//             <View style={styles.kpiRow}>
+//               <KPI label="Oportunidades" value={deals.length} />
+//               <KPI label="Prospectos"    value={(qLeads.data ?? []).length} />
+//               <KPI label="Ganadas"       value={won} accent />
 //             </View>
-//           </>
-//         )}
-//       </ScrollView>
+
+//             <View style={styles.quickRowTop}>
+//               <QuickBtn label="Nueva Oportunidad" onPress={onNav("/deals/new")} />
+//               <QuickBtnSecondary label="Nuevo Prospecto" onPress={onNav("/leads/new")} />
+//             </View>
+//           </HeaderBg>
+
+//           {/* Filtros por etapa */}
+//           <View style={styles.filterRow}>
+//             <Chip
+//               label="Todos"
+//               active={filter === "todos"}
+//               onPress={() => { Haptics?.selectionAsync?.(); setFilter("todos"); }}
+//             />
+//             {STAGES.map(s => (
+//               <Chip
+//                 key={s}
+//                 label={labelStage(s)}
+//                 active={filter === s}
+//                 onPress={() => { Haptics?.selectionAsync?.(); setFilter(s); }}
+//               />
+//             ))}
+//           </View>
+
+//           {/* Lista */}
+//           <FlatList
+//             data={filtered}
+//             keyExtractor={(item) => item.id}
+//             refreshControl={
+//               <RefreshControl tintColor="#fff" colors={["#fff"]} refreshing={refreshing} onRefresh={refetchAll} />
+//             }
+//             renderItem={({ item: d }) => (
+//               <Pressable
+//                 style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+//                 android_ripple={{ color: "rgba(255,255,255,0.06)" }}
+//                 onPress={() => router.push(`/deals/${d.id}`)}
+//               >
+//                 <View style={{ flex: 1 }}>
+//                   <Text style={styles.title} numberOfLines={2}>{d.title}</Text>
+//                   <Text style={styles.sub} numberOfLines={1}>{accountName(d.account_id) ?? "—"}</Text>
+
+//                   <View style={styles.stageStrip}>
+//                     {STAGES.map((s, idx) => {
+//                       const currentIndex = Math.max(0, STAGES.indexOf((d.stage as DealStage) || "nuevo"));
+//                       const active = idx <= currentIndex;
+//                       return <View key={s} style={[styles.stageDot, active && styles.stageDotActive]} />;
+//                     })}
+//                   </View>
+//                 </View>
+
+//                 <View style={[
+//                   styles.badge,
+//                   d.stage === "ganado" && { borderColor: SUCCESS, backgroundColor: "rgba(16,185,129,0.12)" },
+//                   d.stage === "perdido" && { borderColor: DANGER,  backgroundColor: "rgba(239,68,68,0.12)" },
+//                 ]}>
+//                   <Text style={styles.badgeText}>{labelStage(d.stage)}</Text>
+//                 </View>
+//               </Pressable>
+//             )}
+//             ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+//             ListEmptyComponent={
+//               <View style={{ alignItems: "center", paddingVertical: 24 }}>
+//                 <Text style={{ color: SUBTLE }}>No hay registros para este filtro.</Text>
+//               </View>
+//             }
+//             contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+//           />
+
+//           {/* FABs */}
+//           <View style={styles.fabs}>
+//             <Pressable style={({pressed})=>[styles.fab, pressed&&styles.pressed]} onPress={onNav("/deals/new")}>
+//               <Text style={styles.fabText}>＋</Text>
+//             </Pressable>
+//             <Pressable style={({pressed})=>[styles.fabSm, pressed&&styles.pressed]} onPress={onNav("/leads/new")}>
+//               <Text style={styles.fabTextSm}>P</Text>
+//             </Pressable>
+//           </View>
+//         </>
+//       )}
 //     </SafeAreaView>
 //   );
 // }
 
-// function KPI({ label, value }: { label: string; value: number }) {
+// /* ——— UI helpers ——— */
+
+// function KPI({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
 //   return (
-//     <View style={styles.kpi}>
+//     <View style={[styles.kpi, accent && { borderColor: "rgba(255,255,255,0.22)", backgroundColor: "rgba(0,0,0,0.12)" }]}>
 //       <Text style={styles.kpiValue} numberOfLines={1}>{value}</Text>
 //       <Text style={styles.kpiLabel} numberOfLines={1}>{label}</Text>
 //     </View>
 //   );
 // }
 
-// function NavCard({
-//   title, desc, onPress,
-// }: { title: string; desc: string; onPress: () => void }) {
+// function QuickBtn({ label, onPress }: { label: string; onPress: () => void }) {
 //   return (
-//     <Pressable
-//       style={({ pressed }) => [styles.card, pressed && styles.pressed]}
-//       onPress={onPress}
-//       accessibilityRole="button"
-//     >
-//       <Text style={styles.cardTitle}>{title}</Text>
-//       <Text style={styles.cardDesc}>{desc}</Text>
+//     <Pressable style={({pressed})=>[styles.quickBtn, pressed&&styles.pressed]} onPress={onPress}>
+//       <Text style={styles.quickText}>{label}</Text>
+//     </Pressable>
+//   );
+// }
+// function QuickBtnSecondary({ label, onPress }: { label: string; onPress: () => void }) {
+//   return (
+//     <Pressable style={({pressed})=>[styles.quickBtnSecondary, pressed&&styles.pressed]} onPress={onPress}>
+//       <Text style={styles.quickText}>{label}</Text>
+//     </Pressable>
+//   );
+// }
+
+// function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+//   return (
+//     <Pressable onPress={onPress} style={({pressed})=>[
+//       styles.chip,
+//       active && styles.chipActive,
+//       pressed && styles.pressed
+//     ]}>
+//       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
 //     </Pressable>
 //   );
 // }
@@ -485,112 +647,82 @@ const styles = StyleSheet.create({
 //   }
 // }
 
-// // Sombras solo en web
-// const cardShadowWeb = Platform.select({
-//   web: { boxShadow: "0 6px 24px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.05)" } as any,
-//   default: {},
+// /* ——— Styles ——— */
+// const shadow = Platform.select({
+//   ios: { shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } },
+//   android: { elevation: 5 },
+//   web: { boxShadow: "0 10px 34px rgba(0,0,0,0.35)" } as any,
 // });
 
 // const DOT_W = 12;
 
 // const styles = StyleSheet.create({
 //   screen: { flex: 1, backgroundColor: BG },
-//   container: {
-//     padding: 16,
-//     rowGap: 16,            // en lugar de 'gap' para compat iOS
-//   },
 
-//   header: { alignItems: "center", marginTop: 4, marginBottom: 2 },
-//   logo: { width: 200, height: 64 },
+//   /* Header */
+//   headerWrap: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16, borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.06)" },
+//   headerTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+//   logo: { width: 150, height: 46 },
 //   appTitle: { color: "#fff", fontWeight: "900", fontSize: 18 },
+//   avatarCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#f1f5f9", alignItems: "center", justifyContent: "center" },
+//   hello: { color: "#0b1120", fontWeight: "900", fontSize: 20, marginTop: 10 },
+//   subHello: { color: "rgba(255,255,255,0.92)", marginTop: 2 },
 
-//   // KPIs fila única
-//   kpiRow: {
-//     flexDirection: "row",
-//     columnGap: 10,
-//   },
+//   // banner error
+//   banner: { backgroundColor: "#3a1c1c", borderBottomWidth: 1, borderColor: "#6b1d1d", paddingHorizontal: 16, paddingVertical: 12 },
+//   bannerTitle: { color: "#fecaca", fontWeight: "800" },
+//   bannerText: { color: "#fca5a5", marginTop: 4 },
+//   bannerBtn: { alignSelf: "flex-start", marginTop: 8, backgroundColor: DANGER, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+//   bannerBtnText: { color: "#fff", fontWeight: "800" },
+
+//   // KPIs
+//   kpiRow: { flexDirection: "row", columnGap: 10, marginTop: 12 },
 //   kpi: {
-//     flex: 1,
-//     minWidth: 0,
-//     backgroundColor: "#171718",
-//     borderRadius: 14,
-//     paddingVertical: 10,
-//     paddingHorizontal: 12,
-//     borderWidth: 1,
-//     borderColor: BORDER,
-//     alignItems: "center",
-//     ...cardShadowWeb,
+//     flex: 1, minWidth: 0, backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 14,
+//     paddingVertical: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", alignItems: "center",
+//     ...shadow,
 //   },
 //   kpiValue: { fontSize: 18, fontWeight: "900", color: "#fff" },
-//   kpiLabel: { color: "#a3a3a3", marginTop: 2, fontSize: 12 },
+//   kpiLabel: { color: "#eef2ff", marginTop: 2, fontSize: 12 },
 
-//   section: { marginTop: 2 },
-//   sectionTitle: { fontWeight: "900", fontSize: 16, color: "#fff", marginBottom: 10 },
-//   muted: { color: "rgba(255,255,255,0.65)" },
-
-//   grid: {
-//     flexDirection: "row",
-//     flexWrap: "wrap",
-//     columnGap: 12,
-//     rowGap: 12,
-//   },
-//   card: {
-//     flexGrow: 1,
-//     minWidth: 160,
-//     backgroundColor: "#1a1b1d",
-//     borderRadius: 16,
-//     padding: 14,
-//     borderWidth: 1,
-//     borderColor: BORDER,
-//     ...cardShadowWeb,
-//   },
-//   pressed: { opacity: 0.9 },
-
-//   cardTitle: { color: "#fff", fontWeight: "900", fontSize: 16 },
-//   cardDesc: { color: "rgba(255,255,255,0.78)", marginTop: 2, fontSize: 12 },
-
-//   recentsWrap: { rowGap: 10 },
-//   recentCard: {
-//     backgroundColor: CARD,
-//     borderRadius: 12,
-//     padding: 12,
-//     borderWidth: 1,
-//     borderColor: BORDER,
-//     flexDirection: "row",
-//     alignItems: "center",
-//     justifyContent: "space-between",
-//     columnGap: 12,
-//     ...cardShadowWeb,
-//   },
-//   recentTitle: { fontWeight: "800", flex: 1, marginRight: 12, color: TEXT },
-//   recentSub: { color: SUBTLE, fontSize: 12 },
-
-//   stageStrip: { flexDirection: "row", alignItems: "center", columnGap: 6, marginTop: 2 },
-//   stageDot: { width: DOT_W, height: 6, borderRadius: 3, backgroundColor: "#2a2a2c" },
-//   stageDotActive: { backgroundColor: ORANGE },
-
-//   badge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: "#232325", borderWidth: 1, borderColor: "#343437" },
-//   badgeText: { fontSize: 12, fontWeight: "800", color: "#e5e7eb" },
-
-//   quickRow: { flexDirection: "row", columnGap: 10, marginTop: 6 },
-//   quickBtn: {
-//     flex: 1,
-//     borderRadius: 12,
-//     padding: 14,
-//     alignItems: "center",
-//     justifyContent: "center",
-//     backgroundColor: ORANGE,
-//   },
-//   quickBtnSecondary: {
-//     flex: 1,
-//     borderRadius: 12,
-//     padding: 14,
-//     alignItems: "center",
-//     justifyContent: "center",
-//     backgroundColor: ORANGE_DARK,
-//   },
+//   // quick actions (header)
+//   quickRowTop: { flexDirection: "row", columnGap: 10, marginTop: 12 },
+//   quickBtn: { flex: 1, borderRadius: 12, padding: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(11,17,32,0.6)", borderWidth: 1, borderColor: "rgba(255,255,255,0.25)" },
+//   quickBtnSecondary: { flex: 1, borderRadius: 12, padding: 14, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(11,17,32,0.4)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)" },
 //   quickText: { color: "#fff", fontWeight: "900" },
 
-//   center: { alignItems: "center", justifyContent: "center", paddingVertical: 40 },
-//   error: { color: "#fecaca", textAlign: "center" },
+//   // filters
+//   filterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 },
+//   chip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: "#1f2430", borderWidth: 1, borderColor: BORDER },
+//   chipActive: { backgroundColor: "rgba(124,58,237,0.18)", borderColor: ACCENT },
+//   chipText: { color: SUBTLE, fontWeight: "700", fontSize: 12 },
+//   chipTextActive: { color: "#e9d5ff" },
+
+//   // list cards
+//   card: {
+//     backgroundColor: CARD, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: BORDER,
+//     flexDirection: "row", alignItems: "center", justifyContent: "space-between", columnGap: 12, marginHorizontal: 16, ...shadow,
+//   },
+//   title: { fontWeight: "800", flex: 1, marginRight: 12, color: TEXT },
+//   sub: { color: SUBTLE, fontSize: 12, marginTop: 2 },
+
+//   stageStrip: { flexDirection: "row", alignItems: "center", columnGap: 6, marginTop: 6 },
+//   stageDot: { width: DOT_W, height: 6, borderRadius: 3, backgroundColor: "#2a2f3a" },
+//   stageDotActive: { backgroundColor: ACCENT_2 },
+
+//   badge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: "#19202b", borderWidth: 1, borderColor: "#334155" },
+//   badgeText: { fontSize: 12, fontWeight: "800", color: "#e5e7eb" },
+
+//   pressed: { opacity: 0.88 },
+
+//   // fabs
+//   fabs: { position: "absolute", right: 16, bottom: 24, alignItems: "flex-end", gap: 10 },
+//   fab: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: ACCENT, ...shadow },
+//   fabText: { color: "#fff", fontSize: 28, lineHeight: 28, fontWeight: "900" },
+//   fabSm: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: ACCENT_2, ...shadow },
+//   fabTextSm: { color: "#0b1120", fontSize: 16, fontWeight: "900" },
+
+//   center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 40 },
 // });
+
+

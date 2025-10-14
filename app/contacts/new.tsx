@@ -3,47 +3,47 @@ import { listAccounts } from "@/src/api/accounts";
 import { createContact } from "@/src/api/contacts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
-import { useState } from "react";
+import React, { useState } from "react";
 import {
-    FlatList,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
-const ORANGE = "#FF6A00";
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
+/* 🎨 Tema consistente */
+const BG       = "#0b0c10";
+const CARD     = "#14151a";
+const FIELD    = "#121318";
+const BORDER   = "#272a33";
+const TEXT     = "#e8ecf1";
+const SUBTLE   = "#a9b0bd";
+const ACCENT   = "#7c3aed";   // primario morado
 
-const uid = () =>
-  Math.random().toString(36).slice(2) + Date.now().toString(36);
+const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 export default function NewContact() {
   const qc = useQueryClient();
 
-  // 1) Traemos las cuentas existentes para el selector
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
 
-  // 2) Estado del formulario
   const [accountId, setAccountId] = useState<string | undefined>(undefined);
-  const [name, setName] = useState("");
-  const [company, setCompany] = useState(""); // opcional, mientras migramos a accounts
-  const [position, setPosition] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
+  const [name, setName]           = useState("");
+  const [company, setCompany]     = useState("");
+  const [position, setPosition]   = useState("");
+  const [email, setEmail]         = useState("");
+  const [phone, setPhone]         = useState("");
+  const [err, setErr]             = useState<string | null>(null);
 
-  // 3) Mutación para crear
   const m = useMutation({
     mutationFn: async () => {
+      setErr(null);
       if (!name.trim()) throw new Error("Nombre requerido");
       await createContact({
         id: uid(),
-        name,
+        name: name.trim(),
         company: company || undefined,
         position: position || undefined,
         email: email || undefined,
@@ -55,12 +55,22 @@ export default function NewContact() {
       await qc.invalidateQueries({ queryKey: ["contacts"] });
       router.back();
     },
+    onError: (e: any) => setErr(String(e?.message || e)),
   });
 
   return (
     <>
-      <Stack.Screen options={{ title: "Nuevo Contacto" }} />
+      <Stack.Screen
+        options={{
+          title: "Nuevo Contacto",
+          headerStyle: { backgroundColor: BG },
+          headerTintColor: TEXT,
+          headerTitleStyle: { color: TEXT, fontWeight: "800" },
+        }}
+      />
       <View style={styles.screen}>
+        {err ? <Text style={styles.err}>⚠️ {err}</Text> : null}
+
         <View style={{ gap: 12 }}>
           <TextInput
             placeholder="Nombre*"
@@ -69,8 +79,6 @@ export default function NewContact() {
             style={styles.input}
             placeholderTextColor={SUBTLE}
           />
-
-          {/* Empresa “texto” (opcional mientras migramos) */}
           <TextInput
             placeholder="Empresa (texto)"
             value={company}
@@ -78,7 +86,6 @@ export default function NewContact() {
             style={styles.input}
             placeholderTextColor={SUBTLE}
           />
-
           <TextInput
             placeholder="Cargo"
             value={position}
@@ -92,6 +99,7 @@ export default function NewContact() {
             onChangeText={setEmail}
             style={styles.input}
             keyboardType="email-address"
+            autoCapitalize="none"
             placeholderTextColor={SUBTLE}
           />
           <TextInput
@@ -104,12 +112,12 @@ export default function NewContact() {
           />
         </View>
 
-        {/* Selector de Cuenta */}
+        {/* Selector de Cuenta — sin margen arriba/abajo y chips compactas */}
         <Text style={styles.label}>Cuenta (opcional)</Text>
         {qAcc.isLoading ? (
-          <Text style={{ color: SUBTLE }}>Cargando cuentas…</Text>
+          <Text style={styles.subtle}>Cargando cuentas…</Text>
         ) : qAcc.isError ? (
-          <Text style={{ color: "#fecaca" }}>
+          <Text style={styles.err}>
             Error cargando cuentas: {String((qAcc.error as any)?.message || qAcc.error)}
           </Text>
         ) : (
@@ -117,25 +125,28 @@ export default function NewContact() {
             horizontal
             data={qAcc.data ?? []}
             keyExtractor={(a) => a.id}
-            contentContainerStyle={{ paddingVertical: 4 }}
+            contentContainerStyle={{ paddingVertical: 0 }}   // 👈 sin margen vertical
+            showsHorizontalScrollIndicator={false}
+            ItemSeparatorComponent={() => <View style={{ width: 8 }} />} // espacio entre chips
             renderItem={({ item }) => {
               const selected = accountId === item.id;
               return (
                 <Pressable
-                  onPress={() => setAccountId(item.id)}
-                  style={[
-                    styles.chip,
-                    selected && { backgroundColor: ORANGE, borderColor: ORANGE },
-                  ]}
+                  onPress={() => setAccountId(selected ? undefined : item.id)}
+                  style={[styles.chip, selected && styles.chipActive]}
+                  accessibilityRole="button"
                 >
-                  <Text style={[styles.chipText, selected && { color: "#fff" }]}>
+                  <Text
+                    style={[styles.chipText, selected && styles.chipTextActive]}
+                    numberOfLines={1}
+                  >
                     {item.name}
                   </Text>
                 </Pressable>
               );
             }}
             ListEmptyComponent={
-              <Text style={{ color: SUBTLE }}>
+              <Text style={styles.subtle}>
                 No hay cuentas aún. Crea una en “Cuentas”.
               </Text>
             }
@@ -143,9 +154,14 @@ export default function NewContact() {
         )}
 
         <Pressable
-          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+          style={({ pressed }) => [
+            styles.primaryBtn,
+            pressed && styles.pressed,
+            m.isPending && { opacity: 0.9 },
+          ]}
           onPress={() => m.mutate()}
           disabled={m.isPending}
+          accessibilityRole="button"
         >
           <Text style={styles.primaryBtnText}>
             {m.isPending ? "Guardando..." : "Guardar"}
@@ -157,41 +173,54 @@ export default function NewContact() {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: BG,
-    padding: 16,
-    gap: 12,
-  },
+  screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
+
   input: {
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: CARD,
+    backgroundColor: FIELD,
     color: TEXT,
     borderRadius: 12,
     padding: 12,
   },
-  label: { color: TEXT, fontWeight: "800", marginTop: 8, marginBottom: 2 },
+
+  label: { color: TEXT, fontWeight: "800", marginTop: 10, marginBottom: 4 },
+  subtle: { color: SUBTLE },
+
+  // 🔽 Chips compactas y sin “alto raro”
   chip: {
+    minHeight: 28,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
+    paddingVertical: 4,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: BORDER,
-    marginRight: 8,
     backgroundColor: CARD,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "flex-start",    // evita estirarse verticalmente
   },
-  chipText: { color: TEXT, fontWeight: "600" },
+  chipActive: { backgroundColor: ACCENT, borderColor: ACCENT },
+  chipText: { color: TEXT, fontWeight: "800", fontSize: 12, maxWidth: 160 },
+  chipTextActive: { color: "#fff" },
+
   primaryBtn: {
     marginTop: 8,
-    backgroundColor: ORANGE,
+    backgroundColor: ACCENT,
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
   },
   primaryBtnText: { color: "#fff", fontWeight: "900" },
   pressed: { opacity: 0.9 },
+
+  err: { color: "#fecaca" },
 });
+
+
+
 // // app/contacts/new.tsx
 // import { listAccounts } from "@/src/api/accounts";
 // import { createContact } from "@/src/api/contacts";

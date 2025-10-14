@@ -17,12 +17,15 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const queryClient = new QueryClient();
 
+/* 🎨 Tema consistente (igual al resto) */
 const COLORS = {
-  bg: "#0E0F11",   // fondo app
-  text: "#EAEAEA", // texto claro
-  accent: "#FF6A00",
-  border: "#2a2a2c",
-  subtle: "rgba(255,255,255,0.7)",
+  bg: "#0b0c10",
+  card: "#14151a",
+  text: "#e8ecf1",
+  subtle: "#a9b0bd",
+  border: "#272a33",
+  accent: "#7c3aed",   // morado
+  accent2: "#22d3ee",  // cian (por si lo necesitas)
 };
 
 const TAB_HEIGHT = 60;
@@ -39,22 +42,16 @@ function useAppFocusSync() {
   }, []);
 }
 
-/** iOS DEV fetch shim
- * Cambia SOLO el host (localhost/127.x/hostname local) por la IP LAN que usa Expo,
- * preservando el esquema y el puerto originales. Solo corre en iOS + __DEV__.
- * No modifica tus servicios ni BASE_URLs.
- */
+/** iOS DEV fetch shim */
 function setupIOSDevFetchShim() {
   if (!__DEV__ || Platform.OS !== "ios") return;
 
   const origFetch = global.fetch as typeof fetch;
 
-  // p.ej. "192.168.1.50:8081" -> "192.168.1.50"
   const hostUri =
     // @ts-ignore diferentes claves según versión de Expo
-    Constants?.expoConfig?.hostUri ||
-    // @ts-ignore
-    Constants?.manifest2?.extra?.expoGo?.hostUri ||
+    (Constants as any)?.expoConfig?.hostUri ||
+    (Constants as any)?.manifest2?.extra?.expoGo?.hostUri ||
     "";
   const lanHost = typeof hostUri === "string" ? hostUri.split(":")[0] : null;
   if (!lanHost) return;
@@ -64,7 +61,6 @@ function setupIOSDevFetchShim() {
     "127.0.0.1",
     "postlab-vm40",
     "atomica-vm",
-    // agrega aquí cualquier hostname local que uses
   ];
   const HOST_RE = /^https?:\/\/([^\/:]+)(:\d+)?(\/.*)?$/i;
 
@@ -75,15 +71,14 @@ function setupIOSDevFetchShim() {
       if (typeof url === "string") {
         const m = url.match(HOST_RE);
         if (m) {
-          const originalHost = m[1];       // "localhost"
-          const originalPort = m[2] || ""; // ":4000" o ""
+          const originalHost = m[1];
+          const originalPort = m[2] || "";
           const restPath     = m[3] || "/";
 
           if (BAD_HOSTNAMES.includes(originalHost)) {
             const schema = url.startsWith("https://") ? "https" : "http";
             const rewritten = `${schema}://${lanHost}${originalPort}${restPath}`;
-            if (typeof input === "string") input = rewritten;
-            else input = new Request(rewritten, input);
+            input = typeof input === "string" ? rewritten : new Request(rewritten, input);
           }
         }
       }
@@ -96,7 +91,7 @@ function setupIOSDevFetchShim() {
 
 export default function RootLayout() {
   useAppFocusSync();
-  setupIOSDevFetchShim(); // 👈 activa el shim solo en iOS (dev)
+  setupIOSDevFetchShim();
 
   const insets = useSafeAreaInsets();
 
@@ -108,13 +103,10 @@ export default function RootLayout() {
       <View style={styles.appContainer}>
         <Stack
           screenOptions={{
-            // Fondo de TODAS las pantallas
             contentStyle: {
               backgroundColor: COLORS.bg,
-              // espacio para que la barra no tape el contenido
               paddingBottom: TAB_HEIGHT + insets.bottom,
             },
-            // Header oscuro y sin sombra
             headerStyle: { backgroundColor: COLORS.bg },
             headerTitleStyle: { color: COLORS.text, fontWeight: "800" },
             headerTintColor: COLORS.text,
@@ -133,11 +125,11 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
   const pathname = usePathname();
 
   const items = [
-    { href: "/", label: "Resumen", icon: "home" as const },
-    { href: "/contacts", label: "Contactos", icon: "users" as const },
-    { href: "/deals", label: "Oportun.", icon: "briefcase" as const },
-    { href: "/tasks", label: "Activ.", icon: "check-square" as const },
-    { href: "/more", label: "Más", icon: "grid" as const },
+    { href: "/",          label: "Resumen",  icon: "home" as const },
+    { href: "/contacts",  label: "Contactos",icon: "users" as const },
+    { href: "/deals",     label: "Oportun.", icon: "briefcase" as const },
+    { href: "/tasks",     label: "Activ.",   icon: "check-square" as const },
+    { href: "/more",      label: "Más",      icon: "grid" as const },
   ];
 
   const isActive = (href: string) => {
@@ -149,7 +141,10 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
     <View
       style={[
         styles.tabBar,
-        { paddingBottom: Math.max(bottomInset, 8), height: TAB_HEIGHT + Math.max(bottomInset, 8) },
+        {
+          paddingBottom: Math.max(bottomInset, 8),
+          height: TAB_HEIGHT + Math.max(bottomInset, 8),
+        },
       ]}
     >
       {items.map((it) => {
@@ -160,7 +155,8 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
             onPress={() => router.push(it.href as any)}
             style={({ pressed }) => [
               styles.tabItem,
-              pressed && !active && { opacity: 0.85 },
+              active && styles.tabItemActive,
+              pressed && !active && { opacity: 0.88 },
             ]}
             android_ripple={{ color: "rgba(255,255,255,0.06)", borderless: false }}
           >
@@ -185,6 +181,12 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
   );
 }
 
+const shadow = Platform.select({
+  ios: { shadowColor: "#000", shadowOpacity: 0.28, shadowRadius: 20, shadowOffset: { width: 0, height: -6 } },
+  android: { elevation: 16 },
+  web: { boxShadow: "0 -10px 24px rgba(0,0,0,0.35)" } as any,
+});
+
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
@@ -202,12 +204,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-around",
     paddingTop: 8,
+    ...shadow,
   },
   tabItem: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     gap: 4,
+    paddingVertical: 6,
+    marginHorizontal: 4,
+    borderRadius: 12,
+  },
+  // “pill” sutil para el tab activo
+  tabItemActive: {
+    backgroundColor: "rgba(124,58,237,0.12)", // morado translúcido
+    borderWidth: 1,
+    borderColor: "rgba(124,58,237,0.35)",
   },
   tabLabel: {
     fontSize: 11,
