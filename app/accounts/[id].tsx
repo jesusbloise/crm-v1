@@ -1,192 +1,240 @@
 // app/accounts/[id].tsx
-import { getAccount } from "@/src/api/accounts";
+import { deleteAccount, getAccount, updateAccount } from "@/src/api/accounts";
 import { listContacts } from "@/src/api/contacts";
-import { listDeals, type Deal } from "@/src/api/deals";
-import { useQuery } from "@tanstack/react-query";
-import { Link, Stack, useLocalSearchParams } from "expo-router";
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, Stack, router, useLocalSearchParams } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
+const BG = "#0e0e0f";
+const CARD = "#151517";
+const BORDER = "#2a2a2c";
+const TEXT = "#f3f4f6";
+const SUBTLE = "rgba(255,255,255,0.7)";
 const ORANGE = "#FF6A00";
-const ORANGE_DARK = "#D95700";
-
-// Sombras solo en web (evita warnings en RN Web)
-const cardShadowWeb = Platform.select({
-  web: { boxShadow: "0 6px 24px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.05)" } as any,
-  default: {},
-});
+const RED = "#ef4444";
 
 export default function AccountDetail() {
   const { id } = useLocalSearchParams<{ id?: string | string[] }>();
   const accountId = Array.isArray(id) ? id[0] : id;
 
-  const qAcc  = useQuery({ queryKey: ["account", accountId], queryFn: () => getAccount(accountId!), enabled: !!accountId });
-  const qCon  = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
-  const qDeal = useQuery({ queryKey: ["deals"], queryFn: listDeals });
+  const qc = useQueryClient();
 
-  const contacts = (qCon.data ?? []).filter(c => c.account_id === accountId);
-  const deals    = (qDeal.data ?? []).filter(d => d.account_id === accountId);
+  const qAcc = useQuery({
+    queryKey: ["account", accountId],
+    queryFn: () => getAccount(accountId!),
+    enabled: !!accountId,
+  });
 
-  if (!accountId) {
-    return (
-      <View style={[styles.screen, { alignItems: "center", justifyContent: "center" }]}>
-        <Text style={styles.muted}>Ruta inválida</Text>
-      </View>
-    );
-  }
+  // Traemos todos los contactos (como ya haces en otras pantallas)
+  const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+
+  // Filtramos contactos asociados a esta cuenta
+  const contacts = useMemo(
+    () => (qCon.data ?? []).filter((c) => c.account_id === accountId),
+    [qCon.data, accountId]
+  );
+
+  const [name, setName] = useState("");
+  const [website, setWebsite] = useState("");
+  const [phone, setPhone] = useState("");
+
+  useEffect(() => {
+    if (qAcc.data) {
+      setName(qAcc.data.name ?? "");
+      setWebsite(qAcc.data.website ?? "");
+      setPhone(qAcc.data.phone ?? "");
+    }
+  }, [qAcc.data]);
+
+  const mUpd = useMutation({
+    mutationFn: async () => {
+      if (!accountId) return;
+      await updateAccount(accountId, {
+        name: name.trim(),
+        website: website || null,
+        phone: phone || null,
+      });
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["account", accountId] });
+      await qc.invalidateQueries({ queryKey: ["accounts.list"] });
+      await qc.invalidateQueries({ queryKey: ["accounts"] });
+    },
+  });
+
+  const mDel = useMutation({
+    mutationFn: async () => {
+      if (!accountId) return;
+      await deleteAccount(accountId);
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["accounts.list"] });
+      await qc.invalidateQueries({ queryKey: ["accounts"] });
+      router.back();
+    },
+  });
 
   return (
-    <View style={styles.screen}>
-      <Stack.Screen options={{ title: "Cuenta" }} />
-      <ScrollView contentContainerStyle={styles.container}>
-        {qAcc.isLoading ? (
-          <Text style={styles.muted}>Cargando…</Text>
+    <>
+      <Stack.Screen
+        options={{
+          title: "Cuenta",
+          headerStyle: { backgroundColor: BG },
+          headerTintColor: TEXT,
+          headerTitleStyle: { color: TEXT },
+        }}
+      />
+      <View style={styles.screen}>
+        {!accountId ? (
+          <Text style={{ color: SUBTLE }}>Ruta inválida</Text>
+        ) : qAcc.isLoading ? (
+          <Text style={{ color: SUBTLE }}>Cargando…</Text>
         ) : qAcc.isError ? (
-          <Text style={styles.error}>Error: {String((qAcc.error as any)?.message || qAcc.error)}</Text>
+          <Text style={{ color: "#fecaca" }}>
+            Error: {String((qAcc.error as any)?.message || qAcc.error)}
+          </Text>
         ) : !qAcc.data ? (
-          <Text style={styles.muted}>No encontrado</Text>
+          <Text style={{ color: SUBTLE }}>No encontrada</Text>
         ) : (
           <>
-            {/* Encabezado */}
-            <View style={[styles.card, styles.headerCard]}>
-              <Text style={styles.title}>{qAcc.data.name}</Text>
-              {qAcc.data.website ? <Text style={styles.subtle}>Web: {qAcc.data.website}</Text> : null}
-              {qAcc.data.phone   ? <Text style={styles.subtle}>Tel: {qAcc.data.phone}</Text> : null}
-            </View>
+            {/* Datos editables */}
+            <Text style={styles.label}>Nombre</Text>
+            <TextInput
+              style={styles.input}
+              value={name}
+              onChangeText={setName}
+              placeholder="Nombre"
+              placeholderTextColor={SUBTLE}
+            />
 
-            {/* Acciones rápidas */}
-            <View style={styles.quickRow}>
-              <Link href="/contacts/new" asChild>
-                <Pressable style={({ pressed }) => [styles.quickBtn, pressed && styles.pressed]}>
-                  <Text style={styles.quickText}>＋ Nuevo contacto</Text>
-                </Pressable>
-              </Link>
-              <Link href="/deals/new" asChild>
-                <Pressable style={({ pressed }) => [styles.quickBtnSecondary, pressed && styles.pressed]}>
-                  <Text style={styles.quickText}>＋ Nueva oportunidad</Text>
-                </Pressable>
-              </Link>
-            </View>
+            <Text style={styles.label}>Website</Text>
+            <TextInput
+              style={styles.input}
+              value={website}
+              onChangeText={setWebsite}
+              placeholder="https://…"
+              placeholderTextColor={SUBTLE}
+              autoCapitalize="none"
+            />
 
-            {/* Contactos */}
-            <Text style={styles.section}>Contactos</Text>
-            {contacts.length === 0 ? (
-              <Text style={styles.muted}>No hay contactos asociados.</Text>
-            ) : (
-              <View style={styles.listCard}>
-                {contacts.map(c => (
+            <Text style={styles.label}>Teléfono</Text>
+            <TextInput
+              style={styles.input}
+              value={phone}
+              onChangeText={setPhone}
+              placeholder="Teléfono"
+              placeholderTextColor={SUBTLE}
+              keyboardType="phone-pad"
+            />
+
+            {/* Contactos asociados */}
+            <Text style={styles.section}>
+              Contactos asociados {contacts.length ? `(${contacts.length})` : ""}
+            </Text>
+            <View style={styles.box}>
+              {qCon.isLoading ? (
+                <Text style={{ color: SUBTLE, padding: 12 }}>
+                  Cargando contactos…
+                </Text>
+              ) : contacts.length === 0 ? (
+                <View style={{ padding: 12 }}>
+                  <Text style={{ color: SUBTLE, marginBottom: 8 }}>
+                    No hay contactos vinculados a esta cuenta.
+                  </Text>
+                  <Link href="/contacts/new" asChild>
+                    <Pressable style={[styles.smallBtn, { backgroundColor: ORANGE }]}>
+                      <Text style={styles.smallBtnText}>＋ Nuevo contacto</Text>
+                    </Pressable>
+                  </Link>
+                </View>
+              ) : (
+                contacts.map((c) => (
                   <Link key={c.id} href={`/contacts/${c.id}`} asChild>
-                    <Pressable style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                    <Pressable style={styles.row}>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.rowTitle}>{c.name}</Text>
-                        {c.email ? <Text style={styles.rowSub}>{c.email}</Text> : null}
+                        {!!(c.email || c.phone) && (
+                          <Text style={styles.rowSub}>
+                            {c.email ?? c.phone}
+                          </Text>
+                        )}
                       </View>
                     </Pressable>
                   </Link>
-                ))}
-              </View>
-            )}
+                ))
+              )}
+            </View>
 
-            {/* Oportunidades */}
-            <Text style={styles.section}>Oportunidades</Text>
-            {deals.length === 0 ? (
-              <Text style={styles.muted}>No hay oportunidades asociadas.</Text>
-            ) : (
-              <View style={styles.listCard}>
-                {deals.map((d: Deal) => (
-                  <Link key={d.id} href={`/deals/${d.id}`} asChild>
-                    <Pressable style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.rowTitle}>{d.title}</Text>
-                        <Text style={styles.rowSub}>
-                          {labelStage(d.stage)}{d.amount ? ` · $${Intl.NumberFormat().format(d.amount)}` : ""}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  </Link>
-                ))}
-              </View>
-            )}
+            {/* Acciones */}
+            <Pressable
+              style={[styles.btn, { backgroundColor: ORANGE }]}
+              onPress={() => mUpd.mutate()}
+              disabled={mUpd.isPending}
+            >
+              <Text style={styles.btnText}>
+                {mUpd.isPending ? "Guardando..." : "Guardar cambios"}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.btn, { backgroundColor: RED }]}
+              onPress={() => mDel.mutate()}
+              disabled={mDel.isPending}
+            >
+              <Text style={styles.btnText}>
+                {mDel.isPending ? "Eliminando..." : "Eliminar"}
+              </Text>
+            </Pressable>
           </>
         )}
-      </ScrollView>
-    </View>
+      </View>
+    </>
   );
 }
 
-function labelStage(s?: Deal["stage"]) {
-  switch (s) {
-    case "nuevo": return "Nuevo";
-    case "calificado": return "Calificado";
-    case "propuesta": return "Propuesta";
-    case "negociacion": return "Negociación";
-    case "ganado": return "Ganado";
-    case "perdido": return "Perdido";
-    default: return "—";
-  }
-}
-
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#0e0e0f" },
-  container: { padding: 16, gap: 14 },
+  screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
+  label: { color: TEXT, fontWeight: "800" },
+  input: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: CARD,
+    color: TEXT,
+    borderRadius: 12,
+    padding: 12,
+  },
 
-  // Tarjetas base
-  card: {
-    backgroundColor: "#1a1b1d",
-    borderRadius: 16,
+  section: { marginTop: 6, color: TEXT, fontWeight: "900", fontSize: 16 },
+  box: {
     borderWidth: 1,
-    borderColor: "#2a2a2c",
-    padding: 16,
-    ...cardShadowWeb,
-  },
-  headerCard: {
-    gap: 6,
-  },
-  listCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#2a2a2c",
+    borderColor: BORDER,
+    borderRadius: 12,
     overflow: "hidden",
-    backgroundColor: "#151517",
-    ...cardShadowWeb,
+    backgroundColor: CARD,
   },
-
-  // Textos
-  title: { fontSize: 22, fontWeight: "900", color: "#fff" },
-  subtle: { color: "#c7c7c7" },
-  section: { marginTop: 8, fontWeight: "900", fontSize: 16, color: "#fff" },
-  muted: { color: "rgba(255,255,255,0.65)" },
-  error: { color: "#fecaca" },
-
-  // Filas listas
   row: {
-    padding: 14,
+    padding: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#222326",
-    backgroundColor: "#151517",
+    borderBottomColor: BORDER,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
-  rowTitle: { fontWeight: "800", color: "#f3f4f6" },
-  rowSub: { fontSize: 12, color: "#bdbdbd", marginTop: 2 },
+  rowTitle: { color: TEXT, fontWeight: "800" },
+  rowSub: { color: SUBTLE, fontSize: 12 },
 
-  // Botones
-  pressed: { opacity: 0.9 },
-  quickRow: { flexDirection: "row", gap: 10 },
-  quickBtn: {
-    flex: 1,
-    borderRadius: 12,
-    padding: 14,
+  btn: { marginTop: 8, padding: 12, borderRadius: 12, alignItems: "center" },
+  btnText: { color: "#fff", fontWeight: "900" },
+  smallBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: ORANGE,
+    alignSelf: "flex-start",
   },
-  quickBtnSecondary: {
-    flex: 1,
-    borderRadius: 12,
-    padding: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: ORANGE_DARK,
-  },
-  quickText: { color: "#fff", fontWeight: "900" },
+  smallBtnText: { color: "#fff", fontWeight: "900" },
 });
 
 // // app/accounts/[id].tsx

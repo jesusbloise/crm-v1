@@ -9,7 +9,7 @@ import {
     type DealStage,
 } from "@/src/api/deals";
 
-// 👇 NUEVO: APIs de actividades y notas
+// Activities & Notes
 import {
     createActivity,
     deleteActivity,
@@ -35,7 +35,6 @@ import {
     TextInput,
     View,
 } from "react-native";
-
 
 const STAGES: DealStage[] = [
   "nuevo",
@@ -68,16 +67,16 @@ export default function DealDetail() {
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
   const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
 
-  // Actividades del deal
+  // Actividades del deal (clave estable)
   const qAct = useQuery({
-    queryKey: ["activities", { dealId }],
+    queryKey: ["activities", dealId],
     queryFn: () => listActivitiesByDeal(dealId!),
     enabled: !!dealId,
   });
 
-  // Notas del deal
+  // Notas del deal (clave estable)
   const qNotes = useQuery({
-    queryKey: ["notes", { dealId }],
+    queryKey: ["notes", dealId],
     queryFn: () => listNotesByDeal(dealId!),
     enabled: !!dealId,
   });
@@ -108,7 +107,8 @@ export default function DealDetail() {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["deal", dealId] }),
         qc.invalidateQueries({ queryKey: ["deals"] }),
-        qc.invalidateQueries({ queryKey: ["activities", { dealId }] }),
+        qc.invalidateQueries({ queryKey: ["activities", dealId] }),
+        qc.invalidateQueries({ queryKey: ["notes", dealId] }),
       ]);
     },
   });
@@ -152,23 +152,25 @@ export default function DealDetail() {
     },
     onSuccess: async () => {
       setNewTaskTitle("");
-      await qc.invalidateQueries({ queryKey: ["activities", { dealId }] });
+      await qc.invalidateQueries({ queryKey: ["activities", dealId] });
     },
   });
 
   const mToggleDone = useMutation({
     mutationFn: async (a: Activity) => {
-      await updateActivity(a.id, { status: a.status === "open" ? "done" : "open" });
+      await updateActivity(a.id, {
+        status: a.status === "open" ? "done" : "open",
+      });
     },
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["activities", { dealId }] });
+      await qc.invalidateQueries({ queryKey: ["activities", dealId] });
     },
   });
 
   const mDelAct = useMutation({
     mutationFn: async (id: string) => deleteActivity(id),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["activities", { dealId }] });
+      await qc.invalidateQueries({ queryKey: ["activities", dealId] });
     },
   });
 
@@ -188,14 +190,14 @@ export default function DealDetail() {
     },
     onSuccess: async () => {
       setNewNote("");
-      await qc.invalidateQueries({ queryKey: ["notes", { dealId }] });
+      await qc.invalidateQueries({ queryKey: ["notes", dealId] });
     },
   });
 
   const mDelNote = useMutation({
     mutationFn: async (id: string) => deleteNote(id),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["notes", { dealId }] });
+      await qc.invalidateQueries({ queryKey: ["notes", dealId] });
     },
   });
 
@@ -250,6 +252,9 @@ export default function DealDetail() {
                     key={s}
                     onPress={() => setStage(s)}
                     style={[styles.pill, active && styles.pillActive]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    hitSlop={8}
                   >
                     <Text
                       style={[styles.pillText, active && styles.pillTextActive]}
@@ -268,7 +273,7 @@ export default function DealDetail() {
                 <Text style={styles.rowTitle}>Cuenta</Text>
                 {account ? (
                   <Link href={`/accounts/${account.id}`} asChild>
-                    <Pressable>
+                    <Pressable accessibilityRole="link" hitSlop={8}>
                       <Text style={styles.link}>{account.name}</Text>
                     </Pressable>
                   </Link>
@@ -280,7 +285,7 @@ export default function DealDetail() {
                 <Text style={styles.rowTitle}>Contacto</Text>
                 {contact ? (
                   <Link href={`/contacts/${contact.id}`} asChild>
-                    <Pressable>
+                    <Pressable accessibilityRole="link" hitSlop={8}>
                       <Text style={styles.link}>{contact.name}</Text>
                     </Pressable>
                   </Link>
@@ -289,8 +294,6 @@ export default function DealDetail() {
                 )}
               </View>
             </View>
-
-          
 
             {/* ----------------- ACTIVIDADES ----------------- */}
             <Text style={styles.section}>Actividades</Text>
@@ -306,54 +309,81 @@ export default function DealDetail() {
                 />
                 <Pressable
                   onPress={() => mCreateAct.mutate()}
-                  style={[styles.smallBtn, { backgroundColor: ORANGE }]}
+                  style={[
+                    styles.smallBtn,
+                    { backgroundColor: ORANGE, opacity: mCreateAct.isPending ? 0.7 : 1 },
+                  ]}
+                  disabled={mCreateAct.isPending}
+                  accessibilityRole="button"
+                  hitSlop={8}
                 >
                   <Text style={styles.smallBtnText}>Crear</Text>
                 </Pressable>
               </View>
 
               {/* Lista */}
-              <View>
-                {(qAct.data ?? []).map((a) => (
-                  <View key={a.id} style={styles.row}>
-                    <View style={{ flex: 1 }}>
-                      <Text
+              {qAct.isError ? (
+                <Text style={{ color: "#fecaca", padding: 12 }}>
+                  Error cargando actividades.
+                </Text>
+              ) : (
+                <View>
+                  {(qAct.data ?? []).map((a) => (
+                    <View key={a.id} style={styles.row}>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            styles.rowTitle,
+                            a.status !== "open" && {
+                              textDecorationLine: "line-through",
+                              color: SUBTLE,
+                            },
+                          ]}
+                        >
+                          {a.title}
+                        </Text>
+                        <Text style={{ color: SUBTLE, fontSize: 12 }}>
+                          {a.type} · {a.status}
+                        </Text>
+                      </View>
+
+                      <Pressable
+                        onPress={() => mToggleDone.mutate(a)}
                         style={[
-                          styles.rowTitle,
-                          a.status !== "open" && { textDecorationLine: "line-through", color: SUBTLE },
+                          styles.smallBtn,
+                          { backgroundColor: "#374151", opacity: mToggleDone.isPending ? 0.7 : 1 },
                         ]}
+                        disabled={mToggleDone.isPending}
+                        accessibilityRole="button"
+                        hitSlop={8}
                       >
-                        {a.title}
-                      </Text>
-                      <Text style={{ color: SUBTLE, fontSize: 12 }}>
-                        {a.type} · {a.status}
-                      </Text>
+                        <Text style={styles.smallBtnText}>
+                          {a.status === "open" ? "Hecha" : "Abrir"}
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => mDelAct.mutate(a.id)}
+                        style={[
+                          styles.smallBtn,
+                          { backgroundColor: "#ef4444", opacity: mDelAct.isPending ? 0.7 : 1 },
+                        ]}
+                        disabled={mDelAct.isPending}
+                        accessibilityRole="button"
+                        hitSlop={8}
+                      >
+                        <Text style={styles.smallBtnText}>Borrar</Text>
+                      </Pressable>
                     </View>
+                  ))}
 
-                    <Pressable
-                      onPress={() => mToggleDone.mutate(a)}
-                      style={[styles.smallBtn, { backgroundColor: "#374151" }]}
-                    >
-                      <Text style={styles.smallBtnText}>
-                        {a.status === "open" ? "Hecha" : "Abrir"}
-                      </Text>
-                    </Pressable>
-
-                    <Pressable
-                      onPress={() => mDelAct.mutate(a.id)}
-                      style={[styles.smallBtn, { backgroundColor: "#ef4444" }]}
-                    >
-                      <Text style={styles.smallBtnText}>Borrar</Text>
-                    </Pressable>
-                  </View>
-                ))}
-
-                {(qAct.data ?? []).length === 0 && (
-                  <Text style={{ color: SUBTLE, padding: 12 }}>
-                    Sin actividades todavía.
-                  </Text>
-                )}
-              </View>
+                  {(qAct.data ?? []).length === 0 && (
+                    <Text style={{ color: SUBTLE, padding: 12 }}>
+                      Sin actividades todavía.
+                    </Text>
+                  )}
+                </View>
+              )}
             </View>
 
             {/* ----------------- NOTAS ----------------- */}
@@ -369,38 +399,60 @@ export default function DealDetail() {
                 />
                 <Pressable
                   onPress={() => mCreateNote.mutate()}
-                  style={[styles.smallBtn, { backgroundColor: ORANGE }]}
+                  style={[
+                    styles.smallBtn,
+                    { backgroundColor: ORANGE, opacity: mCreateNote.isPending ? 0.7 : 1 },
+                  ]}
+                  disabled={mCreateNote.isPending}
+                  accessibilityRole="button"
+                  hitSlop={8}
                 >
                   <Text style={styles.smallBtnText}>Agregar</Text>
                 </Pressable>
               </View>
 
-              {(qNotes.data ?? []).map((n) => (
-                <View key={n.id} style={styles.row}>
-                  <Text style={{ color: TEXT, flex: 1 }}>{n.body}</Text>
-                  <Pressable
-                    onPress={() => mDelNote.mutate(n.id)}
-                    style={[styles.smallBtn, { backgroundColor: "#ef4444" }]}
-                  >
-                    <Text style={styles.smallBtnText}>Borrar</Text>
-                  </Pressable>
-                </View>
-              ))}
-
-              {(qNotes.data ?? []).length === 0 && (
-                <Text style={{ color: SUBTLE, padding: 12 }}>
-                  No hay notas.
+              {qNotes.isError ? (
+                <Text style={{ color: "#fecaca", padding: 12 }}>
+                  Error cargando notas.
                 </Text>
+              ) : (
+                <>
+                  {(qNotes.data ?? []).map((n) => (
+                    <View key={n.id} style={styles.row}>
+                      <Text style={{ color: TEXT, flex: 1 }}>{n.body}</Text>
+                      <Pressable
+                        onPress={() => mDelNote.mutate(n.id)}
+                        style={[
+                          styles.smallBtn,
+                          { backgroundColor: "#ef4444", opacity: mDelNote.isPending ? 0.7 : 1 },
+                        ]}
+                        disabled={mDelNote.isPending}
+                        accessibilityRole="button"
+                        hitSlop={8}
+                      >
+                        <Text style={styles.smallBtnText}>Borrar</Text>
+                      </Pressable>
+                    </View>
+                  ))}
+
+                  {(qNotes.data ?? []).length === 0 && (
+                    <Text style={{ color: SUBTLE, padding: 12 }}>No hay notas.</Text>
+                  )}
+                </>
               )}
             </View>
-              {/* Acciones */}
+
+            {/* Acciones */}
             <Pressable
               style={({ pressed }) => [
                 styles.primaryBtn,
                 pressed && styles.pressed,
+                mSave.isPending && { opacity: 0.8 },
               ]}
               onPress={() => mSave.mutate()}
               disabled={mSave.isPending}
+              accessibilityRole="button"
+              hitSlop={8}
             >
               <Text style={styles.primaryBtnText}>
                 {mSave.isPending ? "Guardando..." : "Guardar cambios"}
@@ -411,9 +463,12 @@ export default function DealDetail() {
               style={({ pressed }) => [
                 styles.dangerBtn,
                 pressed && styles.pressed,
+                mDelete.isPending && { opacity: 0.8 },
               ]}
               onPress={() => mDelete.mutate()}
               disabled={mDelete.isPending}
+              accessibilityRole="button"
+              hitSlop={8}
             >
               <Text style={styles.primaryBtnText}>
                 {mDelete.isPending ? "Eliminando..." : "Eliminar"}
@@ -507,6 +562,7 @@ const styles = StyleSheet.create({
   },
   smallBtnText: { color: "#fff", fontWeight: "800" },
 });
+
 
 
 // // app/deals/[id].tsx
