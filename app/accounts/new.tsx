@@ -1,4 +1,3 @@
-
 // app/accounts/new.tsx
 import { createAccount } from "@/src/api/accounts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -6,12 +5,14 @@ import { Stack, router } from "expo-router";
 import React, { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-const ORANGE = "#FF6A00";
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
+/* 🎨 Tema consistente (Home / Deals / Contacts) */
+const BG      = "#0b0c10";
+const CARD    = "#14151a";
+const FIELD   = "#121318";
+const BORDER  = "#272a33";
+const TEXT    = "#e8ecf1";
+const SUBTLE  = "#a9b0bd";
+const ACCENT  = "#7c3aed";   // morado principal
 
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
@@ -24,17 +25,28 @@ export default function NewAccount() {
   const m = useMutation({
     mutationFn: async () => {
       if (!name.trim()) throw new Error("Nombre requerido");
-      await createAccount({ id: uid(), name, website, phone } as any);
+      await createAccount({ id: uid(), name: name.trim(), website, phone } as any);
     },
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["accounts"] }),
+        qc.invalidateQueries({ queryKey: ["accounts.list"] }),
+      ]);
       router.back();
     },
   });
 
   return (
     <View style={styles.screen}>
-      <Stack.Screen options={{ title: "Nueva Cuenta" }} />
+      <Stack.Screen
+        options={{
+          title: "Nueva Cuenta",
+          headerStyle: { backgroundColor: BG },
+          headerTintColor: TEXT,
+          headerTitleStyle: { color: TEXT, fontWeight: "800" },
+          headerShadowVisible: false,
+        }}
+      />
 
       <View style={styles.form}>
         <TextInput
@@ -98,27 +110,30 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: CARD,
+    backgroundColor: FIELD,
     color: TEXT,
     borderRadius: 12,
     padding: 12,
   },
   btn: {
-    backgroundColor: ORANGE,
+    backgroundColor: ACCENT,
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: "center",
     justifyContent: "center",
     marginTop: 4,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
   },
   btnText: {
     color: "#fff",
     fontWeight: "900",
   },
-  pressed: { opacity: 0.9 },
-  disabled: { opacity: 0.6 },
+  pressed: { opacity: 0.92 },
+  disabled: { opacity: 0.65 },
   errorText: { color: "#fecaca", fontSize: 12 },
 });
+
 
 // import { createAccount } from "@/src/api/accounts";
 // import { useMutation, useQueryClient } from "@tanstack/react-query";

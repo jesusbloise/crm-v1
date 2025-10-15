@@ -1,11 +1,14 @@
-import { API_BASE } from "@/src/config";
+import { api } from "@/src/api";
+
+export type ActivityType   = "task" | "call" | "meeting";
+export type ActivityStatus = "open" | "done" | "canceled";
 
 export type Activity = {
   id: string;
-  type: "task" | "call" | "meeting";
+  type: ActivityType;
   title: string;
   due_date?: number | null;
-  status: "open" | "done" | "canceled";
+  status: ActivityStatus;
   notes?: string | null;
   account_id?: string | null;
   contact_id?: string | null;
@@ -15,88 +18,146 @@ export type Activity = {
   updated_at: number;
 };
 
-const API = API_BASE;
-
-/** Fetch con mejores mensajes de error (no cambia el contrato del server) */
-async function safeFetch(input: RequestInfo, init?: RequestInit) {
-  const r = await fetch(input, {
-    // evita problemas de CORS en web y cuelgues en móviles
-    keepalive: true,
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-  });
-  if (!r.ok) {
-    let msg = `HTTP ${r.status}`;
-    try {
-      const data = await r.json();
-      msg = typeof data?.error === "string" ? data.error : msg;
-    } catch {
-      try {
-        msg = await r.text();
-      } catch {}
-    }
-    throw new Error(msg || "Network error");
-  }
-  // algunos DELETE devuelven {ok:true}
-  try {
-    return await r.json();
-  } catch {
-    return null as unknown as any;
-  }
-}
-
-/** Lista actividades con filtros opcionales */
-export async function listActivities(params?: {
+/** Lista genérica con filtros opcionales. */
+export async function listActivities(filters?: {
   deal_id?: string;
   contact_id?: string;
   account_id?: string;
   lead_id?: string;
-  status?: "open" | "done" | "canceled";
+  status?: ActivityStatus;
 }): Promise<Activity[]> {
   const qs = new URLSearchParams();
-  if (params?.deal_id) qs.set("deal_id", params.deal_id);
-  if (params?.contact_id) qs.set("contact_id", params.contact_id);
-  if (params?.account_id) qs.set("account_id", params.account_id);
-  if (params?.lead_id) qs.set("lead_id", params.lead_id);
-  if (params?.status) qs.set("status", params.status);
-
-  const url = `${API}/activities${qs.toString() ? `?${qs.toString()}` : ""}`;
-  return safeFetch(url);
+  if (filters?.deal_id) qs.set("deal_id", filters.deal_id);
+  if (filters?.contact_id) qs.set("contact_id", filters.contact_id);
+  if (filters?.account_id) qs.set("account_id", filters.account_id);
+  if (filters?.lead_id) qs.set("lead_id", filters.lead_id);
+  if (filters?.status) qs.set("status", filters.status);
+  const q = qs.toString();
+  return api.get(`/activities${q ? `?${q}` : ""}`);
 }
 
-/** Atajo: lista por deal */
-export function listActivitiesByDeal(dealId: string): Promise<Activity[]> {
+/** Helpers específicos (compatibles con tu UI actual). */
+export async function listActivitiesByDeal(dealId: string): Promise<Activity[]> {
   return listActivities({ deal_id: dealId });
 }
 
-/** Crea actividad (respetando el contrato del server) */
-export async function createActivity(body: Partial<Activity>) {
-  return safeFetch(`${API}/activities`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export async function createActivity(
+  input: Omit<Activity, "created_at" | "updated_at">
+): Promise<void> {
+  await api.post("/activities", input);
 }
 
-/** Actualiza actividad por id */
-export async function updateActivity(id: string, body: Partial<Activity>) {
-  return safeFetch(`${API}/activities/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+export async function updateActivity(
+  id: string,
+  patch: Partial<Activity>
+): Promise<void> {
+  await api.patch(`/activities/${id}`, patch);
 }
 
-/** Borra actividad por id */
-export async function deleteActivity(id: string) {
-  return safeFetch(`${API}/activities/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+export async function deleteActivity(id: string): Promise<void> {
+  await api.del(`/activities/${id}`);
 }
 
-/** Helper opcional: alterna open/done (útil para botones) */
-export async function toggleActivityStatus(a: Activity) {
-  const next = a.status === "open" ? "done" : "open";
-  return updateActivity(a.id, { status: next });
-}
+
+// import { API_BASE } from "@/src/config";
+
+// export type Activity = {
+//   id: string;
+//   type: "task" | "call" | "meeting";
+//   title: string;
+//   due_date?: number | null;
+//   status: "open" | "done" | "canceled";
+//   notes?: string | null;
+//   account_id?: string | null;
+//   contact_id?: string | null;
+//   lead_id?: string | null;
+//   deal_id?: string | null;
+//   created_at: number;
+//   updated_at: number;
+// };
+
+// const API = API_BASE;
+
+// /** Fetch con mejores mensajes de error (no cambia el contrato del server) */
+// async function safeFetch(input: RequestInfo, init?: RequestInit) {
+//   const r = await fetch(input, {
+//     // evita problemas de CORS en web y cuelgues en móviles
+//     keepalive: true,
+//     ...init,
+//     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+//   });
+//   if (!r.ok) {
+//     let msg = `HTTP ${r.status}`;
+//     try {
+//       const data = await r.json();
+//       msg = typeof data?.error === "string" ? data.error : msg;
+//     } catch {
+//       try {
+//         msg = await r.text();
+//       } catch {}
+//     }
+//     throw new Error(msg || "Network error");
+//   }
+//   // algunos DELETE devuelven {ok:true}
+//   try {
+//     return await r.json();
+//   } catch {
+//     return null as unknown as any;
+//   }
+// }
+
+// /** Lista actividades con filtros opcionales */
+// export async function listActivities(params?: {
+//   deal_id?: string;
+//   contact_id?: string;
+//   account_id?: string;
+//   lead_id?: string;
+//   status?: "open" | "done" | "canceled";
+// }): Promise<Activity[]> {
+//   const qs = new URLSearchParams();
+//   if (params?.deal_id) qs.set("deal_id", params.deal_id);
+//   if (params?.contact_id) qs.set("contact_id", params.contact_id);
+//   if (params?.account_id) qs.set("account_id", params.account_id);
+//   if (params?.lead_id) qs.set("lead_id", params.lead_id);
+//   if (params?.status) qs.set("status", params.status);
+
+//   const url = `${API}/activities${qs.toString() ? `?${qs.toString()}` : ""}`;
+//   return safeFetch(url);
+// }
+
+// /** Atajo: lista por deal */
+// export function listActivitiesByDeal(dealId: string): Promise<Activity[]> {
+//   return listActivities({ deal_id: dealId });
+// }
+
+// /** Crea actividad (respetando el contrato del server) */
+// export async function createActivity(body: Partial<Activity>) {
+//   return safeFetch(`${API}/activities`, {
+//     method: "POST",
+//     body: JSON.stringify(body),
+//   });
+// }
+
+// /** Actualiza actividad por id */
+// export async function updateActivity(id: string, body: Partial<Activity>) {
+//   return safeFetch(`${API}/activities/${encodeURIComponent(id)}`, {
+//     method: "PATCH",
+//     body: JSON.stringify(body),
+//   });
+// }
+
+// /** Borra actividad por id */
+// export async function deleteActivity(id: string) {
+//   return safeFetch(`${API}/activities/${encodeURIComponent(id)}`, {
+//     method: "DELETE",
+//   });
+// }
+
+// /** Helper opcional: alterna open/done (útil para botones) */
+// export async function toggleActivityStatus(a: Activity) {
+//   const next = a.status === "open" ? "done" : "open";
+//   return updateActivity(a.id, { status: next });
+// }
 
 
 // import { API_BASE } from "@/src/config";

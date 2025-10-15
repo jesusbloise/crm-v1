@@ -1,106 +1,202 @@
 // src/api/accounts.ts
-import { API_BASE } from "@/src/config";
+import { api } from "@/src/api";
 
 export type Account = {
   id: string;
   name: string;
   website?: string | null;
   phone?: string | null;
-  created_at?: number;
-  updated_at?: number;
+  created_at: number;
+  updated_at: number;
 };
 
-export type ListAccountsPagedInput = {
-  q: string;
-  cursor: string | null;     // id del último item de la página anterior
-  limit: number;
+export type AccountsPage = {
+  items: Account[];
+  nextCursor: string | null;
 };
 
-export type AccountsPage = { items: Account[]; nextCursor: string | null };
+// ✅ Acepta array (legacy) o formato paginado
+export async function listAccountsPaged(params: {
+  q?: string;
+  cursor?: string | null;
+  limit?: number;
+}): Promise<AccountsPage> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set("q", params.q);                  // no mandes q vacía
+  if (params.cursor) qs.set("cursor", params.cursor);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
 
-const API = API_BASE;
+  const data = await api.get(`/accounts${suffix}`);
 
-/* ===== Listado simple (sin paginar) ===== */
+  // Si el backend devuelve un array: envuélvelo como página
+  if (Array.isArray(data)) {
+    return { items: data as Account[], nextCursor: null };
+  }
+
+  // Si ya viene paginado, úsalo tal cual
+  if (data && Array.isArray((data as any).items)) {
+    return data as AccountsPage;
+  }
+
+  // Fallback defensivo
+  return { items: [], nextCursor: null };
+}
+
+/* --- resto CRUD si ya lo tienes igual --- */
 export async function listAccounts(): Promise<Account[]> {
-  const r = await fetch(`${API}/accounts`);
-  if (!r.ok) throw new Error("Error listando cuentas");
-  return r.json();
+  return api.get("/accounts");
 }
-
-/* ===== Listado paginado (shim en cliente) =====
-   Si tu server NO tiene paginación, esto pagina en memoria.
-   Si más adelante agregas paginación real en server, cambia esta
-   función para llamar `${API}/accounts?q=...&cursor=...&limit=...`
-   y devolver { items, nextCursor } del backend.
-*/
-export async function listAccountsPaged(
-  { q, cursor, limit }: ListAccountsPagedInput
-): Promise<AccountsPage> {
-  const all = await listAccounts();
-
-  const qNorm = q.trim().toLowerCase();
-  const filtered = qNorm
-    ? all.filter(a =>
-        (a.name ?? "").toLowerCase().includes(qNorm) ||
-        (a.website ?? "").toLowerCase().includes(qNorm) ||
-        (a.phone ?? "").toLowerCase().includes(qNorm)
-      )
-    : all;
-
-  // Orden: updated_at desc, y luego nombre
-  filtered.sort((a, b) => {
-    const ua = a.updated_at ?? 0, ub = b.updated_at ?? 0;
-    if (ua !== ub) return ub - ua;
-    return (a.name ?? "").localeCompare(b.name ?? "");
-  });
-
-  const start = cursor
-    ? Math.max(0, filtered.findIndex(x => x.id === cursor) + 1)
-    : 0;
-
-  const items = filtered.slice(start, start + limit);
-  const nextCursor =
-    start + limit < filtered.length && items.length > 0
-      ? items[items.length - 1].id
-      : null;
-
-  return { items, nextCursor };
-}
-
-/* ===== CRUD ===== */
 export async function getAccount(id: string): Promise<Account> {
-  const r = await fetch(`${API}/accounts/${encodeURIComponent(id)}`);
-  if (!r.ok) throw new Error("Cuenta no encontrada");
-  return r.json();
+  return api.get(`/accounts/${id}`);
+}
+export async function createAccount(
+  input: Omit<Account, "created_at" | "updated_at">
+): Promise<void> {
+  await api.post("/accounts", input);
+}
+export async function updateAccount(
+  id: string,
+  patch: Partial<Account>
+): Promise<void> {
+  await api.patch(`/accounts/${id}`, patch);
+}
+export async function deleteAccount(id: string): Promise<void> {
+  await api.del(`/accounts/${id}`);
 }
 
-export async function createAccount(body: Partial<Account>) {
-  const r = await fetch(`${API}/accounts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error("Error creando cuenta");
-  return r.json();
-}
 
-export async function updateAccount(id: string, body: Partial<Account>) {
-  const r = await fetch(`${API}/accounts/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error("Error actualizando cuenta");
-  return r.json();
-}
+// import { api } from "@/src/api";
 
-export async function deleteAccount(id: string) {
-  const r = await fetch(`${API}/accounts/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-  if (!r.ok) throw new Error("Error eliminando cuenta");
-  return r.json();
-}
+// export type Account = {
+//   id: string;
+//   name: string;
+//   website?: string | null;
+//   phone?: string | null;
+//   created_at: number;
+//   updated_at: number;
+// };
+
+// export async function listAccounts(): Promise<Account[]> {
+//   return api.get("/accounts");
+// }
+// export async function getAccount(id: string): Promise<Account> {
+//   return api.get(`/accounts/${id}`);
+// }
+// export async function createAccount(input: Omit<Account, "created_at"|"updated_at">): Promise<void> {
+//   await api.post("/accounts", input);
+// }
+// export async function updateAccount(id: string, patch: Partial<Account>): Promise<void> {
+//   await api.patch(`/accounts/${id}`, patch);
+// }
+// export async function deleteAccount(id: string): Promise<void> {
+//   await api.del(`/accounts/${id}`);
+// }
+
+
+// // src/api/accounts.ts
+// import { API_BASE } from "@/src/config";
+
+// export type Account = {
+//   id: string;
+//   name: string;
+//   website?: string | null;
+//   phone?: string | null;
+//   created_at?: number;
+//   updated_at?: number;
+// };
+
+// export type ListAccountsPagedInput = {
+//   q: string;
+//   cursor: string | null;     // id del último item de la página anterior
+//   limit: number;
+// };
+
+// export type AccountsPage = { items: Account[]; nextCursor: string | null };
+
+// const API = API_BASE;
+
+// /* ===== Listado simple (sin paginar) ===== */
+// export async function listAccounts(): Promise<Account[]> {
+//   const r = await fetch(`${API}/accounts`);
+//   if (!r.ok) throw new Error("Error listando cuentas");
+//   return r.json();
+// }
+
+// /* ===== Listado paginado (shim en cliente) =====
+//    Si tu server NO tiene paginación, esto pagina en memoria.
+//    Si más adelante agregas paginación real en server, cambia esta
+//    función para llamar `${API}/accounts?q=...&cursor=...&limit=...`
+//    y devolver { items, nextCursor } del backend.
+// */
+// export async function listAccountsPaged(
+//   { q, cursor, limit }: ListAccountsPagedInput
+// ): Promise<AccountsPage> {
+//   const all = await listAccounts();
+
+//   const qNorm = q.trim().toLowerCase();
+//   const filtered = qNorm
+//     ? all.filter(a =>
+//         (a.name ?? "").toLowerCase().includes(qNorm) ||
+//         (a.website ?? "").toLowerCase().includes(qNorm) ||
+//         (a.phone ?? "").toLowerCase().includes(qNorm)
+//       )
+//     : all;
+
+//   // Orden: updated_at desc, y luego nombre
+//   filtered.sort((a, b) => {
+//     const ua = a.updated_at ?? 0, ub = b.updated_at ?? 0;
+//     if (ua !== ub) return ub - ua;
+//     return (a.name ?? "").localeCompare(b.name ?? "");
+//   });
+
+//   const start = cursor
+//     ? Math.max(0, filtered.findIndex(x => x.id === cursor) + 1)
+//     : 0;
+
+//   const items = filtered.slice(start, start + limit);
+//   const nextCursor =
+//     start + limit < filtered.length && items.length > 0
+//       ? items[items.length - 1].id
+//       : null;
+
+//   return { items, nextCursor };
+// }
+
+// /* ===== CRUD ===== */
+// export async function getAccount(id: string): Promise<Account> {
+//   const r = await fetch(`${API}/accounts/${encodeURIComponent(id)}`);
+//   if (!r.ok) throw new Error("Cuenta no encontrada");
+//   return r.json();
+// }
+
+// export async function createAccount(body: Partial<Account>) {
+//   const r = await fetch(`${API}/accounts`, {
+//     method: "POST",
+//     headers: { "Content-Type": "application/json" },
+//     body: JSON.stringify(body),
+//   });
+//   if (!r.ok) throw new Error("Error creando cuenta");
+//   return r.json();
+// }
+
+// export async function updateAccount(id: string, body: Partial<Account>) {
+//   const r = await fetch(`${API}/accounts/${encodeURIComponent(id)}`, {
+//     method: "PATCH",
+//     headers: { "Content-Type": "application/json" },
+//     body: JSON.stringify(body),
+//   });
+//   if (!r.ok) throw new Error("Error actualizando cuenta");
+//   return r.json();
+// }
+
+// export async function deleteAccount(id: string) {
+//   const r = await fetch(`${API}/accounts/${encodeURIComponent(id)}`, {
+//     method: "DELETE",
+//   });
+//   if (!r.ok) throw new Error("Error eliminando cuenta");
+//   return r.json();
+// }
 
 
 

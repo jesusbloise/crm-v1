@@ -6,13 +6,15 @@ import { Link, Stack, router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
-const ORANGE = "#FF6A00";
-const RED = "#ef4444";
+/* 🎨 Tema consistente (Home / Deals / Contacts) */
+const BG      = "#0b0c10";
+const CARD    = "#14151a";
+const FIELD   = "#121318";
+const BORDER  = "#272a33";
+const TEXT    = "#e8ecf1";
+const SUBTLE  = "#a9b0bd";
+const ACCENT  = "#7c3aed";   // morado principal
+const DANGER  = "#ef4444";
 
 export default function AccountDetail() {
   const { id } = useLocalSearchParams<{ id?: string | string[] }>();
@@ -26,10 +28,8 @@ export default function AccountDetail() {
     enabled: !!accountId,
   });
 
-  // Traemos todos los contactos (como ya haces en otras pantallas)
   const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
 
-  // Filtramos contactos asociados a esta cuenta
   const contacts = useMemo(
     () => (qCon.data ?? []).filter((c) => c.account_id === accountId),
     [qCon.data, accountId]
@@ -57,9 +57,12 @@ export default function AccountDetail() {
       });
     },
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["account", accountId] });
-      await qc.invalidateQueries({ queryKey: ["accounts.list"] });
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["account", accountId] }),
+        qc.invalidateQueries({ queryKey: ["accounts.list"] }),
+        qc.invalidateQueries({ queryKey: ["accounts"] }),
+        qc.invalidateQueries({ queryKey: ["contacts"] }),
+      ]);
     },
   });
 
@@ -69,8 +72,10 @@ export default function AccountDetail() {
       await deleteAccount(accountId);
     },
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["accounts.list"] });
-      await qc.invalidateQueries({ queryKey: ["accounts"] });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["accounts.list"] }),
+        qc.invalidateQueries({ queryKey: ["accounts"] }),
+      ]);
       router.back();
     },
   });
@@ -82,7 +87,8 @@ export default function AccountDetail() {
           title: "Cuenta",
           headerStyle: { backgroundColor: BG },
           headerTintColor: TEXT,
-          headerTitleStyle: { color: TEXT },
+          headerTitleStyle: { color: TEXT, fontWeight: "800" },
+          headerShadowVisible: false,
         }}
       />
       <View style={styles.screen}>
@@ -116,6 +122,7 @@ export default function AccountDetail() {
               placeholder="https://…"
               placeholderTextColor={SUBTLE}
               autoCapitalize="none"
+              keyboardType="url"
             />
 
             <Text style={styles.label}>Teléfono</Text>
@@ -143,7 +150,7 @@ export default function AccountDetail() {
                     No hay contactos vinculados a esta cuenta.
                   </Text>
                   <Link href="/contacts/new" asChild>
-                    <Pressable style={[styles.smallBtn, { backgroundColor: ORANGE }]}>
+                    <Pressable style={[styles.smallBtn, styles.btnPrimary]}>
                       <Text style={styles.smallBtnText}>＋ Nuevo contacto</Text>
                     </Pressable>
                   </Link>
@@ -168,7 +175,7 @@ export default function AccountDetail() {
 
             {/* Acciones */}
             <Pressable
-              style={[styles.btn, { backgroundColor: ORANGE }]}
+              style={[styles.btn, styles.btnPrimary, mUpd.isPending && { opacity: 0.9 }]}
               onPress={() => mUpd.mutate()}
               disabled={mUpd.isPending}
             >
@@ -178,7 +185,7 @@ export default function AccountDetail() {
             </Pressable>
 
             <Pressable
-              style={[styles.btn, { backgroundColor: RED }]}
+              style={[styles.btn, styles.btnDanger, mDel.isPending && { opacity: 0.9 }]}
               onPress={() => mDel.mutate()}
               disabled={mDel.isPending}
             >
@@ -195,17 +202,18 @@ export default function AccountDetail() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
+
   label: { color: TEXT, fontWeight: "800" },
   input: {
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: CARD,
+    backgroundColor: FIELD,
     color: TEXT,
     borderRadius: 12,
     padding: 12,
   },
 
-  section: { marginTop: 6, color: TEXT, fontWeight: "900", fontSize: 16 },
+  section: { marginTop: 8, color: TEXT, fontWeight: "900", fontSize: 16 },
   box: {
     borderWidth: 1,
     borderColor: BORDER,
@@ -224,8 +232,20 @@ const styles = StyleSheet.create({
   rowTitle: { color: TEXT, fontWeight: "800" },
   rowSub: { color: SUBTLE, fontSize: 12 },
 
-  btn: { marginTop: 8, padding: 12, borderRadius: 12, alignItems: "center" },
+  btn: {
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 12,
+    alignItems: "center",
+  },
   btnText: { color: "#fff", fontWeight: "900" },
+  btnPrimary: {
+    backgroundColor: ACCENT,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  btnDanger: { backgroundColor: DANGER },
+
   smallBtn: {
     paddingVertical: 10,
     paddingHorizontal: 12,
@@ -236,6 +256,7 @@ const styles = StyleSheet.create({
   },
   smallBtnText: { color: "#fff", fontWeight: "900" },
 });
+
 
 // // app/accounts/[id].tsx
 // import { getAccount } from "@/src/api/accounts";

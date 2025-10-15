@@ -3,16 +3,17 @@ import { createLead } from "@/src/api/leads";
 import { uid } from "@/src/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
-import { useState } from "react";
+import React, { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-// 🎨 Tema
-const ORANGE = "#FF6A00";
-const BG = "#0e0e0f";
-const CARD = "#151517";
-const BORDER = "#2a2a2c";
-const TEXT = "#f3f4f6";
-const SUBTLE = "rgba(255,255,255,0.7)";
+/* 🎨 Paleta pro morado/cian (consistente) */
+const PRIMARY = "#7C3AED";  // morado acciones
+const BG      = "#0F1115";  // fondo
+const CARD    = "#171923";  // tarjetas
+const FIELD   = "#121723";  // inputs
+const BORDER  = "#2B3140";  // bordes
+const TEXT    = "#F3F4F6";  // texto principal
+const SUBTLE  = "#A4ADBD";  // subtítulos
 
 export default function NewLead() {
   const qc = useQueryClient();
@@ -26,10 +27,10 @@ export default function NewLead() {
       if (!name.trim()) throw new Error("Nombre requerido");
       await createLead({
         id: uid(),
-        name,
-        company,
-        email,
-        phone,
+        name: name.trim(),
+        company: company || undefined,
+        email: email || undefined,
+        phone: phone || undefined,
         status: "nuevo",
         created_at: 0,
         updated_at: 0,
@@ -43,7 +44,14 @@ export default function NewLead() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "Nuevo Lead" }} />
+      <Stack.Screen
+        options={{
+          title: "Nuevo Lead",
+          headerStyle: { backgroundColor: BG },
+          headerTintColor: TEXT,
+          headerTitleStyle: { color: TEXT, fontWeight: "800" },
+        }}
+      />
       <View style={styles.screen}>
         <View style={styles.card}>
           <TextInput
@@ -78,8 +86,18 @@ export default function NewLead() {
             keyboardType="phone-pad"
           />
 
+          {m.isError ? (
+            <Text style={styles.errorText}>
+              {(m.error as any)?.message || "Error al guardar"}
+            </Text>
+          ) : null}
+
           <Pressable
-            style={styles.btn}
+            style={({ pressed }) => [
+              styles.btn,
+              pressed && styles.pressed,
+              m.isPending && styles.disabled,
+            ]}
             onPress={() => m.mutate()}
             disabled={m.isPending}
           >
@@ -106,20 +124,26 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: "#1a1b1d",
+    backgroundColor: FIELD,
     borderRadius: 10,
     padding: 12,
     color: TEXT,
   },
   btn: {
     marginTop: 4,
-    backgroundColor: ORANGE,
+    backgroundColor: PRIMARY,
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
   },
   btnText: { color: "#fff", fontWeight: "900" },
+  pressed: { opacity: 0.9 },
+  disabled: { opacity: 0.6 },
+  errorText: { color: "#fecaca", fontSize: 12 },
 });
+
 // import { createLead } from "@/src/api/leads";
 // import { uid } from "@/src/utils";
 // import { useMutation, useQueryClient } from "@tanstack/react-query";
