@@ -1,3 +1,4 @@
+// src/api/notes.ts
 import { api } from "@/src/api";
 
 export type Note = {
@@ -27,17 +28,32 @@ export async function listNotes(filters?: {
   return api.get(`/notes${q ? `?${q}` : ""}`);
 }
 
-/** Helpers específicos (compatibles con tu UI actual). */
+/** Atajos por entidad (compatibles con tu UI actual). */
 export async function listNotesByDeal(dealId: string): Promise<Note[]> {
   return listNotes({ deal_id: dealId });
 }
 
+/** Detalle de una nota */
+export async function getNote(id: string): Promise<Note> {
+  return api.get(`/notes/${id}`);
+}
+
+/** Crear */
 export async function createNote(
   input: Omit<Note, "created_at" | "updated_at">
 ): Promise<void> {
   await api.post("/notes", input);
 }
 
+/** Editar (parcial) */
+export async function updateNote(
+  id: string,
+  patch: Partial<Note>
+): Promise<void> {
+  await api.patch(`/notes/${id}`, patch);
+}
+
+/** Eliminar */
 export async function deleteNote(id: string): Promise<void> {
   await api.del(`/notes/${id}`);
 }

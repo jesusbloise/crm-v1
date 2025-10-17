@@ -246,6 +246,7 @@ export default function Home() {
                 <SheetBtn label="Prospecto"   onPress={() => { setSheetOpen(false); router.push("/leads/new" as any); }} />
                 <SheetBtn label="Cuenta"      onPress={() => { setSheetOpen(false); router.push("/accounts/new" as any); }} />
                 <SheetBtn label="Contacto"    onPress={() => { setSheetOpen(false); router.push("/contacts/new" as any); }} />
+                <SheetBtn label="Actividad"   onPress={() => { setSheetOpen(false); router.push("/tasks/new" as any); }} />
 
                 <Pressable style={styles.sheetCancel} onPress={() => setSheetOpen(false)}>
                   <Text style={styles.sheetCancelText}>Cancelar</Text>

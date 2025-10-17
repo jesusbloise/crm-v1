@@ -8,26 +8,34 @@ const {
   ensureTenantCore,
 } = require("./db/migrate");
 const injectTenant = require("./lib/injectTenant");
+const requireAuth = require("./lib/requireAuth");
 
 const app = express();
 
-// ✅ 1) Primero crea/actualiza todas las tablas de negocio (ya incluyen tenants/users/memberships en tu runMigrations)
-runMigrations();
-// 2) ALTER específico de contacts
-ensureContactsAccountId();
-// 3) Añade tenant_id + backfill + índices
-ensureTenantColumns();
-// ✅ 4) Semillas/garantías del core tenant (ya hay tablas/columnas)
-ensureTenantCore();
+/* --- Migraciones / semillas idempotentes --- */
+runMigrations();            // Tablas de negocio
+ensureContactsAccountId();  // ALTER contacts.account_id (+ índice)
+ensureTenantColumns();      // tenant_id + índices + backfill 'demo'
+ensureTenantCore();         // Core multi-tenant (tenants/users/memberships + seed)
 
+/* --- Middlewares base --- */
 app.use(cors());
+app.options("*", cors());   // preflight, útil para web/móvil
 app.use(express.json());
-app.use(injectTenant);
+app.use(injectTenant);      // Lee X-Tenant-Id y lo coloca en req.tenantId
 
-// (resto igual…)
+/* --- Rutas públicas --- */
 app.use(require("./routes/health"));
-app.use(require("./routes/auth"));
-app.use(require("./lib/requireAuth"));
+app.use(require("./routes/auth"));     // /auth/login dev
+
+/* --- Protección global --- */
+app.use(requireAuth);
+
+// en app.js, después de requireAuth:
+app.use(require("./routes/invitations"));
+/* --- Rutas protegidas (todas dependen de JWT + tenant) --- */
+app.use(require("./routes/me"));        // GET /me/tenants, POST /me/tenant/switch
+app.use(require("./routes/tenants"));   // POST /tenants (admin)
 app.use(require("./routes/events"));
 app.use(require("./routes/leads"));
 app.use(require("./routes/contacts"));
@@ -36,6 +44,7 @@ app.use(require("./routes/deals"));
 app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
 
+/* --- 404 y errores --- */
 app.use((_req, res) => res.status(404).json({ error: "not found" }));
 app.use((err, _req, res, _next) => {
   console.error(err);
