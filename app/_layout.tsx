@@ -22,6 +22,12 @@ import {
   setActiveTenant,
 } from "@/src/api/auth";
 import { ToastProvider } from "@/src/ui/Toast";
+// ⬇️ PON ESTO ARRIBA DEL COMPONENTE, DESPUÉS DE LOS IMPORTS
+// justo después de los imports, antes del componente:
+if (__DEV__) {
+  require("../src/utils/iosTextDetect");
+}
+
 
 const COLORS = {
   bg: "#0b0c10",
