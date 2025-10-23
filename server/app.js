@@ -14,6 +14,8 @@ const injectTenant = require("./lib/injectTenant");
 const requireAuth = require("./lib/requireAuth");
 
 const app = express();
+const path = require("path");
+
 
 /* ---------- Infra / ajustes base ---------- */
 app.set("trust proxy", 1); // por si corres detrás de proxy / docker
@@ -40,12 +42,15 @@ app.options("*", cors());
 // body parsers
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
 
 /* ---------- Migraciones / semillas idempotentes ---------- */
 runMigrations();            // Tablas de negocio
 ensureContactsAccountId();  // ALTER contacts.account_id (+ índice)
-ensureTenantColumns();      // tenant_id + índices + backfill 'demo'
 ensureTenantCore();         // Core multi-tenant (tenants/users/memberships + seed)
+ensureTenantColumns();      // tenant_id + índices + backfill 'demo'
+
 
 /* ---------- Rutas públicas ---------- */
 // ⚠️ Sin injectTenant aquí: son públicas y no requieren tenant.
@@ -71,6 +76,17 @@ app.use(require("./routes/accounts"));
 app.use(require("./routes/deals"));
 app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
+
+// Debajo de tus middlewares de rutas, antes del 404:
+app.use((err, _req, res, _next) => {
+  // errores de multer: tamaño, tipo, etc.
+  if (err && (err.name === "MulterError" || err.message === "invalid_type")) {
+    const code = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    return res.status(code).json({ error: err.code || err.message });
+  }
+  return _next(err);
+});
+
 
 /* ---------- 404 y errores ---------- */
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
