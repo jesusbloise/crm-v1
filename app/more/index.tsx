@@ -21,12 +21,73 @@ import {
   View,
 } from "react-native";
 
+// 🔔 Prueba de notificaciones nativas (directo con expo-notifications)
+import * as Notifications from "expo-notifications";
+
 const BG = "#0b0c10",
   CARD = "#14151a",
   BORDER = "#272a33",
   TEXT = "#e8ecf1",
   SUBTLE = "#a9b0bd",
   ACCENT = "#7c3aed";
+
+const ANDROID_CHANNEL_ID = "crm-reminders";
+
+// Handler compatible (sin pelear con tipos)
+(Notifications as any).setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+} as any);
+
+// Función de prueba: agenda una notificación en 10s
+async function testLocalNotif10s() {
+  try {
+    if (Platform.OS === "web") {
+      alert("⏱️ (WEB) simulando notificación en 10s…");
+      setTimeout(() => alert("🚨 (WEB) Test 10s"), 10_000);
+      return;
+    }
+
+    const perm = await Notifications.requestPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permisos", "Activa las notificaciones para esta app en Ajustes del sistema");
+      return;
+    }
+
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
+        name: "CRM Reminders",
+        importance: Notifications.AndroidImportance.MAX,
+        sound: "default",
+        vibrationPattern: [0, 250, 250, 250],
+        enableVibrate: true,
+        showBadge: true,
+        bypassDnd: true,
+      });
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "🔔 Test notificación (10s)",
+        body: "Deberías ver/oir esto ~10s después de tocar el botón",
+        sound: Platform.OS === "ios" ? true : undefined,
+        data: { kind: "debug-10s" },
+      },
+      trigger:
+        Platform.OS === "android"
+          ? (({ seconds: 10, channelId: ANDROID_CHANNEL_ID } as any) as Notifications.NotificationTriggerInput)
+          : (({ seconds: 10 } as any) as Notifications.NotificationTriggerInput),
+    });
+
+    Alert.alert("Programada", "Sonará en ~10s");
+  } catch (e: any) {
+    console.warn("testLocalNotif10s error:", e);
+    Alert.alert("Error", String(e?.message ?? e));
+  }
+}
 
 type TenantItem = { id: string; name?: string; role?: string; is_active?: boolean };
 
@@ -43,14 +104,13 @@ export default function More() {
 
   // 🔒 Modal “Unirse por ID” (confirmación de clave)
   const [joinOpen, setJoinOpen] = useState(false);
-  const [pendingTenantId, setPendingTenantId] = useState<string | null>(null); // ID que se intenta unir
-  const [joinIdInput, setJoinIdInput] = useState(""); // lo que escribe el usuario
+  const [pendingTenantId, setPendingTenantId] = useState<string | null>(null);
+  const [joinIdInput, setJoinIdInput] = useState("");
 
   useEffect(() => {
     (async () => {
       const localActive = await getActiveTenant();
       setTenant(localActive);
-
       try {
         const data = await fetchTenants();
         if (data?.items?.length) setTenants(data.items);
@@ -112,9 +172,8 @@ export default function More() {
     } catch (e: any) {
       const msg = String(e?.message || "");
       if (msg.includes("forbidden_tenant")) {
-        // 👉 pedir “clave” (ID) antes de unirse
         setPendingTenantId(t);
-        setJoinIdInput("");        // obliga a escribirla
+        setJoinIdInput("");
         setJoinOpen(true);
       } else {
         setTenant(prev);
@@ -127,7 +186,7 @@ export default function More() {
 
   const onLogout = async () => {
     if (busyLogout) return;
-    setBusyLogout(true);
+    setBusyLogout(true); // <-- fix
     try {
       await logout();
       router.replace("/auth/login");
@@ -209,11 +268,10 @@ export default function More() {
                   <Text style={styles.resultTitle}>{d.name || d.id}</Text>
                   <Text style={styles.resultSub}>ID: {d.id}</Text>
                 </View>
-                {/* 🔒 ya no entra directo: abre modal para confirmar escribiendo el ID */}
                 <Pressable
                   onPress={() => {
                     setPendingTenantId(d.id);
-                    setJoinIdInput(""); // obliga a escribirlo
+                    setJoinIdInput("");
                     setJoinOpen(true);
                   }}
                   style={styles.joinBtn}
@@ -228,30 +286,29 @@ export default function More() {
 
       <View style={{ height: 24 }} />
 
-      {/* ---- Cuenta → Ver perfil (Opción A) ---- */}
+      {/* ---- Cuenta → Ver perfil ---- */}
       <View style={{ height: 16 }} />
-<Text style={styles.title}>Cuenta</Text>
+      <Text style={styles.title}>Cuenta</Text>
 
-<Pressable
-  onPress={() => router.push("/profile" as any)}
-  style={({ pressed }) => [
-    {
-      backgroundColor: CARD,
-      borderColor: BORDER,
-      borderWidth: 1,
-      borderRadius: 12,
-      paddingHorizontal: 14,
-      paddingVertical: 12,
-      opacity: pressed ? 0.85 : 1,
-      alignSelf: "flex-start",
-      marginTop: 8,
-    },
-  ]}
-  android_ripple={{ color: "rgba(255,255,255,0.08)" }}
->
-  <Text style={{ color: TEXT, fontWeight: "800" }}>Ver perfil</Text>
-</Pressable>
-
+      <Pressable
+        onPress={() => router.push("/profile" as any)}
+        style={({ pressed }) => [
+          {
+            backgroundColor: CARD,
+            borderColor: BORDER,
+            borderWidth: 1,
+            borderRadius: 12,
+            paddingHorizontal: 14,
+            paddingVertical: 12,
+            opacity: pressed ? 0.85 : 1,
+            alignSelf: "flex-start",
+            marginTop: 8,
+          },
+        ]}
+        android_ripple={{ color: "rgba(255,255,255,0.08)" }}
+      >
+        <Text style={{ color: TEXT, fontWeight: "800" }}>Ver perfil</Text>
+      </Pressable>
 
       {/* ---- ACCIONES ---- */}
       <Pressable
@@ -271,9 +328,15 @@ export default function More() {
         </Text>
       </Pressable>
 
-      
+      {/* ---- Botón de prueba de notificación (10s) ---- */}
+      <Pressable
+        onPress={testLocalNotif10s}
+        style={{ padding: 12, borderRadius: 12, backgroundColor: "#7C3AED", margin: 16 }}
+      >
+        <Text style={{ color: "#fff", fontWeight: "900" }}>Test notificación (10s)</Text>
+      </Pressable>
 
-      {/* ---- MODAL JOIN (SIEMPRE exige escribir el ID exacto) ---- */}
+      {/* ---- MODAL JOIN ---- */}
       <Modal visible={joinOpen} transparent animationType="fade" onRequestClose={() => setJoinOpen(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>

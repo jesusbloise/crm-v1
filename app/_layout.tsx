@@ -24,6 +24,11 @@ import {
 } from "@/src/api/auth";
 import { ToastProvider } from "@/src/ui/Toast";
 
+// ⬇️ NEW: notificaciones (init al boot + reensure) — import defensivo
+import * as Notifs from "@/src/utils/notifications";
+// ⬇️ NEW: fetch de actividades con recordatorio futuro
+import { listOpenActivitiesWithReminder } from "@/src/api/activities";
+
 // ⬇️ PON ESTO ARRIBA DEL COMPONENTE, DESPUÉS DE LOS IMPORTS
 if (__DEV__) {
   require("../src/utils/iosTextDetect");
@@ -139,6 +144,28 @@ export default function RootLayout() {
   const [authed, setAuthed] = useState(false);
   const [activeTenant, setActiveTenantState] = useState<string | null>(null);
 
+  // 🔔 inicializa notificaciones una sola vez
+  useEffect(() => {
+    Notifs.initNotifications?.().catch(() => {});
+  }, []);
+
+  // 🔁 re-agenda recordatorios abiertos con remind_at_ms futuro (si la función existe)
+  useEffect(() => {
+    if (typeof Notifs.reensurePendingReminders !== "function") {
+      console.log("reensurePendingReminders no disponible (web/caché).");
+      return;
+    }
+    Notifs.reensurePendingReminders(async () => {
+      const list = await listOpenActivitiesWithReminder(Date.now());
+      return list.map((a) => ({
+        id: a.id,
+        title: a.title,
+        notes: a.notes ?? null,
+        remindAtMs: a.remindAtMs,
+      }));
+    }).catch(() => {});
+  }, []);
+
   // Boot inicial
   useEffect(() => {
     let cancelled = false;
@@ -237,7 +264,7 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/" || pathname === "";
     return pathname === href || pathname.startsWith(href + "/");
-    };
+  };
 
   return (
     <View
@@ -336,7 +363,7 @@ const styles = StyleSheet.create({
 // import Constants from "expo-constants";
 // import { Stack, router, usePathname } from "expo-router";
 // import { StatusBar } from "expo-status-bar";
-// import React, { useEffect, useState } from "react";
+// import { useEffect, useState } from "react";
 // import {
 //   AppState,
 //   Platform,
@@ -350,16 +377,19 @@ const styles = StyleSheet.create({
 // import {
 //   login as apiLogin,
 //   me as apiMe,
+//   getActiveTenant,
 //   isAuthenticated,
 //   setActiveTenant,
 // } from "@/src/api/auth";
 // import { ToastProvider } from "@/src/ui/Toast";
+
+// // ⬇️ NEW: notificaciones (init al boot)
+// import { initNotifications } from "@/src/utils/notifications";
+
 // // ⬇️ PON ESTO ARRIBA DEL COMPONENTE, DESPUÉS DE LOS IMPORTS
-// // justo después de los imports, antes del componente:
 // if (__DEV__) {
 //   require("../src/utils/iosTextDetect");
 // }
-
 
 // const COLORS = {
 //   bg: "#0b0c10",
@@ -373,7 +403,7 @@ const styles = StyleSheet.create({
 
 // const TAB_HEIGHT = 60;
 // const queryClient = new QueryClient();
-// const AUTO_LOGIN = (process.env.EXPO_PUBLIC_AUTO_LOGIN === "1"); // opcional
+// const AUTO_LOGIN = process.env.EXPO_PUBLIC_AUTO_LOGIN === "1";
 
 // function useAppFocusSync() {
 //   useEffect(() => {
@@ -402,6 +432,7 @@ const styles = StyleSheet.create({
 //   const BAD_HOSTNAMES = ["localhost", "127.0.0.1"];
 //   const HOST_RE = /^https?:\/\/([^\/:]+)(:\d+)?(\/.*)?$/i;
 
+//   // @ts-ignore
 //   global.fetch = (async (input: any, init?: RequestInit) => {
 //     let url = typeof input === "string" ? input : input?.url;
 //     try {
@@ -425,16 +456,55 @@ const styles = StyleSheet.create({
 //   }) as any;
 // }
 
+// /* ---------- Indicador de Workspace en el header ---------- */
+// function TenantPill({ value }: { value: string | null }) {
+//   const label = value || "—";
+//   return (
+//     <Pressable
+//       onPress={() => router.push("/more")}
+//       style={({ pressed }) => [
+//         {
+//           flexDirection: "row",
+//           alignItems: "center",
+//           paddingHorizontal: 10,
+//           paddingVertical: 6,
+//           borderRadius: 999,
+//           backgroundColor: "rgba(124,58,237,0.12)",
+//           borderWidth: 1,
+//           borderColor: "rgba(124,58,237,0.35)",
+//           opacity: pressed ? 0.85 : 1,
+//           marginRight: 8,
+//         },
+//       ]}
+//     >
+//       <Feather name="layers" size={16} color={COLORS.accent} />
+//       <Text
+//         numberOfLines={1}
+//         style={{ color: COLORS.accent, fontWeight: "800", marginLeft: 6, maxWidth: 160 }}
+//       >
+//         {label}
+//       </Text>
+//       <Feather name="chevron-down" size={16} color={COLORS.accent} />
+//     </Pressable>
+//   );
+// }
+
 // export default function RootLayout() {
 //   useAppFocusSync();
 //   setupIOSDevFetchShim();
 
 //   const pathname = usePathname();
 //   const inAuthFlow = pathname?.startsWith("/auth");
-//   const insets = useSafeAreaInsets(); // ✅ calcular una sola vez
+//   const insets = useSafeAreaInsets();
 
 //   const [authReady, setAuthReady] = useState(false);
 //   const [authed, setAuthed] = useState(false);
+//   const [activeTenant, setActiveTenantState] = useState<string | null>(null);
+
+//   // 🔔 NEW: inicializa notificaciones una sola vez
+//   useEffect(() => {
+//     initNotifications().catch(() => {});
+//   }, []);
 
 //   // Boot inicial
 //   useEffect(() => {
@@ -444,7 +514,10 @@ const styles = StyleSheet.create({
 //         const hasToken = await isAuthenticated();
 //         if (hasToken) {
 //           const info = await apiMe().catch(() => null);
-//           if (info?.tenant) await setActiveTenant(info.tenant);
+//           // ⬇️ Usamos active_tenant del backend
+//           if (info?.active_tenant) {
+//             await setActiveTenant(info.active_tenant);
+//           }
 //           setAuthed(Boolean(info));
 //         } else if (AUTO_LOGIN) {
 //           const data = await apiLogin({ email: "admin@demo.local", password: "demo" }).catch(() => null);
@@ -457,10 +530,24 @@ const styles = StyleSheet.create({
 //         if (!cancelled) setAuthReady(true);
 //       }
 //     })();
-//     return () => { cancelled = true; };
+//     return () => {
+//       cancelled = true;
+//     };
 //   }, []);
 
-//   // Guard al navegar (incluye efecto después de logout)
+//   // Mantener el pill del header sincronizado con el tenant guardado
+//   useEffect(() => {
+//     let ignore = false;
+//     (async () => {
+//       const t = await getActiveTenant();
+//       if (!ignore) setActiveTenantState(t);
+//     })();
+//     return () => {
+//       ignore = true;
+//     };
+//   }, [pathname]); // refresca cuando navegas (ej: después de cambiar en /more)
+
+//   // Guard al navegar
 //   useEffect(() => {
 //     if (!authReady) return;
 //     (async () => {
@@ -484,16 +571,19 @@ const styles = StyleSheet.create({
 //             screenOptions={{
 //               contentStyle: {
 //                 backgroundColor: COLORS.bg,
-//                 paddingBottom: inAuthFlow ? 0 : TAB_HEIGHT + Math.max(insets.bottom, 8), // ✅ usa insets ya calculado
+//                 paddingBottom: inAuthFlow ? 0 : TAB_HEIGHT + Math.max(insets.bottom, 8),
 //               },
 //               headerStyle: { backgroundColor: COLORS.bg },
 //               headerTitleStyle: { color: COLORS.text, fontWeight: "800" },
 //               headerTintColor: COLORS.text,
 //               headerShadowVisible: false,
+//               // ⬇️ Workspace pill a la derecha (solo fuera del flujo de auth)
+//               headerRight: () =>
+//                 inAuthFlow ? null : <TenantPill value={activeTenant} />,
 //             }}
 //           />
 
-//           {!inAuthFlow && <BottomBar bottomInset={insets.bottom} />} {/* ✅ usa el mismo insets */}
+//           {!inAuthFlow && <BottomBar bottomInset={insets.bottom} />}
 //         </View>
 //       </ToastProvider>
 //     </QueryClientProvider>
@@ -514,7 +604,7 @@ const styles = StyleSheet.create({
 //   const isActive = (href: string) => {
 //     if (href === "/") return pathname === "/" || pathname === "";
 //     return pathname === href || pathname.startsWith(href + "/");
-//   };
+//     };
 
 //   return (
 //     <View
