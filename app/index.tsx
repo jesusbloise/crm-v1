@@ -153,12 +153,14 @@ export default function Home() {
             <Text style={styles.hello}>¡Bienvenido!</Text>
             <Text style={styles.subHello}>Gestiona tu pipeline y prospectos</Text>
 
-            {/* Botones grandes con contador (grid 2×2) */}
+            {/* Botones grandes con contador (grid 2×3 incluyendo Calendario) */}
             <View style={styles.bigButtonsRow}>
-              <BigButton label="Oportunidades" count={deals.length}   onPress={onGo("/deals")} />
-              <BigButton label="Prospectos"    count={leads.length}   onPress={onGo("/leads")} />
-              <BigButton label="Cuentas"       count={accounts.length} onPress={onGo("/accounts")} />
-              <BigButton label="Contactos"     count={contacts.length} onPress={onGo("/contacts")} />
+              <BigButton label="Oportunidades" count={deals.length}     onPress={onGo("/deals")} />
+              <BigButton label="Prospectos"    count={leads.length}     onPress={onGo("/leads")} />
+              <BigButton label="Cuentas"       count={accounts.length}  onPress={onGo("/accounts")} />
+              <BigButton label="Contactos"     count={contacts.length}  onPress={onGo("/contacts")} />
+              {/* 👇 NUEVO acceso directo al calendario Google */}
+              <BigButton label="Calendario"    count={0}                onPress={onGo("/calendar/google")} />
             </View>
           </HeaderBg>
 
@@ -336,7 +338,7 @@ const styles = StyleSheet.create({
   bannerBtn: { alignSelf: "flex-start", marginTop: 8, backgroundColor: DANGER, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
   bannerBtnText: { color: "#fff", fontWeight: "800" },
 
-  // Botones grandes (grid 2×2)
+  // Botones grandes (grid flexible)
   bigButtonsRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, paddingHorizontal: 0, marginTop: 12 },
   bigBtn: {
     flexBasis: "48%",
@@ -419,4 +421,3 @@ const styles = StyleSheet.create({
   sheetCancel: { marginTop: 6, alignItems: "center", paddingVertical: 10 },
   sheetCancelText: { color: SUBTLE, fontWeight: "800" },
 });
-

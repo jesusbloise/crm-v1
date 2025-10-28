@@ -5,7 +5,10 @@ const DEFAULT_TENANT = process.env.DEFAULT_TENANT || "demo";
 
 /** Util */
 function hasColumn(table, col) {
-  return db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
+  return db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .some((c) => c.name === col);
 }
 
 /** Opcional: habilita chequeo de FKs si en algún momento declaras foreign keys */
@@ -89,41 +92,42 @@ function runMigrations() {
     `);
     db.exec(`UPDATE deals SET stage = 'nuevo' WHERE stage IS NULL;`);
 
-   // --- Activities ---
-db.exec(`
-  CREATE TABLE IF NOT EXISTS activities (
-    id TEXT PRIMARY KEY,
-    type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    due_date INTEGER,
-    remind_at_ms INTEGER,         -- incluye la col. para DBs nuevas
-    status TEXT NOT NULL,
-    notes TEXT,
-    account_id TEXT,
-    contact_id TEXT,
-    lead_id TEXT,
-    deal_id TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_activities_updated_at ON activities(updated_at);
-  CREATE INDEX IF NOT EXISTS idx_activities_deal ON activities(deal_id);
-  CREATE INDEX IF NOT EXISTS idx_activities_contact ON activities(contact_id);
-  CREATE INDEX IF NOT EXISTS idx_activities_account ON activities(account_id);
-  CREATE INDEX IF NOT EXISTS idx_activities_lead ON activities(lead_id);
-  CREATE INDEX IF NOT EXISTS idx_activities_status ON activities(status);
-  CREATE INDEX IF NOT EXISTS idx_activities_id ON activities(id);
-`);
-db.exec(`UPDATE activities SET status = 'open' WHERE status IS NULL;`);
+    // --- Activities ---
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS activities (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        due_date INTEGER,
+        remind_at_ms INTEGER,         -- incluye la col. para DBs nuevas
+        status TEXT NOT NULL,
+        notes TEXT,
+        account_id TEXT,
+        contact_id TEXT,
+        lead_id TEXT,
+        deal_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_activities_updated_at ON activities(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_activities_deal ON activities(deal_id);
+      CREATE INDEX IF NOT EXISTS idx_activities_contact ON activities(contact_id);
+      CREATE INDEX IF NOT EXISTS idx_activities_account ON activities(account_id);
+      CREATE INDEX IF NOT EXISTS idx_activities_lead ON activities(lead_id);
+      CREATE INDEX IF NOT EXISTS idx_activities_status ON activities(status);
+      CREATE INDEX IF NOT EXISTS idx_activities_id ON activities(id);
+    `);
+    db.exec(`UPDATE activities SET status = 'open' WHERE status IS NULL;`);
 
-// 🛠️ Idempotente: si la DB existía sin remind_at_ms, agrégala
-if (!hasColumn("activities", "remind_at_ms")) {
-  db.exec(`ALTER TABLE activities ADD COLUMN remind_at_ms INTEGER;`);
-}
+    // Idempotente: si la DB existía sin remind_at_ms, agrégala
+    if (!hasColumn("activities", "remind_at_ms")) {
+      db.exec(`ALTER TABLE activities ADD COLUMN remind_at_ms INTEGER;`);
+    }
 
-// 🔎 Índices que dependen de remind_at_ms (crearlos DESPUÉS de asegurar la columna)
-db.exec(`CREATE INDEX IF NOT EXISTS idx_activities_remind_at ON activities(remind_at_ms);`);
-
+    // Índices que dependen de remind_at_ms (crearlos DESPUÉS de asegurar la columna)
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_activities_remind_at ON activities(remind_at_ms);`
+    );
 
     // --- Notes ---
     db.exec(`
@@ -202,7 +206,10 @@ function ensureTenantCore() {
 
     // 2) Asegura columnas clave si la DB existía sin ellas
     const ensureCol = (table, col, type, backfillFn) => {
-      const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      const cols = db
+        .prepare(`PRAGMA table_info(${table})`)
+        .all()
+        .map((c) => c.name);
       if (!cols.includes(col)) {
         db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
         if (typeof backfillFn === "function") backfillFn(table, col);
@@ -215,7 +222,9 @@ function ensureTenantCore() {
     };
 
     const backfillEmptyHash = () =>
-      db.exec(`UPDATE users SET password_hash = '' WHERE password_hash IS NULL`);
+      db.exec(
+        `UPDATE users SET password_hash = '' WHERE password_hash IS NULL`
+      );
 
     // --- tenants extras ---
     ensureCol("tenants", "created_at", "INTEGER", backfillNow);
@@ -244,17 +253,22 @@ function ensureTenantCore() {
     ensureCol("users", "timezone", "TEXT");
     ensureCol("users", "last_login_at", "INTEGER");
 
-    // --- memberships extras ---
-    ensureCol("memberships", "created_at", "INTEGER", backfillNow);
-    ensureCol("memberships", "updated_at", "INTEGER", backfillNow);
+    // --- columnas Google OAuth / Calendar (idempotentes) ---
+    ensureCol("users", "google_email", "TEXT");
+    ensureCol("users", "google_refresh_token", "TEXT");
+    ensureCol("users", "google_calendar_id", "TEXT");
 
-    // 3) Índices
+    // ⬇️ NUEVO: URL del feed ICS (solo lectura)
+    ensureCol("users", "google_ics_url", "TEXT");
+
+    // Índices
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_tenants_updated_at ON tenants(updated_at);
       CREATE INDEX IF NOT EXISTS idx_tenants_created_by ON tenants(created_by);
 
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
       CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
+      CREATE INDEX IF NOT EXISTS idx_users_google_email ON users(google_email);
 
       CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
       CREATE INDEX IF NOT EXISTS idx_memberships_tenant ON memberships(tenant_id);
@@ -291,7 +305,9 @@ function ensureContactsAccountId() {
     db.exec("BEGIN");
     try {
       db.exec(`ALTER TABLE contacts ADD COLUMN account_id TEXT`);
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_contacts_account_id ON contacts(account_id)`);
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_contacts_account_id ON contacts(account_id)`
+      );
       db.exec("COMMIT");
     } catch (e) {
       db.exec("ROLLBACK");
@@ -305,17 +321,29 @@ function ensureContactsAccountId() {
  * indexa y backfill DEFAULT_TENANT.
  */
 function ensureTenantColumns() {
-  const tables = ["leads", "contacts", "accounts", "deals", "activities", "notes", "events"];
+  const tables = [
+    "leads",
+    "contacts",
+    "accounts",
+    "deals",
+    "activities",
+    "notes",
+    "events",
+  ];
 
   db.exec("BEGIN");
   try {
     for (const t of tables) {
       if (!hasColumn(t, "tenant_id")) {
         db.exec(`ALTER TABLE ${t} ADD COLUMN tenant_id TEXT`);
-        db.exec(`UPDATE ${t} SET tenant_id = '${DEFAULT_TENANT}' WHERE tenant_id IS NULL`);
+        db.exec(
+          `UPDATE ${t} SET tenant_id = '${DEFAULT_TENANT}' WHERE tenant_id IS NULL`
+        );
       }
 
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_${t}_tenant ON ${t}(tenant_id)`);
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_${t}_tenant ON ${t}(tenant_id)`
+      );
 
       const idxs = {
         leads: [
@@ -341,16 +369,16 @@ function ensureTenantColumns() {
           `CREATE INDEX IF NOT EXISTS idx_deals_tenant_account ON deals(tenant_id, account_id)`,
           `CREATE INDEX IF NOT EXISTS idx_deals_tenant_contact ON deals(tenant_id, contact_id)`,
         ],
-       activities: [
-  `CREATE INDEX IF NOT EXISTS idx_activities_tenant_updated ON activities(tenant_id, updated_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_activities_tenant_id ON activities(tenant_id, id)`,
-  `CREATE INDEX IF NOT EXISTS idx_activities_tenant_status ON activities(tenant_id, status)`,
-  `CREATE INDEX IF NOT EXISTS idx_activities_tenant_deal ON activities(tenant_id, deal_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_activities_tenant_contact ON activities(tenant_id, contact_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_activities_tenant_account ON activities(tenant_id, account_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_activities_tenant_lead ON activities(tenant_id, lead_id)`,
-  // 👇 este depende de remind_at_ms; créalo sólo si la columna existe
-],
+        activities: [
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_updated ON activities(tenant_id, updated_at)`,
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_id ON activities(tenant_id, id)`,
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_status ON activities(tenant_id, status)`,
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_deal ON activities(tenant_id, deal_id)`,
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_contact ON activities(tenant_id, contact_id)`,
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_account ON activities(tenant_id, account_id)`,
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_lead ON activities(tenant_id, lead_id)`,
+          // el índice por remind_at_ms sólo si existe la columna
+        ],
         notes: [
           `CREATE INDEX IF NOT EXISTS idx_notes_tenant_updated ON notes(tenant_id, updated_at)`,
           `CREATE INDEX IF NOT EXISTS idx_notes_tenant_id ON notes(tenant_id, id)`,
@@ -367,8 +395,10 @@ function ensureTenantColumns() {
       };
 
       if (t === "activities" && hasColumn("activities", "remind_at_ms")) {
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_activities_tenant_remind ON activities(tenant_id, remind_at_ms)`);
-}
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_activities_tenant_remind ON activities(tenant_id, remind_at_ms)`
+        );
+      }
 
       for (const sql of idxs[t] || []) db.exec(sql);
     }
@@ -385,7 +415,6 @@ module.exports = {
   ensureTenantColumns,
   ensureTenantCore,
 };
-
 
 // // server/db/migrate.js
 // const db = require("./connection");

@@ -2,6 +2,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
 
 const {
   runMigrations,
@@ -13,17 +14,17 @@ const {
 const injectTenant = require("./lib/injectTenant");
 const requireAuth = require("./lib/requireAuth");
 
-const app = express();
-const path = require("path");
+// ⬇️ Rutas de Google Calendar (ya tienes ./routes/google)
+const googleRoutes = require("./routes/google");
 
+const app = express();
 
 /* ---------- Infra / ajustes base ---------- */
-app.set("trust proxy", 1); // por si corres detrás de proxy / docker
+app.set("trust proxy", 1);
 
-// CORS con headers que usamos (Authorization + X-Tenant-Id)
 app.use(
   cors({
-    origin: true, // permite Expo web/lan
+    origin: true, // Expo web/LAN
     credentials: false,
     allowedHeaders: [
       "Content-Type",
@@ -35,40 +36,52 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   })
 );
-
-// preflight para cualquier ruta
 app.options("*", cors());
 
-// body parsers
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
+/* ---------- Migraciones / preparación segura ---------- */
+/**
+ * ⚠️ Orden recomendado:
+ * 1) ensureTenantCore -> crea users/tenants/memberships y asegura columnas google_*
+ * 2) runMigrations    -> crea tablas de negocio (leads, contacts, deals, activities, etc.)
+ * 3) ensureContactsAccountId y ensureTenantColumns -> alters idempotentes
+ */
+try {
+  ensureTenantCore();
+  runMigrations();
+  ensureContactsAccountId();
+  ensureTenantColumns();
+  console.log("✅ DB migrations OK");
+} catch (e) {
+  console.error("❌ DB migration failed", e);
+  process.exit(1);
+}
 
-/* ---------- Migraciones / semillas idempotentes ---------- */
-runMigrations();            // Tablas de negocio
-ensureContactsAccountId();  // ALTER contacts.account_id (+ índice)
-ensureTenantCore();         // Core multi-tenant (tenants/users/memberships + seed)
-ensureTenantColumns();      // tenant_id + índices + backfill 'demo'
-
+// ❌ Quitar estos dos de tu versión anterior (no existen y no hacen falta):
+// const db = require("./db/connection");
+// const { ensureGoogleColumns } = require("./db/connection");
+// ensureGoogleColumns();
 
 /* ---------- Rutas públicas ---------- */
-// ⚠️ Sin injectTenant aquí: son públicas y no requieren tenant.
 app.use(require("./routes/health")); // GET /health
-app.use(require("./routes/auth"));   // /auth/register, /auth/login, (y /auth/me si aplica)
+app.use(require("./routes/auth"));   // /auth/register, /auth/login, /auth/me
 
 /* ---------- Protección global ---------- */
-app.use(requireAuth); // a partir de aquí, se requiere JWT válido
+app.use(requireAuth);
 
-/* ---------- Contexto de Tenant (validado) ---------- */
-// ✅ AHORA sí montamos injectTenant para rutas protegidas,
-//    con req.user presente -> valida membership del X-Tenant-Id o elige el primero.
+/* ---------- Contexto de Tenant ---------- */
 app.use(injectTenant);
 
-/* ---------- Rutas protegidas (tenant-scoped y afines) ---------- */
-app.use(require("./routes/invitations")); // si tus invitaciones requieren auth
-app.use(require("./routes/me"));          // GET /me/tenants, POST /me/tenant/switch
-app.use(require("./routes/tenants"));     // administración/listado de tenants
+app.use(require("./routes/ics"));      // /integrations/ics/*
+app.use(require("./routes/google"));   // (lo que ya tenías)
+
+/* ---------- Rutas protegidas (tu API actual) ---------- */
+app.use(require("./routes/invitations"));
+app.use(require("./routes/me"));
+app.use(require("./routes/tenants"));
 app.use(require("./routes/events"));
 app.use(require("./routes/leads"));
 app.use(require("./routes/contacts"));
@@ -77,16 +90,18 @@ app.use(require("./routes/deals"));
 app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
 
-// Debajo de tus middlewares de rutas, antes del 404:
-app.use((err, _req, res, _next) => {
-  // errores de multer: tamaño, tipo, etc.
+/* ---------- Google Calendar (protegido) ---------- */
+// ✅ Monta las rutas de Google aquí (después de requireAuth + injectTenant)
+app.use(googleRoutes); // /integrations/google/*
+
+/* ---------- Manejo de errores de subida ---------- */
+app.use((err, _req, res, next) => {
   if (err && (err.name === "MulterError" || err.message === "invalid_type")) {
     const code = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
     return res.status(code).json({ error: err.code || err.message });
   }
-  return _next(err);
+  return next(err);
 });
-
 
 /* ---------- 404 y errores ---------- */
 app.use((_req, res) => res.status(404).json({ error: "not_found" }));
@@ -101,91 +116,3 @@ app.use((err, _req, res, _next) => {
 });
 
 module.exports = app;
-
-// // server/app.js
-// require("dotenv").config();
-// const express = require("express");
-// const cors = require("cors");
-
-// const {
-//   runMigrations,
-//   ensureContactsAccountId,
-//   ensureTenantColumns,
-//   ensureTenantCore,
-// } = require("./db/migrate");
-
-// const injectTenant = require("./lib/injectTenant");
-// const requireAuth = require("./lib/requireAuth");
-
-// const app = express();
-
-// /* ---------- Infra / ajustes base ---------- */
-// app.set("trust proxy", 1); // por si corres detrás de proxy / docker
-
-// // CORS con headers que usamos (Authorization + X-Tenant-Id)
-// app.use(
-//   cors({
-//     origin: true, // permite Expo web/lan
-//     credentials: false,
-//     allowedHeaders: [
-//       "Content-Type",
-//       "Authorization",
-//       "X-Tenant-Id",
-//       "Accept",
-//       "Origin",
-//     ],
-//     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-//   })
-// );
-
-// // preflight para cualquier ruta
-// app.options("*", cors());
-
-// // body parsers
-// app.use(express.json({ limit: "2mb" }));
-// app.use(express.urlencoded({ extended: true }));
-
-// /* ---------- Migraciones / semillas idempotentes ---------- */
-// runMigrations();            // Tablas de negocio
-// ensureContactsAccountId();  // ALTER contacts.account_id (+ índice)
-// ensureTenantColumns();      // tenant_id + índices + backfill 'demo'
-// ensureTenantCore();         // Core multi-tenant (tenants/users/memberships + seed)
-
-// /* ---------- Middlewares globales (no auth) ---------- */
-// app.use(injectTenant); // Lee X-Tenant-Id y coloca req.tenantId
-
-// /* ---------- Rutas públicas ---------- */
-// app.use(require("./routes/health")); // GET /health
-// app.use(require("./routes/auth"));   // POST /auth/register, /auth/login, GET /auth/me (si la tuya lo expone)
-
-// // (si tienes endpoints de invitaciones públicas, móntalos aquí; si son privadas, después de requireAuth)
-
-// /* ---------- Protección global ---------- */
-// app.use(requireAuth); // a partir de aquí, se requiere JWT válido
-
-// /* ---------- Rutas protegidas ---------- */
-// app.use(require("./routes/invitations")); // si tus invitaciones requieren auth
-// app.use(require("./routes/me"));          // GET /me/tenants, POST /me/tenant/switch
-// app.use(require("./routes/tenants"));     // admin tenants
-// app.use(require("./routes/events"));
-// app.use(require("./routes/leads"));
-// app.use(require("./routes/contacts"));
-// app.use(require("./routes/accounts"));
-// app.use(require("./routes/deals"));
-// app.use(require("./routes/activities"));
-// app.use(require("./routes/notes"));
-
-// /* ---------- 404 y errores ---------- */
-// app.use((_req, res) => res.status(404).json({ error: "not_found" }));
-
-// app.use((err, _req, res, _next) => {
-//   console.error("❌ Internal error:", err);
-//   const status = err.status || 500;
-//   res.status(status).json({
-//     error: err.code || "internal_error",
-//     message: err.message || "Unexpected error",
-//   });
-// });
-
-// module.exports = app;
-
