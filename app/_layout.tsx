@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 import Constants from "expo-constants";
 import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   AppState,
   Platform,
@@ -15,66 +15,76 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const queryClient = new QueryClient();
+import {
+  login as apiLogin,
+  me as apiMe,
+  getActiveTenant,
+  isAuthenticated,
+  setActiveTenant,
+} from "@/src/api/auth";
+import { ToastProvider } from "@/src/ui/Toast";
 
-/* 🎨 Tema consistente (igual al resto) */
+// ⬇️ NEW: notificaciones (init al boot + reensure) — import defensivo
+import * as Notifs from "@/src/utils/notifications";
+// ⬇️ NEW: fetch de actividades con recordatorio futuro
+import { listOpenActivitiesWithReminder } from "@/src/api/activities";
+
+// ⬇️ PON ESTO ARRIBA DEL COMPONENTE, DESPUÉS DE LOS IMPORTS
+if (__DEV__) {
+  require("../src/utils/iosTextDetect");
+}
+
 const COLORS = {
   bg: "#0b0c10",
   card: "#14151a",
   text: "#e8ecf1",
   subtle: "#a9b0bd",
   border: "#272a33",
-  accent: "#7c3aed",   // morado
-  accent2: "#22d3ee",  // cian (por si lo necesitas)
+  accent: "#7c3aed",
+  accent2: "#22d3ee",
 };
 
 const TAB_HEIGHT = 60;
+const queryClient = new QueryClient();
+const AUTO_LOGIN = process.env.EXPO_PUBLIC_AUTO_LOGIN === "1";
 
 function useAppFocusSync() {
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
-      if (Platform.OS !== "web") {
-        focusManager.setFocused(state === "active");
-      }
+      if (Platform.OS !== "web") focusManager.setFocused(state === "active");
     });
-    // @ts-ignore RN nuevas versiones devuelven objeto con remove()
+    // @ts-ignore
     return () => sub?.remove?.();
   }, []);
 }
 
-/** iOS DEV fetch shim */
+/** iOS DEV fetch shim para llamar al backend por IP LAN en Expo Go */
 function setupIOSDevFetchShim() {
   if (!__DEV__ || Platform.OS !== "ios") return;
 
   const origFetch = global.fetch as typeof fetch;
-
+  // @ts-ignore distintas claves según versión de Expo
   const hostUri =
-    // @ts-ignore diferentes claves según versión de Expo
     (Constants as any)?.expoConfig?.hostUri ||
     (Constants as any)?.manifest2?.extra?.expoGo?.hostUri ||
+    (Constants as any)?.manifest?.debuggerHost ||
     "";
   const lanHost = typeof hostUri === "string" ? hostUri.split(":")[0] : null;
   if (!lanHost) return;
 
-  const BAD_HOSTNAMES = [
-    "localhost",
-    "127.0.0.1",
-    "postlab-vm40",
-    "atomica-vm",
-  ];
+  const BAD_HOSTNAMES = ["localhost", "127.0.0.1"];
   const HOST_RE = /^https?:\/\/([^\/:]+)(:\d+)?(\/.*)?$/i;
 
+  // @ts-ignore
   global.fetch = (async (input: any, init?: RequestInit) => {
+    let url = typeof input === "string" ? input : input?.url;
     try {
-      let url = typeof input === "string" ? input : input?.url;
-
       if (typeof url === "string") {
         const m = url.match(HOST_RE);
         if (m) {
           const originalHost = m[1];
           const originalPort = m[2] || "";
-          const restPath     = m[3] || "/";
-
+          const restPath = m[3] || "/";
           if (BAD_HOSTNAMES.includes(originalHost)) {
             const schema = url.startsWith("https://") ? "https" : "http";
             const rewritten = `${schema}://${lanHost}${originalPort}${restPath}`;
@@ -89,34 +99,155 @@ function setupIOSDevFetchShim() {
   }) as any;
 }
 
+/* ---------- Indicador de Workspace en el header ---------- */
+function TenantPill({ value }: { value: string | null }) {
+  const label = value || "—";
+  return (
+    <Pressable
+      onPress={() => router.push("/more")}
+      style={({ pressed }) => [
+        {
+          flexDirection: "row",
+          alignItems: "center",
+          paddingHorizontal: 10,
+          paddingVertical: 6,
+          borderRadius: 999,
+          backgroundColor: "rgba(124,58,237,0.12)",
+          borderWidth: 1,
+          borderColor: "rgba(124,58,237,0.35)",
+          opacity: pressed ? 0.85 : 1,
+          marginRight: 8,
+        },
+      ]}
+    >
+      <Feather name="layers" size={16} color={COLORS.accent} />
+      <Text
+        numberOfLines={1}
+        style={{ color: COLORS.accent, fontWeight: "800", marginLeft: 6, maxWidth: 160 }}
+      >
+        {label}
+      </Text>
+      <Feather name="chevron-down" size={16} color={COLORS.accent} />
+    </Pressable>
+  );
+}
+
 export default function RootLayout() {
   useAppFocusSync();
   setupIOSDevFetchShim();
 
+  const pathname = usePathname();
+  const inAuthFlow = pathname?.startsWith("/auth");
   const insets = useSafeAreaInsets();
+
+  const [authReady, setAuthReady] = useState(false);
+  const [authed, setAuthed] = useState(false);
+  const [activeTenant, setActiveTenantState] = useState<string | null>(null);
+
+  // 🔔 inicializa notificaciones una sola vez
+  useEffect(() => {
+    Notifs.initNotifications?.().catch(() => {});
+  }, []);
+
+  // 🔁 re-agenda recordatorios abiertos con remind_at_ms futuro (si la función existe)
+  useEffect(() => {
+    if (typeof Notifs.reensurePendingReminders !== "function") {
+      console.log("reensurePendingReminders no disponible (web/caché).");
+      return;
+    }
+    Notifs.reensurePendingReminders(async () => {
+      const list = await listOpenActivitiesWithReminder(Date.now());
+      return list.map((a) => ({
+        id: a.id,
+        title: a.title,
+        notes: a.notes ?? null,
+        remindAtMs: a.remindAtMs,
+      }));
+    }).catch(() => {});
+  }, []);
+
+  // Boot inicial
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const hasToken = await isAuthenticated();
+        if (hasToken) {
+          const info = await apiMe().catch(() => null);
+          // ⬇️ Usamos active_tenant del backend
+          if (info?.active_tenant) {
+            await setActiveTenant(info.active_tenant);
+          }
+          setAuthed(Boolean(info));
+        } else if (AUTO_LOGIN) {
+          const data = await apiLogin({ email: "admin@demo.local", password: "demo" }).catch(() => null);
+          if (data?.active_tenant) await setActiveTenant(data.active_tenant);
+          setAuthed(Boolean(data));
+        } else {
+          setAuthed(false);
+        }
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Mantener el pill del header sincronizado con el tenant guardado
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      const t = await getActiveTenant();
+      if (!ignore) setActiveTenantState(t);
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [pathname]); // refresca cuando navegas (ej: después de cambiar en /more)
+
+  // Guard al navegar
+  useEffect(() => {
+    if (!authReady) return;
+    (async () => {
+      const has = await isAuthenticated();
+      if (!has && !inAuthFlow) router.replace("/auth/login");
+      if (has && inAuthFlow) router.replace("/");
+    })();
+  }, [authReady, inAuthFlow, pathname]);
+
+  if (!authReady) {
+    return <View style={{ flex: 1, backgroundColor: COLORS.bg }} />;
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Status bar clara sobre fondo oscuro */}
-      <StatusBar style="light" />
+      <ToastProvider>
+        <StatusBar style="light" />
 
-      <View style={styles.appContainer}>
-        <Stack
-          screenOptions={{
-            contentStyle: {
-              backgroundColor: COLORS.bg,
-              paddingBottom: TAB_HEIGHT + insets.bottom,
-            },
-            headerStyle: { backgroundColor: COLORS.bg },
-            headerTitleStyle: { color: COLORS.text, fontWeight: "800" },
-            headerTintColor: COLORS.text,
-            headerShadowVisible: false,
-          }}
-        />
+        <View style={styles.appContainer}>
+          {/* 🔧 Aseguramos que /calendar/google tenga header y título */}
+          <Stack
+            screenOptions={{
+              contentStyle: {
+                backgroundColor: COLORS.bg,
+                paddingBottom: inAuthFlow ? 0 : TAB_HEIGHT + Math.max(insets.bottom, 8),
+              },
+              headerStyle: { backgroundColor: COLORS.bg },
+              headerTitleStyle: { color: COLORS.text, fontWeight: "800" },
+              headerTintColor: COLORS.text,
+              headerShadowVisible: false,
+              headerRight: () => (inAuthFlow ? null : <TenantPill value={activeTenant} />),
+            }}
+          >
+            <Stack.Screen name="index" options={{ title: "Inicio" }} />
+            <Stack.Screen name="calendar/google" options={{ title: "Google Calendar" }} />
+          </Stack>
 
-        {/* Menú inferior persistente */}
-        <BottomBar bottomInset={insets.bottom} />
-      </View>
+          {!inAuthFlow && <BottomBar bottomInset={insets.bottom} />}
+        </View>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }
@@ -125,11 +256,12 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
   const pathname = usePathname();
 
   const items = [
-    { href: "/",          label: "Resumen",  icon: "home" as const },
-    { href: "/contacts",  label: "Contactos",icon: "users" as const },
-    { href: "/deals",     label: "Oportun.", icon: "briefcase" as const },
-    { href: "/tasks",     label: "Activ.",   icon: "check-square" as const },
-    { href: "/more",      label: "Más",      icon: "grid" as const },
+    { href: "/",                 label: "Resumen",   icon: "home" as const },
+    { href: "/contacts",         label: "Contactos", icon: "users" as const },
+    { href: "/deals",            label: "Oportun.",  icon: "briefcase" as const },
+    { href: "/tasks",            label: "Activ.",    icon: "check-square" as const },
+    { href: "/calendar",         label: "Calend.",   icon: "calendar" as const }, // 👈 añadido
+    { href: "/more",             label: "Más",       icon: "grid" as const },
   ];
 
   const isActive = (href: string) => {
@@ -215,9 +347,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 4,
     borderRadius: 12,
   },
-  // “pill” sutil para el tab activo
   tabItemActive: {
-    backgroundColor: "rgba(124,58,237,0.12)", // morado translúcido
+    backgroundColor: "rgba(124,58,237,0.12)",
     borderWidth: 1,
     borderColor: "rgba(124,58,237,0.35)",
   },
@@ -227,224 +358,3 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 });
-
-
-// // app/_layout.tsx
-// import { Feather } from "@expo/vector-icons";
-// import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
-// import Constants from "expo-constants"; // 👈 para detectar la IP LAN de Expo
-// import { Stack, router, usePathname } from "expo-router";
-// import { StatusBar } from "expo-status-bar";
-// import React, { useEffect } from "react";
-// import {
-//   AppState,
-//   Platform,
-//   Pressable,
-//   StyleSheet,
-//   Text,
-//   View,
-// } from "react-native";
-// import { useSafeAreaInsets } from "react-native-safe-area-context";
-
-// const queryClient = new QueryClient();
-
-// const COLORS = {
-//   bg: "#0E0F11",   // fondo app
-//   text: "#EAEAEA", // texto claro
-//   accent: "#FF6A00",
-//   border: "#2a2a2c",
-//   subtle: "rgba(255,255,255,0.7)",
-// };
-
-// const TAB_HEIGHT = 60;
-
-// function useAppFocusSync() {
-//   useEffect(() => {
-//     const sub = AppState.addEventListener("change", (state) => {
-//       if (Platform.OS !== "web") {
-//         focusManager.setFocused(state === "active");
-//       }
-//     });
-//     // @ts-ignore RN nuevas versiones devuelven objeto con remove()
-//     return () => sub?.remove?.();
-//   }, []);
-// }
-
-// /** iOS DEV shim:
-//  * Si una request apunta a localhost/host privado, la reescribe a la IP LAN que usa Expo Go.
-//  * ✔️ Solo iOS y __DEV__, no afecta Android/Web ni builds de producción.
-//  * ✔️ No modifica tus servicios ni BASE_URLs; es transparente para tu código.
-//  */
-// function setupIOSDevFetchShim() {
-//   if (!__DEV__ || Platform.OS !== "ios") return;
-
-//   const origFetch = global.fetch;
-//   // hostUri suele ser "192.168.1.50:8081" → tomamos la IP
-//   const hostUri =
-//     // @ts-ignore - distintas claves según versión de Expo
-//     Constants?.expoConfig?.hostUri ||
-//     // @ts-ignore
-//     Constants?.manifest2?.extra?.expoGo?.hostUri ||
-//     "";
-//   const lanHost = typeof hostUri === "string" ? hostUri.split(":")[0] : null; // "192.168.1.50"
-//   const lanBase3001 = lanHost ? `http://${lanHost}:3001` : null;
-//   if (!lanBase3001) return;
-
-//   // 👇 Agrega aquí los hosts/puertos internos que iOS no puede resolver en tu entorno
-//   const BAD_HOSTS = [
-//     "http://localhost:3001",
-//     "http://127.0.0.1:3001",
-//     "http://postlab-vm40:3001",
-//     "http://atomica-vm:3001",
-//     // "http://TU-HOST:3001",
-//   ];
-
-//   global.fetch = (async (input: any, init?: RequestInit) => {
-//     try {
-//       let url = typeof input === "string" ? input : input?.url;
-
-//       if (typeof url === "string") {
-//         for (const bad of BAD_HOSTS) {
-//           if (url.startsWith(bad)) {
-//             const rew = lanBase3001 + url.slice(bad.length);
-//             // console.log("[iOS shim] ↪", url, "=>", rew);
-//             if (typeof input === "string") {
-//               input = rew;
-//             } else {
-//               input = new Request(rew, input);
-//             }
-//             break;
-//           }
-//         }
-//       }
-//       return await origFetch(input, init);
-//     } catch (e) {
-//       // console.warn("[iOS shim] fetch error:", e);
-//       throw e;
-//     }
-//   }) as any;
-// }
-
-// export default function RootLayout() {
-//   useAppFocusSync();
-//   setupIOSDevFetchShim(); // 👈 activamos el shim solo en iOS+DEV
-
-//   const insets = useSafeAreaInsets();
-
-//   return (
-//     <QueryClientProvider client={queryClient}>
-//       {/* Status bar clara sobre fondo oscuro */}
-//       <StatusBar style="light" />
-
-//       <View style={styles.appContainer}>
-//         <Stack
-//           screenOptions={{
-//             // Fondo de TODAS las pantallas
-//             contentStyle: {
-//               backgroundColor: COLORS.bg,
-//               // espacio para que la barra no tape el contenido
-//               paddingBottom: TAB_HEIGHT + insets.bottom,
-//             },
-//             // Header oscuro y sin sombra
-//             headerStyle: { backgroundColor: COLORS.bg },
-//             headerTitleStyle: { color: COLORS.text, fontWeight: "800" },
-//             headerTintColor: COLORS.text,
-//             headerShadowVisible: false,
-//           }}
-//         />
-
-//         {/* Menú inferior persistente */}
-//         <BottomBar bottomInset={insets.bottom} />
-//       </View>
-//     </QueryClientProvider>
-//   );
-// }
-
-// function BottomBar({ bottomInset }: { bottomInset: number }) {
-//   const pathname = usePathname();
-
-//   const items = [
-//     { href: "/", label: "Resumen", icon: "home" as const },
-//     { href: "/contacts", label: "Contactos", icon: "users" as const },
-//     { href: "/deals", label: "Oportun.", icon: "briefcase" as const },
-//     { href: "/tasks", label: "Activ.", icon: "check-square" as const },
-//     { href: "/more", label: "Más", icon: "grid" as const },
-//   ];
-
-//   const isActive = (href: string) => {
-//     // activo si coincide exacto o si estás en una subruta (ej: /contacts/123)
-//     if (href === "/") return pathname === "/" || pathname === "";
-//     return pathname === href || pathname.startsWith(href + "/");
-//   };
-
-//   return (
-//     <View
-//       style={[
-//         styles.tabBar,
-//         { paddingBottom: Math.max(bottomInset, 8), height: TAB_HEIGHT + Math.max(bottomInset, 8) },
-//       ]}
-//     >
-//       {items.map((it) => {
-//         const active = isActive(it.href);
-//         return (
-//           <Pressable
-//             key={it.href}
-//             onPress={() => router.push(it.href as any)}
-//             style={({ pressed }) => [
-//               styles.tabItem,
-//               pressed && !active && { opacity: 0.85 },
-//             ]}
-//             android_ripple={{ color: "rgba(255,255,255,0.06)", borderless: false }}
-//           >
-//             <Feather
-//               name={it.icon}
-//               size={20}
-//               color={active ? COLORS.accent : COLORS.subtle}
-//             />
-//             <Text
-//               numberOfLines={1}
-//               style={[
-//                 styles.tabLabel,
-//                 { color: active ? COLORS.accent : COLORS.subtle },
-//               ]}
-//             >
-//               {it.label}
-//             </Text>
-//           </Pressable>
-//         );
-//       })}
-//     </View>
-//   );
-// }
-
-// const styles = StyleSheet.create({
-//   appContainer: {
-//     flex: 1,
-//     backgroundColor: COLORS.bg,
-//   },
-//   tabBar: {
-//     position: "absolute",
-//     left: 0,
-//     right: 0,
-//     bottom: 0,
-//     backgroundColor: COLORS.bg,
-//     borderTopWidth: 1,
-//     borderTopColor: COLORS.border,
-//     flexDirection: "row",
-//     alignItems: "center",
-//     justifyContent: "space-around",
-//     paddingTop: 8,
-//   },
-//   tabItem: {
-//     flex: 1,
-//     alignItems: "center",
-//     justifyContent: "center",
-//     gap: 4,
-//   },
-//   tabLabel: {
-//     fontSize: 11,
-//     fontWeight: "800",
-//     letterSpacing: 0.2,
-//   },
-// });
-

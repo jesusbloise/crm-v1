@@ -1,48 +1,118 @@
 // app/contacts/new.tsx
 import { listAccounts } from "@/src/api/accounts";
+import { createActivity } from "@/src/api/activities";
 import { createContact } from "@/src/api/contacts";
+import { createNote } from "@/src/api/notes";
+import { initNotifications, scheduleActivityReminder } from "@/src/utils/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
-import React, { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  FlatList,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
+  ToastAndroid,
   View,
 } from "react-native";
 
-/* 🎨 Tema consistente */
-const BG       = "#0b0c10";
-const CARD     = "#14151a";
-const FIELD    = "#121318";
-const BORDER   = "#272a33";
-const TEXT     = "#e8ecf1";
-const SUBTLE   = "#a9b0bd";
-const ACCENT   = "#7c3aed";   // primario morado
+/* 🎨 Paleta */
+const PRIMARY = "#7C3AED";
+const ACCENT  = "#22D3EE";
+const BG      = "#0F1115";
+const CARD    = "#171923";
+const FIELD   = "#121318";
+const BORDER  = "#2B3140";
+const TEXT    = "#F3F4F6";
+const SUBTLE  = "#A4ADBD";
+const DANGER  = "#EF4444";
 
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+function uid() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 
 export default function NewContact() {
   const qc = useQueryClient();
 
+  // catálogos
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
 
-  const [accountId, setAccountId] = useState<string | undefined>(undefined);
-  const [name, setName]           = useState("");
-  const [company, setCompany]     = useState("");
-  const [position, setPosition]   = useState("");
-  const [email, setEmail]         = useState("");
-  const [phone, setPhone]         = useState("");
-  const [err, setErr]             = useState<string | null>(null);
+  // formulario contacto
+  const [accountId, setAccountId] = useState<string | undefined>();
+  const [name, setName] = useState("");
+  const [company, setCompany] = useState("");
+  const [position, setPosition] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+
+  // nota + recordatorio
+  const [notes, setNotes] = useState("");
+  const [dateStr, setDateStr] = useState(""); // YYYY-MM-DD
+  const [timeStr, setTimeStr] = useState(""); // HH:MM
+  const [remind, setRemind] = useState(false);
+
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    initNotifications().catch(() => {});
+  }, []);
+
+  const placeholderTitle = useMemo(
+    () => (name.trim() ? `Seguimiento a ${name.trim()}` : "Recordatorio"),
+    [name]
+  );
+
+  const parseDueDate = (s: string): number | null => {
+    if (!s.trim()) return null;
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return NaN as any;
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (isNaN(d.getTime())) return NaN as any;
+    return d.getTime();
+  };
+  const parseTime = (s: string): { h: number; m: number } | null => {
+    if (!s.trim()) return null;
+    const m = s.match(/^(\d{2}):([0-5]\d)$/);
+    if (!m) return null;
+    return { h: Number(m[1]), m: Number(m[2]) };
+  };
+
+  const validate = () => {
+    if (!name.trim()) return "El nombre es obligatorio.";
+    if (dateStr.trim()) {
+      const ts = parseDueDate(dateStr);
+      if (isNaN(ts as any)) return "La fecha debe ser YYYY-MM-DD.";
+    }
+    if (remind) {
+      if (!dateStr.trim()) return "Para recordar, ingresa una fecha.";
+      if (!timeStr.trim() || !parseTime(timeStr)) return "La hora debe ser HH:MM (24h).";
+      const base = parseDueDate(dateStr)!;
+      const t = parseTime(timeStr)!;
+      const when = new Date(base);
+      when.setHours(t.h, t.m, 0, 0);
+      if (when.getTime() <= Date.now()) return "El recordatorio debe ser en el futuro.";
+    }
+    return null;
+  };
 
   const m = useMutation({
     mutationFn: async () => {
-      setErr(null);
-      if (!name.trim()) throw new Error("Nombre requerido");
+      const v = validate();
+      if (v) {
+        setError(v);
+        throw new Error(v);
+      }
+      setError(null);
+
+      // 1) Crear contacto
+      const contactId = uid();
       await createContact({
-        id: uid(),
+        id: contactId,
         name: name.trim(),
         company: company || undefined,
         position: position || undefined,
@@ -50,131 +120,236 @@ export default function NewContact() {
         phone: phone || undefined,
         account_id: accountId || undefined,
       } as any);
+
+      // 2) Crear nota (si hay)
+      const noteBody = notes.trim();
+      if (noteBody) {
+        await createNote({
+          id: uid(),
+          body: noteBody,
+          contact_id: contactId,
+          account_id: accountId || undefined,
+        } as any);
+
+        // 2.1) ➕ Registrar también como ACTIVIDAD tipo "note"
+        const noteActivityId = uid();
+        await createActivity({
+          id: noteActivityId,
+          type: "note",
+          title: noteBody.slice(0, 80) || "Nota",
+          status: "done",
+          notes: noteBody,
+          due_date: null as any,
+          contact_id: contactId,
+          account_id: accountId || undefined,
+        } as any);
+      }
+
+      // 3) Crear actividad (task) si hay recordatorio — con remind_at_ms
+      if (remind) {
+        const base = parseDueDate(dateStr)!; // día (00:00)
+        const t = parseTime(timeStr)!;
+        const when = new Date(base);
+        when.setHours(t.h, t.m, 0, 0);
+
+        const actId = uid();
+        await createActivity({
+          id: actId,
+          type: "task",
+          title: placeholderTitle,
+          status: "open",
+          notes: noteBody || null,
+          due_date: base,               // guarda el día
+          remind_at_ms: when.getTime(), // ← instante exacto para re-agendar
+          contact_id: contactId,
+          account_id: accountId || undefined,
+        } as any);
+
+        // 🔔 Notificación local para la fecha+hora exactas
+        await scheduleActivityReminder({
+          activityId: actId,
+          title: placeholderTitle,
+          body: noteBody || "Tienes una actividad pendiente",
+          when,
+        });
+      }
     },
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["contacts"] });
-      router.back();
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["contacts"] }),
+        qc.invalidateQueries({ queryKey: ["notes"] }),
+        qc.invalidateQueries({ queryKey: ["activities"] }),
+      ]);
+
+      const msg = "Contacto guardado";
+      if (Platform.OS === "android") {
+        ToastAndroid.show(msg, ToastAndroid.SHORT);
+      } else {
+        Alert.alert(msg);
+      }
+      router.replace("/contacts");
     },
-    onError: (e: any) => setErr(String(e?.message || e)),
+    onError: (e: any) => {
+      const msg = String(e?.message ?? "No se pudo crear el contacto");
+      if (Platform.OS === "android") {
+        ToastAndroid.show(msg, ToastAndroid.LONG);
+      } else {
+        Alert.alert("Error", msg);
+      }
+    },
   });
 
   return (
-    <>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: BG }}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+    >
       <Stack.Screen
         options={{
-          title: "Nuevo Contacto",
+          title: "Nuevo contacto",
           headerStyle: { backgroundColor: BG },
           headerTintColor: TEXT,
           headerTitleStyle: { color: TEXT, fontWeight: "800" },
         }}
       />
-      <View style={styles.screen}>
-        {err ? <Text style={styles.err}>⚠️ {err}</Text> : null}
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        {/* Datos del contacto */}
+        <Text style={styles.label}>Nombre *</Text>
+        <TextInput
+          style={styles.input}
+          value={name}
+          onChangeText={setName}
+          placeholder="Ej: Juan Pérez"
+          placeholderTextColor={SUBTLE}
+        />
+        <Text style={styles.label}>Empresa</Text>
+        <TextInput
+          style={styles.input}
+          value={company}
+          onChangeText={setCompany}
+          placeholder="Opcional"
+          placeholderTextColor={SUBTLE}
+        />
+        <Text style={styles.label}>Cargo</Text>
+        <TextInput
+          style={styles.input}
+          value={position}
+          onChangeText={setPosition}
+          placeholder="Opcional"
+          placeholderTextColor={SUBTLE}
+        />
+        <Text style={styles.label}>Email</Text>
+        <TextInput
+          style={styles.input}
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          keyboardType="email-address"
+          placeholder="usuario@dominio.com"
+          placeholderTextColor={SUBTLE}
+        />
+        <Text style={styles.label}>Teléfono</Text>
+        <TextInput
+          style={styles.input}
+          value={phone}
+          onChangeText={setPhone}
+          keyboardType="phone-pad"
+          placeholder="+58 412 000 0000"
+          placeholderTextColor={SUBTLE}
+        />
 
-        <View style={{ gap: 12 }}>
-          <TextInput
-            placeholder="Nombre*"
-            value={name}
-            onChangeText={setName}
-            style={styles.input}
-            placeholderTextColor={SUBTLE}
-          />
-          <TextInput
-            placeholder="Empresa (texto)"
-            value={company}
-            onChangeText={setCompany}
-            style={styles.input}
-            placeholderTextColor={SUBTLE}
-          />
-          <TextInput
-            placeholder="Cargo"
-            value={position}
-            onChangeText={setPosition}
-            style={styles.input}
-            placeholderTextColor={SUBTLE}
-          />
-          <TextInput
-            placeholder="Email"
-            value={email}
-            onChangeText={setEmail}
-            style={styles.input}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            placeholderTextColor={SUBTLE}
-          />
-          <TextInput
-            placeholder="Teléfono"
-            value={phone}
-            onChangeText={setPhone}
-            style={styles.input}
-            keyboardType="phone-pad"
-            placeholderTextColor={SUBTLE}
-          />
+        {/* Cuenta (chips) */}
+        <Text style={styles.label}>Cuenta (opcional)</Text>
+        <View style={styles.chipsRow}>
+          {(qAcc.data ?? []).map((a) => {
+            const active = accountId === a.id;
+            return (
+              <Pressable
+                key={a.id}
+                onPress={() => setAccountId(active ? undefined : a.id)}
+                style={[styles.chip, active && styles.chipActive]}
+                accessibilityRole="button"
+              >
+                <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
+                  {a.name}
+                </Text>
+              </Pressable>
+            );
+          })}
+          {(qAcc.data ?? []).length === 0 && <Text style={styles.subtle}>— no hay cuentas —</Text>}
         </View>
 
-        {/* Selector de Cuenta — sin margen arriba/abajo y chips compactas */}
-        <Text style={styles.label}>Cuenta (opcional)</Text>
-        {qAcc.isLoading ? (
-          <Text style={styles.subtle}>Cargando cuentas…</Text>
-        ) : qAcc.isError ? (
-          <Text style={styles.err}>
-            Error cargando cuentas: {String((qAcc.error as any)?.message || qAcc.error)}
-          </Text>
-        ) : (
-          <FlatList
-            horizontal
-            data={qAcc.data ?? []}
-            keyExtractor={(a) => a.id}
-            contentContainerStyle={{ paddingVertical: 0 }}   // 👈 sin margen vertical
-            showsHorizontalScrollIndicator={false}
-            ItemSeparatorComponent={() => <View style={{ width: 8 }} />} // espacio entre chips
-            renderItem={({ item }) => {
-              const selected = accountId === item.id;
-              return (
-                <Pressable
-                  onPress={() => setAccountId(selected ? undefined : item.id)}
-                  style={[styles.chip, selected && styles.chipActive]}
-                  accessibilityRole="button"
-                >
-                  <Text
-                    style={[styles.chipText, selected && styles.chipTextActive]}
-                    numberOfLines={1}
-                  >
-                    {item.name}
-                  </Text>
-                </Pressable>
-              );
-            }}
-            ListEmptyComponent={
-              <Text style={styles.subtle}>
-                No hay cuentas aún. Crea una en “Cuentas”.
-              </Text>
-            }
-          />
-        )}
+        {/* Nota */}
+        <Text style={styles.label}>Nota</Text>
+        <TextInput
+          style={[styles.input, { minHeight: 90, textAlignVertical: "top" }]}
+          value={notes}
+          onChangeText={setNotes}
+          placeholder="Escribe una nota para este contacto…"
+          placeholderTextColor={SUBTLE}
+          multiline
+        />
 
+        {/* Fecha/Hora + Recordarme */}
+        <Text style={styles.label}>Fecha (YYYY-MM-DD)</Text>
+        <TextInput
+          style={styles.input}
+          value={dateStr}
+          onChangeText={setDateStr}
+          autoCapitalize="none"
+          keyboardType="numbers-and-punctuation"
+          placeholder="2025-02-28"
+          placeholderTextColor={SUBTLE}
+        />
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.label}>Hora (HH:MM)</Text>
+            <TextInput
+              style={styles.input}
+              value={timeStr}
+              onChangeText={setTimeStr}
+              autoCapitalize="none"
+              keyboardType="numbers-and-punctuation"
+              placeholder="14:30"
+              placeholderTextColor={SUBTLE}
+            />
+          </View>
+          <View style={{ alignItems: "center" }}>
+            <Text style={[styles.label, { marginBottom: 6 }]}>Recordarme</Text>
+            <Switch
+              value={remind}
+              onValueChange={setRemind}
+              trackColor={{ false: "#444", true: PRIMARY }}
+              thumbColor={remind ? "#fff" : "#ccc"}
+            />
+          </View>
+        </View>
+
+        {!!error && <Text style={styles.error}>{error}</Text>}
+
+        {/* Acciones */}
         <Pressable
-          style={({ pressed }) => [
-            styles.primaryBtn,
-            pressed && styles.pressed,
-            m.isPending && { opacity: 0.9 },
-          ]}
+          style={[styles.btn, styles.btnPrimary, m.isPending && { opacity: 0.9 }]}
           onPress={() => m.mutate()}
           disabled={m.isPending}
-          accessibilityRole="button"
         >
-          <Text style={styles.primaryBtnText}>
-            {m.isPending ? "Guardando..." : "Guardar"}
-          </Text>
+          <Text style={styles.btnText}>{m.isPending ? "Guardando…" : "Guardar contacto"}</Text>
         </Pressable>
-      </View>
-    </>
+
+        <Pressable style={[styles.btn, styles.btnGhost]} onPress={() => router.back()}>
+          <Text style={styles.btnText}>Cancelar</Text>
+        </Pressable>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
+/* ——— Estilos ——— */
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
-
+  container: { padding: 16, gap: 12 },
+  label: { color: TEXT, fontWeight: "900", marginTop: 2 },
   input: {
     borderWidth: 1,
     borderColor: BORDER,
@@ -183,208 +358,413 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
   },
-
-  label: { color: TEXT, fontWeight: "800", marginTop: 10, marginBottom: 4 },
-  subtle: { color: SUBTLE },
-
-  // 🔽 Chips compactas y sin “alto raro”
+  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
   chip: {
-    minHeight: 28,
     paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
     borderWidth: 1,
     borderColor: BORDER,
     backgroundColor: CARD,
-    alignItems: "center",
-    justifyContent: "center",
-    alignSelf: "flex-start",    // evita estirarse verticalmente
   },
-  chipActive: { backgroundColor: ACCENT, borderColor: ACCENT },
-  chipText: { color: TEXT, fontWeight: "800", fontSize: 12, maxWidth: 160 },
+  chipActive: { backgroundColor: PRIMARY, borderColor: PRIMARY },
+  chipText: { color: TEXT, fontWeight: "800", fontSize: 12, maxWidth: 180 },
   chipTextActive: { color: "#fff" },
-
-  primaryBtn: {
-    marginTop: 8,
-    backgroundColor: ACCENT,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: "center",
+  btn: { marginTop: 6, padding: 12, borderRadius: 12, alignItems: "center" },
+  btnText: { color: "#fff", fontWeight: "900" },
+  btnPrimary: { backgroundColor: PRIMARY, borderWidth: 1, borderColor: "rgba(255,255,255,0.16)" },
+  btnGhost: {
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
+    borderColor: "rgba(255,255,255,0.12)",
   },
-  primaryBtnText: { color: "#fff", fontWeight: "900" },
-  pressed: { opacity: 0.9 },
-
-  err: { color: "#fecaca" },
+  subtle: { color: SUBTLE },
+  error: { color: "#fecaca" },
 });
-
 
 
 // // app/contacts/new.tsx
 // import { listAccounts } from "@/src/api/accounts";
+// import { createActivity } from "@/src/api/activities";
 // import { createContact } from "@/src/api/contacts";
+// import { createNote } from "@/src/api/notes";
+// import { initNotifications, scheduleActivityReminder } from "@/src/utils/notifications";
 // import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 // import { Stack, router } from "expo-router";
-// import { useState } from "react";
+// import { useEffect, useMemo, useState } from "react";
 // import {
-//     FlatList,
-//     Pressable,
-//     StyleSheet,
-//     Text,
-//     TextInput,
-//     View,
+//   Alert,
+//   KeyboardAvoidingView,
+//   Platform,
+//   Pressable,
+//   ScrollView,
+//   StyleSheet,
+//   Switch,
+//   Text,
+//   TextInput,
+//   ToastAndroid,
+//   View,
 // } from "react-native";
 
-// const uid = () =>
-//   Math.random().toString(36).slice(2) + Date.now().toString(36);
+// /* 🎨 Paleta */
+// const PRIMARY = "#7C3AED";
+// const ACCENT  = "#22D3EE";
+// const BG      = "#0F1115";
+// const CARD    = "#171923";
+// const FIELD   = "#121318";
+// const BORDER  = "#2B3140";
+// const TEXT    = "#F3F4F6";
+// const SUBTLE  = "#A4ADBD";
+// const DANGER  = "#EF4444";
+
+// function uid() {
+//   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+// }
 
 // export default function NewContact() {
 //   const qc = useQueryClient();
 
-//   // 1) Traemos las cuentas existentes para el selector
+//   // catálogos
 //   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
 
-//   // 2) Estado del formulario
-//   const [accountId, setAccountId] = useState<string | undefined>(undefined);
+//   // formulario contacto
+//   const [accountId, setAccountId] = useState<string | undefined>();
 //   const [name, setName] = useState("");
-//   const [company, setCompany] = useState(""); // opcional, mientras migramos a accounts
+//   const [company, setCompany] = useState("");
 //   const [position, setPosition] = useState("");
 //   const [email, setEmail] = useState("");
 //   const [phone, setPhone] = useState("");
 
-//   // 3) Mutación para crear
+//   // nota + recordatorio
+//   const [notes, setNotes] = useState("");
+//   const [dateStr, setDateStr] = useState(""); // YYYY-MM-DD
+//   const [timeStr, setTimeStr] = useState(""); // HH:MM
+//   const [remind, setRemind] = useState(false);
+
+//   const [error, setError] = useState<string | null>(null);
+
+//   useEffect(() => {
+//     initNotifications().catch(() => {});
+//   }, []);
+
+//   const placeholderTitle = useMemo(
+//     () => (name.trim() ? `Seguimiento a ${name.trim()}` : "Recordatorio"),
+//     [name]
+//   );
+
+//   const parseDueDate = (s: string): number | null => {
+//     if (!s.trim()) return null;
+//     const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+//     if (!m) return NaN as any;
+//     const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+//     if (isNaN(d.getTime())) return NaN as any;
+//     return d.getTime();
+//   };
+//   const parseTime = (s: string): { h: number; m: number } | null => {
+//     if (!s.trim()) return null;
+//     const m = s.match(/^(\d{2}):([0-5]\d)$/);
+//     if (!m) return null;
+//     return { h: Number(m[1]), m: Number(m[2]) };
+//   };
+
+//   const validate = () => {
+//     if (!name.trim()) return "El nombre es obligatorio.";
+//     if (dateStr.trim()) {
+//       const ts = parseDueDate(dateStr);
+//       if (isNaN(ts as any)) return "La fecha debe ser YYYY-MM-DD.";
+//     }
+//     if (remind) {
+//       if (!dateStr.trim()) return "Para recordar, ingresa una fecha.";
+//       if (!timeStr.trim() || !parseTime(timeStr)) return "La hora debe ser HH:MM (24h).";
+//       const base = parseDueDate(dateStr)!;
+//       const t = parseTime(timeStr)!;
+//       const when = new Date(base);
+//       when.setHours(t.h, t.m, 0, 0);
+//       if (when.getTime() <= Date.now()) return "El recordatorio debe ser en el futuro.";
+//     }
+//     return null;
+//   };
+
 //   const m = useMutation({
 //     mutationFn: async () => {
-//       if (!name.trim()) throw new Error("Nombre requerido");
+//       const v = validate();
+//       if (v) {
+//         setError(v);
+//         throw new Error(v);
+//       }
+//       setError(null);
+
+//       // 1) Crear contacto
+//       const contactId = uid();
 //       await createContact({
-//         id: uid(),
-//         name,
-//         // company lo mandamos solo si no está vacío
+//         id: contactId,
+//         name: name.trim(),
 //         company: company || undefined,
 //         position: position || undefined,
 //         email: email || undefined,
 //         phone: phone || undefined,
-//         // 👇 clave: enlazar con la cuenta elegida
 //         account_id: accountId || undefined,
 //       } as any);
+
+//       // 2) Crear nota (si hay)
+//       const noteBody = notes.trim();
+//       if (noteBody) {
+//         await createNote({
+//           id: uid(),
+//           body: noteBody,
+//           contact_id: contactId,
+//           account_id: accountId || undefined,
+//         } as any);
+
+//         // 2.1) ➕ Registrar también como ACTIVIDAD tipo "note" en la línea de tiempo
+//         const noteActivityId = uid();
+//         await createActivity({
+//           id: noteActivityId,
+//           type: "note",                         // ← clave: actividad de tipo "note"
+//           title: noteBody.slice(0, 80) || "Nota",
+//           status: "done",                       // cerrada/registrada
+//           notes: noteBody,                      // contenido completo
+//           due_date: null as any,                // sin fecha de vencimiento
+//           contact_id: contactId,
+//           account_id: accountId || undefined,
+//         } as any);
+//       }
+
+//       // 3) Crear actividad (task) si hay recordatorio
+//       if (remind) {
+//         const base = parseDueDate(dateStr)!;
+//         const t = parseTime(timeStr)!;
+//         const when = new Date(base);
+//         when.setHours(t.h, t.m, 0, 0);
+
+//         const actId = uid();
+//         await createActivity({
+//           id: actId,
+//           type: "task",
+//           title: placeholderTitle,
+//           status: "open",
+//           notes: noteBody || null,
+//           due_date: base, // guarda el día como en tasks/new.tsx
+//           contact_id: contactId,
+//           account_id: accountId || undefined,
+//         } as any);
+
+//         // 🔔 Notificación local para la fecha+hora exactas
+//         await scheduleActivityReminder({
+//           activityId: actId,
+//           title: placeholderTitle,
+//           body: noteBody || "Tienes una actividad pendiente",
+//           when,
+//         });
+//       }
 //     },
 //     onSuccess: async () => {
-//       await qc.invalidateQueries({ queryKey: ["contacts"] });
-//       router.back();
+//       await Promise.all([
+//         qc.invalidateQueries({ queryKey: ["contacts"] }),
+//         qc.invalidateQueries({ queryKey: ["notes"] }),
+//         qc.invalidateQueries({ queryKey: ["activities"] }),
+//       ]);
+
+//       const msg = "Contacto guardado";
+//       if (Platform.OS === "android") {
+//         ToastAndroid.show(msg, ToastAndroid.SHORT);
+//       } else {
+//         Alert.alert(msg);
+//       }
+//       router.replace("/contacts");
+//     },
+//     onError: (e: any) => {
+//       const msg = String(e?.message ?? "No se pudo crear el contacto");
+//       if (Platform.OS === "android") {
+//         ToastAndroid.show(msg, ToastAndroid.LONG);
+//       } else {
+//         Alert.alert("Error", msg);
+//       }
 //     },
 //   });
 
 //   return (
-//     <>
-//       <Stack.Screen options={{ title: "Nuevo Contacto" }} />
-//       <View style={styles.container}>
+//     <KeyboardAvoidingView
+//       style={{ flex: 1, backgroundColor: BG }}
+//       behavior={Platform.OS === "ios" ? "padding" : undefined}
+//       keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+//     >
+//       <Stack.Screen
+//         options={{
+//           title: "Nuevo contacto",
+//           headerStyle: { backgroundColor: BG },
+//           headerTintColor: TEXT,
+//           headerTitleStyle: { color: TEXT, fontWeight: "800" },
+//         }}
+//       />
+//       <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+//         {/* …(todo tu UI igual)… */}
+
+//         {/* Datos del contacto */}
+//         <Text style={styles.label}>Nombre *</Text>
 //         <TextInput
-//           placeholder="Nombre*"
+//           style={styles.input}
 //           value={name}
 //           onChangeText={setName}
-//           style={styles.input}
+//           placeholder="Ej: Juan Pérez"
+//           placeholderTextColor={SUBTLE}
 //         />
-
-//         {/* Empresa “texto” (opcional mientras migramos) */}
+//         <Text style={styles.label}>Empresa</Text>
 //         <TextInput
-//           placeholder="Empresa (texto)"
+//           style={styles.input}
 //           value={company}
 //           onChangeText={setCompany}
-//           style={styles.input}
+//           placeholder="Opcional"
+//           placeholderTextColor={SUBTLE}
 //         />
-
+//         <Text style={styles.label}>Cargo</Text>
 //         <TextInput
-//           placeholder="Cargo"
+//           style={styles.input}
 //           value={position}
 //           onChangeText={setPosition}
-//           style={styles.input}
+//           placeholder="Opcional"
+//           placeholderTextColor={SUBTLE}
 //         />
+//         <Text style={styles.label}>Email</Text>
 //         <TextInput
-//           placeholder="Email"
+//           style={styles.input}
 //           value={email}
 //           onChangeText={setEmail}
-//           style={styles.input}
+//           autoCapitalize="none"
 //           keyboardType="email-address"
+//           placeholder="usuario@dominio.com"
+//           placeholderTextColor={SUBTLE}
 //         />
+//         <Text style={styles.label}>Teléfono</Text>
 //         <TextInput
-//           placeholder="Teléfono"
+//           style={styles.input}
 //           value={phone}
 //           onChangeText={setPhone}
-//           style={styles.input}
 //           keyboardType="phone-pad"
+//           placeholder="+58 412 000 0000"
+//           placeholderTextColor={SUBTLE}
 //         />
 
-//         {/* Selector de Cuenta */}
+//         {/* Cuenta (chips) */}
 //         <Text style={styles.label}>Cuenta (opcional)</Text>
-//         {qAcc.isLoading ? (
-//           <Text style={{ opacity: 0.7 }}>Cargando cuentas…</Text>
-//         ) : qAcc.isError ? (
-//           <Text style={{ color: "crimson" }}>
-//             Error cargando cuentas: {String((qAcc.error as any)?.message || qAcc.error)}
-//           </Text>
-//         ) : (
-//           <FlatList
-//             horizontal
-//             data={qAcc.data ?? []}
-//             keyExtractor={(a) => a.id}
-//             contentContainerStyle={{ paddingVertical: 4 }}
-//             renderItem={({ item }) => {
-//               const selected = accountId === item.id;
-//               return (
-//                 <Pressable
-//                   onPress={() => setAccountId(item.id)}
-//                   style={[
-//                     styles.chip,
-//                     selected && { backgroundColor: "#1e90ff", borderColor: "#1e90ff" },
-//                   ]}
-//                 >
-//                   <Text style={[styles.chipText, selected && { color: "#fff" }]}>
-//                     {item.name}
-//                   </Text>
-//                 </Pressable>
-//               );
-//             }}
-//             ListEmptyComponent={
-//               <Text style={{ opacity: 0.7 }}>
-//                 No hay cuentas aún. Crea una en “Cuentas”.
-//               </Text>
-//             }
-//           />
-//         )}
+//         <View style={styles.chipsRow}>
+//           {(qAcc.data ?? []).map((a) => {
+//             const active = accountId === a.id;
+//             return (
+//               <Pressable
+//                 key={a.id}
+//                 onPress={() => setAccountId(active ? undefined : a.id)}
+//                 style={[styles.chip, active && styles.chipActive]}
+//                 accessibilityRole="button"
+//               >
+//                 <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
+//                   {a.name}
+//                 </Text>
+//               </Pressable>
+//             );
+//           })}
+//           {(qAcc.data ?? []).length === 0 && <Text style={styles.subtle}>— no hay cuentas —</Text>}
+//         </View>
 
+//         {/* Nota */}
+//         <Text style={styles.label}>Nota</Text>
+//         <TextInput
+//           style={[styles.input, { minHeight: 90, textAlignVertical: "top" }]}
+//           value={notes}
+//           onChangeText={setNotes}
+//           placeholder="Escribe una nota para este contacto…"
+//           placeholderTextColor={SUBTLE}
+//           multiline
+//         />
+
+//         {/* Fecha/Hora + Recordarme */}
+//         <Text style={styles.label}>Fecha (YYYY-MM-DD)</Text>
+//         <TextInput
+//           style={styles.input}
+//           value={dateStr}
+//           onChangeText={setDateStr}
+//           autoCapitalize="none"
+//           keyboardType="numbers-and-punctuation"
+//           placeholder="2025-02-28"
+//           placeholderTextColor={SUBTLE}
+//         />
+
+//         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+//           <View style={{ flex: 1 }}>
+//             <Text style={styles.label}>Hora (HH:MM)</Text>
+//             <TextInput
+//               style={styles.input}
+//               value={timeStr}
+//               onChangeText={setTimeStr}
+//               autoCapitalize="none"
+//               keyboardType="numbers-and-punctuation"
+//               placeholder="14:30"
+//               placeholderTextColor={SUBTLE}
+//             />
+//           </View>
+//           <View style={{ alignItems: "center" }}>
+//             <Text style={[styles.label, { marginBottom: 6 }]}>Recordarme</Text>
+//             <Switch
+//               value={remind}
+//               onValueChange={setRemind}
+//               trackColor={{ false: "#444", true: PRIMARY }}
+//               thumbColor={remind ? "#fff" : "#ccc"}
+//             />
+//           </View>
+//         </View>
+
+//         {!!error && <Text style={styles.error}>{error}</Text>}
+
+//         {/* Acciones */}
 //         <Pressable
-//           style={styles.btn}
+//           style={[styles.btn, styles.btnPrimary, m.isPending && { opacity: 0.9 }]}
 //           onPress={() => m.mutate()}
 //           disabled={m.isPending}
 //         >
-//           <Text style={styles.btnText}>
-//             {m.isPending ? "Guardando..." : "Guardar"}
-//           </Text>
+//           <Text style={styles.btnText}>{m.isPending ? "Guardando…" : "Guardar contacto"}</Text>
 //         </Pressable>
-//       </View>
-//     </>
+
+//         <Pressable style={[styles.btn, styles.btnGhost]} onPress={() => router.back()}>
+//           <Text style={styles.btnText}>Cancelar</Text>
+//         </Pressable>
+//       </ScrollView>
+//     </KeyboardAvoidingView>
 //   );
 // }
 
+// /* ——— Estilos ——— */
 // const styles = StyleSheet.create({
-//   container: { flex: 1, padding: 16, gap: 12 },
-//   input: { borderWidth: 1, borderColor: "#ddd", borderRadius: 8, padding: 10 },
-//   label: { fontWeight: "600", marginTop: 4 },
+//   container: { padding: 16, gap: 12 },
+//   label: { color: TEXT, fontWeight: "900", marginTop: 2 },
+//   input: {
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: FIELD,
+//     color: TEXT,
+//     borderRadius: 12,
+//     padding: 12,
+//   },
+//   chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
 //   chip: {
 //     paddingHorizontal: 10,
 //     paddingVertical: 6,
-//     borderRadius: 8,
+//     borderRadius: 999,
 //     borderWidth: 1,
-//     borderColor: "#ddd",
-//     marginRight: 8,
+//     borderColor: BORDER,
+//     backgroundColor: CARD,
 //   },
-//   chipText: { color: "#000" },
-//   btn: {
-//     backgroundColor: "#16a34a",
-//     padding: 12,
-//     borderRadius: 8,
-//     alignItems: "center",
+//   chipActive: { backgroundColor: PRIMARY, borderColor: PRIMARY },
+//   chipText: { color: TEXT, fontWeight: "800", fontSize: 12, maxWidth: 180 },
+//   chipTextActive: { color: "#fff" },
+//   btn: { marginTop: 6, padding: 12, borderRadius: 12, alignItems: "center" },
+//   btnText: { color: "#fff", fontWeight: "900" },
+//   btnPrimary: { backgroundColor: PRIMARY, borderWidth: 1, borderColor: "rgba(255,255,255,0.16)" },
+//   btnGhost: {
+//     backgroundColor: "rgba(255,255,255,0.06)",
+//     borderWidth: 1,
+//     borderColor: "rgba(255,255,255,0.12)",
 //   },
-//   btnText: { color: "#fff", fontWeight: "700" },
+//   subtle: { color: SUBTLE },
+//   error: { color: "#fecaca" },
 // });
+

@@ -1,5 +1,13 @@
 // src/api/deals.ts
-export type DealStage = "nuevo" | "calificado" | "propuesta" | "negociacion" | "ganado" | "perdido";
+import { api } from "@/src/api/http";
+
+export type DealStage =
+  | "nuevo"
+  | "calificado"
+  | "propuesta"
+  | "negociacion"
+  | "ganado"
+  | "perdido";
 
 export type Deal = {
   id: string;
@@ -13,39 +21,32 @@ export type Deal = {
   updated_at: number;
 };
 
-let BASE_URL = "http://localhost:4000";
-if (typeof navigator !== "undefined" && (navigator as any).product === "ReactNative") {
-  BASE_URL = "http://10.0.2.2:4000";
-}
-if (process.env.EXPO_PUBLIC_API_BASE_URL) {
-  BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
+// LIST
+export function listDeals(): Promise<Deal[]> {
+  return api.get<Deal[]>("/deals");
 }
 
-async function j<T>(r: Response): Promise<T> {
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+// GET ONE
+export function getDeal(id: string): Promise<Deal> {
+  return api.get<Deal>(`/deals/${id}`);
 }
 
-export async function listDeals(): Promise<Deal[]> {
-  return j(await fetch(`${BASE_URL}/deals`));
+// CREATE
+export function createDeal(
+  input: Omit<Deal, "created_at" | "updated_at">
+): Promise<void> {
+  return api.post("/deals", input);
 }
-export async function getDeal(id: string): Promise<Deal> {
-  return j(await fetch(`${BASE_URL}/deals/${id}`));
+
+// UPDATE
+export function updateDeal(
+  id: string,
+  patch: Partial<Deal>
+): Promise<void> {
+  return api.patch(`/deals/${id}`, patch);
 }
-export async function createDeal(input: Omit<Deal,"created_at"|"updated_at">) {
-  await fetch(`${BASE_URL}/deals`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  }).then(j);
-}
-export async function updateDeal(id: string, patch: Partial<Deal>) {
-  await fetch(`${BASE_URL}/deals/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  }).then(j);
-}
-export async function deleteDeal(id: string) {
-  await fetch(`${BASE_URL}/deals/${id}`, { method: "DELETE" }).then(j);
+
+// DELETE
+export function deleteDeal(id: string): Promise<void> {
+  return api.delete(`/deals/${id}`);
 }

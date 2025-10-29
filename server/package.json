@@ -1,18 +1,30 @@
 {
   "name": "crm-api",
   "version": "1.0.0",
-  "main": "server/index.js",
+  "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "nodemon server/index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
-    "better-sqlite3": "^9.4.0",
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^9.6.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "googleapis": "^164.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
-  }
+  },
+  "directories": {
+    "lib": "lib"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
 }
