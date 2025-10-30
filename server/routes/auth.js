@@ -149,21 +149,46 @@ router.post("/auth/register", (req, res, next) => {
        VALUES (@id, @name, @email, @password_hash, @created_at, @updated_at)`
     ).run(user);
 
-    // Si no tiene memberships, lo afiliamos al DEFAULT_TENANT como member (idempotente)
-    const defaultTenant = db
-      .prepare(`SELECT id, name FROM tenants WHERE id = ?`)
-      .get(DEFAULT_TENANT);
-    if (defaultTenant) {
-      db.prepare(
-        `INSERT OR IGNORE INTO memberships (user_id, tenant_id, role, created_at)
-         VALUES (?, ?, ?, ?)`
-      ).run(user.id, defaultTenant.id, "member", now());
+    // === NUEVO: crear tenant propio del usuario ===
+    const localPart = lowerEmail.split("@")[0];
+    const tenantId = `t_${crypto.randomUUID().slice(0, 8)}`;
+    const tenantName = `${localPart}'s workspace`;
+
+    const tenant = {
+      id: tenantId,
+      name: tenantName,
+      created_at: now(),
+      updated_at: now(),
+    };
+
+    db.prepare(
+      `INSERT INTO tenants (id, name, created_at, updated_at)
+       VALUES (@id, @name, @created_at, @updated_at)`
+    ).run(tenant);
+
+    // Membership como OWNER en su tenant
+    db.prepare(
+      `INSERT INTO memberships (user_id, tenant_id, role, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).run(user.id, tenant.id, "owner", now());
+
+    // (Opcional) además, agregar al demo como member si quieres mantener acceso
+    const AUTO_JOIN_DEMO = process.env.AUTO_JOIN_DEMO === "1";
+    if (AUTO_JOIN_DEMO) {
+      const defaultTenant = db
+        .prepare(`SELECT id, name FROM tenants WHERE id = ?`)
+        .get(DEFAULT_TENANT);
+      if (defaultTenant) {
+        db.prepare(
+          `INSERT OR IGNORE INTO memberships (user_id, tenant_id, role, created_at)
+           VALUES (?, ?, ?, ?)`
+        ).run(user.id, defaultTenant.id, "member", now());
+      }
     }
 
-    // Elegimos active_tenant igual que en login (respetando header si vino y existe)
-    const membership = resolveActiveTenantForLogin(req, user.id);
-    const activeTenant = membership?.id || DEFAULT_TENANT;
-    const roles = rolesFromMembershipRole(membership?.role || "member");
+    // Activo = su propio tenant recien creado (no usamos DEFAULT_TENANT acá)
+    const activeTenant = tenant.id;
+    const roles = rolesFromMembershipRole("owner");
 
     const payload = {
       sub: user.id,
@@ -179,7 +204,7 @@ router.post("/auth/register", (req, res, next) => {
       email: user.email,
       token,
       active_tenant: activeTenant,
-      tenant: membership ? { id: membership.id, name: membership.name, role: membership.role } : null,
+      tenant: { id: tenant.id, name: tenant.name, role: "owner" },
     });
   } catch (e) {
     next(e);

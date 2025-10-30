@@ -25,6 +25,8 @@
     "app",
     "src",
     "server",
-    "babel.config.js"
+    "babel.config.js",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
   ]
 }

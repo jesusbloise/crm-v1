@@ -1,0 +1,17 @@
+{
+  "cli": { "version": ">= 12.0.0", "appVersionSource": "remote" },
+  "build": {
+    "preview": {
+      "channel": "preview",                
+      "android": { "buildType": "apk" },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://crm-v1-production.up.railway.app",
+        "EXPO_PUBLIC_HTTP_TIMEOUT_MS": "25000",
+        "MULTI_TENANT_ENABLED": "false",
+        "DEFAULT_TENANT_ID": "demo-tenant",
+        "DEFAULT_TENANT": "demo",
+        "EXPO_PUBLIC_GOOGLE_CLIENT_ID": "764177735712-3ik3he7p345ot6ro6ufitr4sls0cetl3.apps.googleusercontent.com"
+      }
+    }
+  }
+}
