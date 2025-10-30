@@ -5,6 +5,7 @@ const ical = require("node-ical");
 
 const r = Router();
 
+/* ====== Utils ====== */
 function asUserId(req) {
   return String(req.user?.id ?? "");
 }
@@ -15,6 +16,48 @@ function getUserRow(userId) {
        FROM users WHERE id = ?`
     )
     .get(String(userId));
+}
+
+function safeParseDate(v) {
+  if (!v) return null;
+  const d = new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function clampWindow(min, max, limitDays = 90) {
+  if (!min || !max) return { min, max };
+  const ms = 24 * 60 * 60 * 1000;
+  const diffDays = (max - min) / ms;
+  if (diffDays > limitDays) {
+    const clampedMax = new Date(min.getTime() + limitDays * ms - 1);
+    return { min, max: clampedMax };
+  }
+  return { min, max };
+}
+
+function isAllDay(ev, start, end) {
+  // Si node-ical parseó los params del campo, a veces están en ev.component.getFirstProperty("dtstart").getParameter("value")
+  // pero en los objetos simples suele venir en ev.datetype === 'date'. Mantenemos tu heurística + un chequeo por params.
+  try {
+    if (ev && ev.datetype === "date") return true;
+    // node-ical suele exponer ev.start.tz, ev.end.tz; si no hay hora (00:00) y duración en días, podría ser all-day.
+    // Heurística: sin parte horaria en el texto original.
+    if (ev && ev.start && typeof ev.start === "string" && !ev.start.includes("T")) return true;
+    if (ev && ev.end && typeof ev.end === "string" && !ev.end.includes("T")) return true;
+  } catch {}
+  // fallback a heurística original
+  return isDateOnly(start) || isDateOnly(end);
+}
+
+function isDateOnly(d) {
+  if (!d) return false;
+  return typeof d === "string" ? !d.includes("T") : false;
+}
+
+function toIsoDate(d) {
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+    .toISOString()
+    .slice(0, 10);
 }
 
 /** GET /integrations/ics/me  -> { connected, url? } */
@@ -45,7 +88,6 @@ r.post("/integrations/ics/save", async (req, res) => {
       return res.status(400).json({ error: "missing_url" });
     }
 
-    // Validación simple (acepta feeds de Google Calendar o cualquier ICS)
     try {
       new URL(url);
     } catch {
@@ -73,43 +115,61 @@ r.get("/integrations/ics/events", async (req, res) => {
     const url = row?.google_ics_url;
     if (!url) return res.status(400).json({ error: "ics_not_configured" });
 
-    // Rango (si no mandan, usamos mes actual)
-    const now = Date.now();
-    const timeMin = req.query.timeMin
-      ? new Date(String(req.query.timeMin))
-      : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    const timeMax = req.query.timeMax
-      ? new Date(String(req.query.timeMax))
-      : new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0, 23, 59, 59, 999);
+    // Rango por defecto: mes actual
+    const now = new Date();
+    const defaultMin = new Date(now.getFullYear(), now.getMonth(), 1);
+    const defaultMax = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
-    // Descarga y parsea ICS
-    const data = await ical.async.fromURL(url);
+    // Parse seguro de query
+    let timeMin = safeParseDate(req.query.timeMin) || defaultMin;
+    let timeMax = safeParseDate(req.query.timeMax) || defaultMax;
 
-    // Normaliza a array tipo Google-ish
+    // Asegurar orden
+    if (timeMax < timeMin) {
+      const t = timeMin;
+      timeMin = timeMax;
+      timeMax = t;
+    }
+
+    // Limitar a 90 días máximo para evitar respuestas enormes por error
+    ({ min: timeMin, max: timeMax } = clampWindow(timeMin, timeMax, 90));
+
+    // Descarga y parsea ICS (con timeout prudente)
+    let data;
+    try {
+      data = await ical.async.fromURL(url, {
+        // Node-ical usa node-fetch por debajo; respetará estas opciones si el agent lo permite.
+        // Esto ayuda a no quedar colgado si el host no responde.
+        requestOptions: { timeout: 15000 },
+      });
+    } catch (err) {
+      console.error("fromURL failed:", err?.message || err);
+      return res.status(502).json({ error: "ics_fetch_failed" });
+    }
+
     const items = [];
     for (const key of Object.keys(data)) {
       const ev = data[key];
       if (!ev || ev.type !== "VEVENT") continue;
 
-      // Manejo RRULE/recurrencias: node-ical ya expande ocurrencias si usas .between, pero aquí haremos filtro simple
       const start = ev.start instanceof Date ? ev.start : new Date(ev.start);
       const end = ev.end instanceof Date ? ev.end : new Date(ev.end);
 
+      if (!start || Number.isNaN(start.getTime())) continue;
+      if (!end || Number.isNaN(end.getTime())) continue;
+
       // filtro por ventana
       if (end < timeMin || start > timeMax) continue;
+
+      const allDay = isAllDay(ev, ev.start, ev.end);
 
       items.push({
         id: ev.uid || key,
         summary: ev.summary || "(sin título)",
         location: ev.location || undefined,
         description: ev.description || undefined,
-        start: ev.datetype === "date" || ev.allDay || isDateOnly(ev.start)
-          ? { date: toIsoDate(start) }
-          : { dateTime: start.toISOString() },
-        end: ev.datetype === "date" || ev.allDay || isDateOnly(ev.end)
-          ? { date: toIsoDate(end) }
-          : { dateTime: end.toISOString() },
-        // Extra opcional
+        start: allDay ? { date: toIsoDate(start) } : { dateTime: start.toISOString() },
+        end: allDay ? { date: toIsoDate(end) } : { dateTime: end.toISOString() },
         organizer: ev.organizer?.val || ev.organizer || undefined,
       });
     }
@@ -124,19 +184,10 @@ r.get("/integrations/ics/events", async (req, res) => {
     return res.json({ items });
   } catch (e) {
     console.error("ics/events error:", e);
-    return res.status(500).json({ error: "ics_events_failed", detail: e?.message || String(e) });
+    return res
+      .status(500)
+      .json({ error: " ics_events_failed", detail: e?.message || String(e) });
   }
 });
-
-function isDateOnly(d) {
-  // Heurística: si la cadena original no trae "T", suele ser evento de día completo en ICS
-  if (!d) return false;
-  return typeof d === "string"
-    ? !d.includes("T")
-    : false;
-}
-function toIsoDate(d) {
-  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())).toISOString().slice(0, 10);
-}
 
 module.exports = r;

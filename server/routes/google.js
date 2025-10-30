@@ -8,12 +8,10 @@ const {
 
 const r = Router();
 
-/** Util */
+/* ========== Utils ========== */
 function asUserId(req) {
   return String(req.user?.id ?? "");
 }
-
-/** Util: obtiene las credenciales Google del user actual */
 function getUserGoogleRow(userId) {
   return db
     .prepare(
@@ -22,6 +20,27 @@ function getUserGoogleRow(userId) {
     )
     .get(String(userId));
 }
+function safeParseDateISO(v) {
+  if (!v) return null;
+  const d = new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function clampRange(min, max, maxDays = 120) {
+  if (!min || !max) return { min, max };
+  if (max < min) [min, max] = [max, min];
+  const day = 24 * 60 * 60 * 1000;
+  if ((max - min) / day > maxDays) {
+    max = new Date(min.getTime() + maxDays * day - 1);
+  }
+  return { min, max };
+}
+function capInt(v, def, min, max) {
+  const n = Number.parseInt(v, 10);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(min, Math.min(max, n));
+}
+
+/* ========== Rutas ========== */
 
 /** GET /integrations/google/me */
 r.get("/integrations/google/me", (req, res) => {
@@ -48,7 +67,6 @@ r.get("/integrations/google/me", (req, res) => {
 /**
  * POST /integrations/google/exchange
  * Body: { code, verifier, redirectUri }
- * Intercambia authorization code+verifier por refresh_token y guarda email.
  */
 r.post("/integrations/google/exchange", async (req, res) => {
   try {
@@ -57,13 +75,15 @@ r.post("/integrations/google/exchange", async (req, res) => {
 
     const { code, verifier, redirectUri } = req.body || {};
     if (!code || !verifier || !redirectUri) {
-      return res.status(400).json({ error: "missing_params", need: ["code", "verifier", "redirectUri"] });
+      return res
+        .status(400)
+        .json({ error: "missing_params", need: ["code", "verifier", "redirectUri"] });
     }
 
     const tokens = await exchangeCodeForTokens({
       code,
       codeVerifier: verifier,
-      redirectUri, // debe coincidir EXACTO con el usado en el auth request
+      redirectUri,
     });
 
     let email = null;
@@ -107,7 +127,7 @@ r.post("/integrations/google/exchange", async (req, res) => {
 
 /**
  * GET /integrations/google/calendars
- * Lista los calendarios del usuario (CalendarList).
+ * Lista los calendarios del usuario (CalendarList) con paginación.
  */
 r.get("/integrations/google/calendars", async (req, res) => {
   try {
@@ -120,20 +140,30 @@ r.get("/integrations/google/calendars", async (req, res) => {
     }
 
     const cal = await getCalendarClientFromRefresh(row.google_refresh_token);
-    const { data } = await cal.calendarList.list({
-      minAccessRole: "reader",
-      maxResults: 250,
-      showDeleted: false,
-    });
 
-    const items =
-      (data.items || []).map((c) => ({
-        id: c.id,
-        summary: c.summary,
-        primary: !!c.primary,
-        accessRole: c.accessRole,
-        backgroundColor: c.backgroundColor,
-      })) ?? [];
+    const maxResults = capInt(req.query.maxResults, 250, 1, 250);
+    let pageToken = undefined;
+    const items = [];
+
+    do {
+      /* eslint-disable no-await-in-loop */
+      const { data } = await cal.calendarList.list({
+        minAccessRole: "reader",
+        maxResults,
+        showDeleted: false,
+        pageToken,
+      });
+      const batch =
+        (data.items || []).map((c) => ({
+          id: c.id,
+          summary: c.summary,
+          primary: !!c.primary,
+          accessRole: c.accessRole,
+          backgroundColor: c.backgroundColor,
+        })) ?? [];
+      items.push(...batch);
+      pageToken = data.nextPageToken;
+    } while (pageToken);
 
     return res.json({ items });
   } catch (e) {
@@ -146,7 +176,6 @@ r.get("/integrations/google/calendars", async (req, res) => {
 /**
  * POST /integrations/google/calendars/use
  * Body: { calendarId }
- * Guarda el calendario preferido para este usuario (en users.google_calendar_id).
  */
 r.post("/integrations/google/calendars/use", (req, res) => {
   try {
@@ -154,7 +183,9 @@ r.post("/integrations/google/calendars/use", (req, res) => {
     if (!uid) return res.status(401).json({ error: "unauthorized" });
 
     const { calendarId } = req.body || {};
-    if (!calendarId) return res.status(400).json({ error: "missing_calendarId" });
+    if (!calendarId || typeof calendarId !== "string") {
+      return res.status(400).json({ error: "missing_calendarId" });
+    }
 
     db.prepare(
       `UPDATE users SET google_calendar_id = ? WHERE id = ?`
@@ -168,8 +199,8 @@ r.post("/integrations/google/calendars/use", (req, res) => {
 });
 
 /**
- * GET /integrations/google/events?timeMin=...&timeMax=...&calendarId=optional
- * Devuelve eventos del calendario preferido o "primary" si no hay preferido.
+ * GET /integrations/google/events?timeMin=&timeMax=&calendarId=&maxResults=
+ * Devuelve eventos del calendario preferido o "primary".
  */
 r.get("/integrations/google/events", async (req, res) => {
   try {
@@ -181,13 +212,11 @@ r.get("/integrations/google/events", async (req, res) => {
       return res.status(401).json({ error: "google_not_connected" });
     }
 
-    // Normaliza rango de fechas
-    const now = Date.now();
-    let timeMin = req.query.timeMin ? String(req.query.timeMin) : new Date(now - 7 * 86400000).toISOString();
-    let timeMax = req.query.timeMax ? String(req.query.timeMax) : new Date(now + 14 * 86400000).toISOString();
-    if (new Date(timeMin) > new Date(timeMax)) {
-      const tmp = timeMin; timeMin = timeMax; timeMax = tmp;
-    }
+    // Rango por defecto: [-7, +14] días
+    const now = new Date();
+    let timeMin = safeParseDateISO(req.query.timeMin) || new Date(now.getTime() - 7 * 86400000);
+    let timeMax = safeParseDateISO(req.query.timeMax) || new Date(now.getTime() + 14 * 86400000);
+    ({ min: timeMin, max: timeMax } = clampRange(timeMin, timeMax, 120));
 
     const calendarId =
       (req.query.calendarId ? String(req.query.calendarId).trim() : "") ||
@@ -196,16 +225,26 @@ r.get("/integrations/google/events", async (req, res) => {
 
     const cal = await getCalendarClientFromRefresh(row.google_refresh_token);
 
-    const { data } = await cal.events.list({
-      calendarId,
-      timeMin,
-      timeMax,
-      singleEvents: true,
-      orderBy: "startTime",
-      maxResults: 2500,
-    });
+    const cap = capInt(req.query.maxResults, 2500, 1, 2500);
+    let pageToken = undefined;
+    const items = [];
 
-    return res.json({ items: data.items || [] });
+    do {
+      /* eslint-disable no-await-in-loop */
+      const { data } = await cal.events.list({
+        calendarId,
+        timeMin: timeMin.toISOString(),
+        timeMax: timeMax.toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: Math.min(2500, cap),
+        pageToken,
+      });
+      items.push(...(data.items || []));
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+
+    return res.json({ items });
   } catch (e) {
     const detail = e?.response?.data || e?.data || e?.message || e;
     console.error("events error:", detail);
@@ -215,30 +254,32 @@ r.get("/integrations/google/events", async (req, res) => {
 
 /** ===== DEV ONLY =====
  * GET /integrations/google/status
- * Muestra estado rápido (no expone el token completo).
+ * Oculto en producción.
  */
-r.get("/integrations/google/status", (req, res) => {
-  try {
-    const uid = asUserId(req);
-    if (!uid) return res.status(401).json({ error: "unauthorized" });
+if (process.env.NODE_ENV !== "production") {
+  r.get("/integrations/google/status", (req, res) => {
+    try {
+      const uid = asUserId(req);
+      if (!uid) return res.status(401).json({ error: "unauthorized" });
 
-    const row = getUserGoogleRow(uid);
-    if (!row) return res.json({ exists: false });
+      const row = getUserGoogleRow(uid);
+      if (!row) return res.json({ exists: false });
 
-    const mask = (t) => (t ? t.slice(0, 6) + "…" + t.slice(-4) : null);
-    return res.json({
-      exists: true,
-      userId: row.id,
-      email: row.email,
-      google_email: row.google_email || null,
-      hasRefresh: !!row.google_refresh_token,
-      refresh_masked: mask(row.google_refresh_token),
-      calendarId: row.google_calendar_id || null,
-    });
-  } catch (e) {
-    console.error("status error:", e);
-    return res.status(500).json({ error: "status_failed" });
-  }
-});
+      const mask = (t) => (t ? t.slice(0, 6) + "…" + t.slice(-4) : null);
+      return res.json({
+        exists: true,
+        userId: row.id,
+        email: row.email,
+        google_email: row.google_email || null,
+        hasRefresh: !!row.google_refresh_token,
+        refresh_masked: mask(row.google_refresh_token),
+        calendarId: row.google_calendar_id || null,
+      });
+    } catch (e) {
+      console.error("status error:", e);
+      return res.status(500).json({ error: "status_failed" });
+    }
+  });
+}
 
 module.exports = r;

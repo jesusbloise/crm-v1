@@ -21,10 +21,11 @@ const app = express();
 
 /* ---------- Infra / ajustes base ---------- */
 app.set("trust proxy", 1);
+app.disable("x-powered-by"); // opcional, hardening
 
 app.use(
   cors({
-    origin: true, // Expo web/LAN
+    origin: true, // Expo web/LAN y Railway
     credentials: false,
     allowedHeaders: [
       "Content-Type",
@@ -60,11 +61,6 @@ try {
   process.exit(1);
 }
 
-// ❌ Quitar estos dos de tu versión anterior (no existen y no hacen falta):
-// const db = require("./db/connection");
-// const { ensureGoogleColumns } = require("./db/connection");
-// ensureGoogleColumns();
-
 /* ---------- Rutas públicas ---------- */
 app.use(require("./routes/health")); // GET /health
 app.use(require("./routes/auth"));   // /auth/register, /auth/login, /auth/me
@@ -75,8 +71,10 @@ app.use(requireAuth);
 /* ---------- Contexto de Tenant ---------- */
 app.use(injectTenant);
 
-app.use(require("./routes/ics"));      // /integrations/ics/*
-app.use(require("./routes/google"));   // (lo que ya tenías)
+app.use(require("./routes/ics"));    // /integrations/ics/*
+// ❌ eliminado: app.use(require("./routes/google")); (duplicado)
+// ✅ dejamos una sola vez:
+app.use(googleRoutes);               // /integrations/google/*
 
 /* ---------- Rutas protegidas (tu API actual) ---------- */
 app.use(require("./routes/invitations"));
@@ -89,10 +87,6 @@ app.use(require("./routes/accounts"));
 app.use(require("./routes/deals"));
 app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
-
-/* ---------- Google Calendar (protegido) ---------- */
-// ✅ Monta las rutas de Google aquí (después de requireAuth + injectTenant)
-app.use(googleRoutes); // /integrations/google/*
 
 /* ---------- Manejo de errores de subida ---------- */
 app.use((err, _req, res, next) => {
