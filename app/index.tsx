@@ -159,8 +159,8 @@ export default function Home() {
               <BigButton label="Prospectos"    count={leads.length}     onPress={onGo("/leads")} />
               <BigButton label="Cuentas"       count={accounts.length}  onPress={onGo("/accounts")} />
               <BigButton label="Contactos"     count={contacts.length}  onPress={onGo("/contacts")} />
-              {/* 👇 NUEVO acceso directo al calendario Google */}
-              <BigButton label="Calendario"    count={0}                onPress={onGo("/calendar/google")} />
+              {/* 👇 Acceso directo al calendario ICS */}
+              <BigButton label="Calendario"    count={0}                onPress={onGo("/calendar/ics")} />
             </View>
           </HeaderBg>
 
