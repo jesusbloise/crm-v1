@@ -2,8 +2,8 @@
 import { switchTenant } from "@/src/api/auth";
 import { api } from "@/src/api/http";
 import { Stack, router } from "expo-router";
-import { useMemo, useState } from "react";
-import { Alert, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 const BG = "#0b0c10",
   CARD = "#14151a",
@@ -18,6 +18,7 @@ export default function WorkspaceNew() {
   const [name, setName] = useState("");
   const [id, setId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [idError, setIdError] = useState("");
 
   // Sugerir id a partir del name si aún no lo tocó el usuario
   const suggestedId = useMemo(() => {
@@ -32,21 +33,28 @@ export default function WorkspaceNew() {
 
   const finalId = id || suggestedId;
 
+  // Limpiar el error cuando el usuario cambie el ID
+  useEffect(() => {
+    setIdError("");
+  }, [id]);
+
   const canSubmit = finalId.length >= 3 && idRegex.test(finalId) && name.trim().length >= 3;
 
   const onCreate = async () => {
     if (!canSubmit || busy) return;
     setBusy(true);
+    setIdError(""); // Limpiar error anterior
     try {
-      // 1) Crear tenant (owner/admin en backend)
+      // Intentar crear el workspace
       await api.post("/tenants", { id: finalId, name: name.trim() });
-      // 2) Cambiarse al nuevo workspace (devuelve nuevo JWT)
       await switchTenant(finalId);
-      // 3) Ir a la pantalla principal
       router.replace("/");
     } catch (e: any) {
-      const msg = e?.message || "No se pudo crear el workspace";
-      Alert.alert("Ups", msg);
+      if (e?.status === 409 || e?.message?.includes("tenant_exists")) {
+        setIdError("Este ID ya está en uso. Por favor, elige otro ID.");
+      } else {
+        setIdError("No se pudo crear el workspace. Intenta de nuevo.");
+      }
     } finally {
       setBusy(false);
     }
@@ -85,6 +93,8 @@ export default function WorkspaceNew() {
         {!idRegex.test(finalId) && finalId.length > 0 && (
           <Text style={styles.error}>El ID solo puede tener letras, números, "-" o "_".</Text>
         )}
+        
+        {idError ? <Text style={[styles.error, { marginTop: 8 }]}>{idError}</Text> : null}
       </View>
 
       <Pressable

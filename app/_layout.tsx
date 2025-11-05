@@ -18,9 +18,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   login as apiLogin,
   me as apiMe,
-  getActiveTenant,
+  getActiveTenantDetails,
   isAuthenticated,
-  setActiveTenant,
+  setActiveTenant
 } from "@/src/api/auth";
 import { ToastProvider } from "@/src/ui/Toast";
 
@@ -100,8 +100,17 @@ function setupIOSDevFetchShim() {
 }
 
 /* ---------- Indicador de Workspace en el header ---------- */
-function TenantPill({ value }: { value: string | null }) {
-  const label = value || "—";
+type TenantInfo = {
+  id: string;
+  name?: string;
+  owner_name?: string;
+  owner_email?: string;
+};
+
+function TenantPill({ value }: { value: TenantInfo | null }) {
+  const label = value?.name || value?.id || "—";
+  const subtitle = value?.owner_name || value?.owner_email;
+  
   return (
     <Pressable
       onPress={() => router.push("/more")}
@@ -121,13 +130,23 @@ function TenantPill({ value }: { value: string | null }) {
       ]}
     >
       <Feather name="layers" size={16} color={COLORS.accent} />
-      <Text
-        numberOfLines={1}
-        style={{ color: COLORS.accent, fontWeight: "800", marginLeft: 6, maxWidth: 160 }}
-      >
-        {label}
-      </Text>
-      <Feather name="chevron-down" size={16} color={COLORS.accent} />
+      <View style={{ marginLeft: 6, flex: 1, maxWidth: 160 }}>
+        <Text
+          numberOfLines={1}
+          style={{ color: COLORS.accent, fontWeight: "800" }}
+        >
+          {label}
+        </Text>
+        {subtitle ? (
+          <Text
+            numberOfLines={1}
+            style={{ color: COLORS.accent, fontSize: 11, opacity: 0.8 }}
+          >
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+      <Feather name="chevron-down" size={16} color={COLORS.accent} style={{ marginLeft: 4 }} />
     </Pressable>
   );
 }
@@ -142,7 +161,7 @@ export default function RootLayout() {
 
   const [authReady, setAuthReady] = useState(false);
   const [authed, setAuthed] = useState(false);
-  const [activeTenant, setActiveTenantState] = useState<string | null>(null);
+  const [activeTenant, setActiveTenantState] = useState<TenantInfo | null>(null);
 
   // 🔔 inicializa notificaciones una sola vez
   useEffect(() => {
@@ -199,8 +218,8 @@ export default function RootLayout() {
   useEffect(() => {
     let ignore = false;
     (async () => {
-      const t = await getActiveTenant();
-      if (!ignore) setActiveTenantState(t);
+      const t = await getActiveTenantDetails();
+      if (!ignore) setActiveTenantState(t || null);
     })();
     return () => {
       ignore = true;

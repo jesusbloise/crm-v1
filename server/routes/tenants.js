@@ -24,9 +24,12 @@ r.get("/tenants", (req, res) => {
           t.name,
           m.role,
           t.created_at,
-          t.updated_at
+          t.updated_at,
+          u.name as owner_name,
+          u.email as owner_email
         FROM memberships m
         JOIN tenants t ON t.id = m.tenant_id
+        LEFT JOIN users u ON u.id = t.created_by
         WHERE m.user_id = ?
         ORDER BY t.name COLLATE NOCASE ASC
       `
@@ -45,7 +48,28 @@ r.get("/tenants", (req, res) => {
  * Devuelve el tenant activo (resuelto por header X-Tenant-Id o token).
  */
 r.get("/tenants/current", (req, res) => {
-  return res.json({ tenant_id: req.tenantId || null });
+  try {
+    if (!req.tenantId) return res.json({ tenant: null });
+
+    const tenant = db
+      .prepare(`
+        SELECT 
+          t.id, 
+          t.name, 
+          t.created_by,
+          u.name as owner_name,
+          u.email as owner_email
+        FROM tenants t
+        LEFT JOIN users u ON u.id = t.created_by
+        WHERE t.id = ?
+      `)
+      .get(req.tenantId);
+
+    return res.json({ tenant: tenant || null });
+  } catch (e) {
+    console.error("GET /tenants/current error:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
 });
 
 /**
@@ -56,13 +80,9 @@ r.get("/tenants/current", (req, res) => {
  * ⚠️ Ahora guarda también tenants.created_by = req.user.id
  */
 r.post("/tenants", (req, res) => {
-  // Ajusta esto si tus roles viven en otro lugar del req (en muchos flujos,
-  // permitir crear a cualquier user también es válido):
-  const isAdmin = !!req.auth?.roles?.admin;
-  const isOwner = req.auth?.roles?.owner === true;
-  // Si quieres permitir que cualquier usuario cree su workspace, comenta el guard:
-  if (!isAdmin && !isOwner) {
-    return res.status(403).json({ error: "forbidden" });
+  // Permitimos que cualquier usuario autenticado pueda crear workspaces
+  if (!req.user?.id && !req.auth?.sub) {
+    return res.status(401).json({ error: "unauthorized" });
   }
 
   const { id, name } = req.body || {};
@@ -160,14 +180,21 @@ r.get("/tenants/discover", (req, res) => {
     const rows = db
       .prepare(
         `
-        SELECT id, name
-        FROM tenants
-        WHERE id LIKE ? OR name LIKE ?
-        ORDER BY name COLLATE NOCASE ASC
+        SELECT 
+          t.id, 
+          t.name, 
+          t.created_by,
+          u.name as owner_name,
+          u.email as owner_email,
+          (t.created_by = ?) as is_creator
+        FROM tenants t
+        LEFT JOIN users u ON u.id = t.created_by
+        WHERE t.id LIKE ? OR t.name LIKE ?
+        ORDER BY t.name COLLATE NOCASE ASC
         LIMIT ?
       `
       )
-      .all(`%${q}%`, `%${q}%`, limit);
+      .all(req.user.id, `%${q}%`, `%${q}%`, limit);
 
     return res.json({ items: rows });
   } catch (e) {

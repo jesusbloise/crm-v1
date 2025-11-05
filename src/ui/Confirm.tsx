@@ -1,5 +1,4 @@
 // src/ui/Confirm.tsx
-import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 const CARD = "#171923";
@@ -31,7 +30,7 @@ function Confirm({
   if (!visible) return null;
 
   return (
-    <View style={styles.overlay} pointerEvents="auto">
+    <View style={[styles.overlay, { pointerEvents: "auto" }]}>
       <View style={styles.card}>
         <Text style={styles.title}>{title}</Text>
         <Text style={styles.msg}>{message}</Text>

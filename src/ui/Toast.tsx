@@ -114,10 +114,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
       {/* Overlay de toasts */}
       <Animated.View
-        pointerEvents="box-none"
         style={[
           styles.overlay,
-          { opacity, transform: [{ translateY }] },
+          { opacity, transform: [{ translateY }], pointerEvents: "box-none" },
         ]}
       >
         <View style={styles.stack}>

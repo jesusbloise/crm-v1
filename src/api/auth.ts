@@ -34,6 +34,22 @@ export async function setActiveTenant(tenantId: string) {
 export async function getActiveTenant() {
   return (await AsyncStorage.getItem(TENANT_KEY)) || DEFAULT_TENANT;
 }
+export async function getActiveTenantDetails() {
+  try {
+    const response = await authFetch<{ 
+      tenant: { 
+        id: string; 
+        name: string;
+        owner_name?: string;
+        owner_email?: string;
+      } 
+    }>("/tenants/current");
+    return response.tenant;
+  } catch (error) {
+    const tenantId = await getActiveTenant();
+    return { id: tenantId };
+  }
+}
 export async function clearActiveTenant() {
   await AsyncStorage.removeItem(TENANT_KEY);
 }
@@ -43,12 +59,12 @@ export async function clearActiveTenant() {
 ========= */
 export async function authHeaders(extra: HeadersInit = {}) {
   const token = await getToken();
-  const tenant = await getActiveTenant();
+  const tenantId = await getActiveTenant();
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(tenant ? { "X-Tenant-Id": tenant } : {}),
+    ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
     ...extra,
   } as HeadersInit;
 }
@@ -136,7 +152,17 @@ export async function bootstrapAuth() {
 
 /** Lista de tenants del usuario (incluye cuál está activo). */
 export async function fetchTenants() {
-  return authFetch<{ items: Array<{ id: string; name: string; role: string; is_active?: boolean }>; active_tenant?: string }>(
+  return authFetch<{ 
+    items: Array<{ 
+      id: string; 
+      name: string; 
+      role: string; 
+      owner_name?: string;
+      owner_email?: string;
+      is_active?: boolean 
+    }>; 
+    active_tenant?: string 
+  }>(
     "/me/tenants",
     { method: "GET" }
   );
