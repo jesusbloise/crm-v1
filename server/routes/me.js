@@ -58,9 +58,15 @@ r.get("/me/tenants", (req, res) => {
   const rows = db
     .prepare(
       `
-      SELECT t.id, t.name, m.role
+      SELECT 
+        t.id, 
+        t.name, 
+        m.role,
+        u.name as owner_name,
+        u.email as owner_email
       FROM memberships m
       JOIN tenants t ON t.id = m.tenant_id
+      LEFT JOIN users u ON u.id = t.created_by
       WHERE m.user_id = ?
       ORDER BY t.name COLLATE NOCASE ASC
     `
@@ -72,6 +78,8 @@ r.get("/me/tenants", (req, res) => {
     id: r.id,
     name: r.name,
     role: r.role,
+    owner_name: r.owner_name,
+    owner_email: r.owner_email,
     is_active: activeId === r.id,
   }));
 

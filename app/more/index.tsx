@@ -153,7 +153,16 @@ export default function More() {
       const res = await switchTenant(tenantId);
       const confirmed = res?.active_tenant || tenantId;
       setTenant(confirmed);
-      fetchTenants().then((d) => d?.items && setTenants(d.items)).catch(() => {});
+      
+      // Refrescar la lista de tenants
+      try {
+        const data = await fetchTenants();
+        if (data?.items?.length) setTenants(data.items);
+        if (data?.active_tenant) setTenant(data.active_tenant);
+      } catch (refreshError) {
+        console.warn("Error refrescando tenants:", refreshError);
+      }
+      
       setJoinOpen(false);
       setPendingTenantId(null);
       setJoinIdInput("");
@@ -173,6 +182,15 @@ export default function More() {
       const res = await switchTenant(t);
       const confirmed = res?.active_tenant || t;
       setTenant(confirmed);
+      
+      // Refrescar la lista de tenants para actualizar el estado activo
+      try {
+        const data = await fetchTenants();
+        if (data?.items?.length) setTenants(data.items);
+        if (data?.active_tenant) setTenant(data.active_tenant);
+      } catch (refreshError) {
+        console.warn("Error refrescando tenants:", refreshError);
+      }
     } catch (e: any) {
       const msg = String(e?.message || "");
       if (msg.includes("forbidden_tenant")) {
@@ -200,7 +218,7 @@ export default function More() {
   };
 
   const Chip = ({ item }: { item: TenantItem }) => {
-    const active = tenant === item.id || item.is_active;
+    const active = tenant === item.id;
     const isBusy = busyChip === item.id;
     return (
       <Pressable
