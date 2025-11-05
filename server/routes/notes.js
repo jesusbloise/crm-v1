@@ -3,6 +3,13 @@ const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
 const { requireTenantRole } = require("../lib/tenant");
+const {
+  resolveUserId,
+  canRead,
+  canWrite,
+  canDelete,
+  getOwnershipFilter,
+} = require("../lib/authorize");
 
 const router = Router();
 
@@ -15,8 +22,13 @@ router.get(
     const { deal_id, contact_id, account_id, lead_id } = req.query || {};
     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
+    const ownership = getOwnershipFilter(req);
     const clauses = ["tenant_id = ?"];
     const params = [req.tenantId];
+
+    if (ownership) {
+      clauses.push(ownership.replace("AND ", ""));
+    }
 
     if (deal_id) {
       clauses.push("deal_id = ?");
@@ -50,7 +62,6 @@ router.get(
 /** POST /notes  (owner/admin) */
 router.post(
   "/notes",
-  requireTenantRole(["owner", "admin"]),
   wrap(async (req, res) => {
     let { id, body, account_id, contact_id, lead_id, deal_id } = req.body || {};
 
@@ -98,13 +109,14 @@ router.post(
       if (!d) return res.status(400).json({ error: "invalid_deal_id" });
     }
 
+    const userId = resolveUserId(req);
     const now = Date.now();
     db.prepare(
       `
       INSERT INTO notes (
         id, body, account_id, contact_id, lead_id, deal_id,
-        tenant_id, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?)
+        tenant_id, created_by, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?)
     `
     ).run(
       id,
@@ -114,6 +126,7 @@ router.post(
       lead_id ?? null,
       deal_id ?? null,
       req.tenantId,
+      userId,
       now,
       now
     );
@@ -129,7 +142,7 @@ router.post(
 /** DELETE /notes/:id  (owner/admin) */
 router.delete(
   "/notes/:id",
-  requireTenantRole(["owner", "admin"]),
+  canDelete("notes"),
   wrap(async (req, res) => {
     const info = db
       .prepare(`DELETE FROM notes WHERE id = ? AND tenant_id = ?`)

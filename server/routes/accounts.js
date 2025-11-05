@@ -2,7 +2,14 @@
 const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
-const { requireTenantRole } = require("../lib/tenant"); // owner/admin para mutaciones
+const { requireTenantRole } = require("../lib/tenant");
+const {
+  canRead,
+  canWrite,
+  canDelete,
+  getOwnershipFilter,
+  resolveUserId,
+} = require("../lib/authorize");
 
 const router = Router();
 
@@ -15,12 +22,13 @@ router.get(
   "/accounts",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
+    const ownership = getOwnershipFilter(req);
     const rows = db
       .prepare(
         `
         SELECT *
         FROM accounts
-        WHERE tenant_id = ?
+        WHERE tenant_id = ? ${ownership}
         ORDER BY updated_at DESC, id ASC
         LIMIT ?
       `
@@ -36,6 +44,7 @@ router.get(
  */
 router.get(
   "/accounts/:id",
+  canRead("accounts"),
   wrap(async (req, res) => {
     const row = db
       .prepare(`SELECT * FROM accounts WHERE id = ? AND tenant_id = ?`)
@@ -52,7 +61,6 @@ router.get(
  */
 router.post(
   "/accounts",
-  requireTenantRole(["owner", "admin"]),
   wrap(async (req, res) => {
     let { id, name, website, phone } = req.body || {};
     id = typeof id === "string" ? id.trim() : "";
@@ -69,13 +77,14 @@ router.post(
       .get(id, req.tenantId);
     if (existing) return res.status(409).json({ error: "account_exists" });
 
+    const userId = resolveUserId(req);
     const now = Date.now();
     db.prepare(
       `
-      INSERT INTO accounts (id, name, website, phone, tenant_id, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?)
+      INSERT INTO accounts (id, name, website, phone, tenant_id, created_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?)
     `
-    ).run(id, name, website ?? null, phone ?? null, req.tenantId, now, now);
+    ).run(id, name, website ?? null, phone ?? null, req.tenantId, userId, now, now);
 
     const created = db
       .prepare(`SELECT * FROM accounts WHERE id = ? AND tenant_id = ?`)
@@ -91,7 +100,7 @@ router.post(
  */
 router.patch(
   "/accounts/:id",
-  requireTenantRole(["owner", "admin"]),
+  canWrite("accounts"),
   wrap(async (req, res) => {
     const found = db
       .prepare(`SELECT * FROM accounts WHERE id = ? AND tenant_id = ?`)
@@ -139,7 +148,7 @@ router.patch(
  */
 router.delete(
   "/accounts/:id",
-  requireTenantRole(["owner", "admin"]),
+  canDelete("accounts"),
   wrap(async (req, res) => {
     const info = db
       .prepare(`DELETE FROM accounts WHERE id = ? AND tenant_id = ?`)

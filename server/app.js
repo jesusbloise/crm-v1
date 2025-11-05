@@ -9,6 +9,7 @@ const {
   ensureContactsAccountId,
   ensureTenantColumns,
   ensureTenantCore,
+  ensureCreatedByColumns,
 } = require("./db/migrate");
 
 const injectTenant = require("./lib/injectTenant");
@@ -49,12 +50,14 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
  * 1) ensureTenantCore -> crea users/tenants/memberships y asegura columnas google_*
  * 2) runMigrations    -> crea tablas de negocio (leads, contacts, deals, activities, etc.)
  * 3) ensureContactsAccountId y ensureTenantColumns -> alters idempotentes
+ * 4) ensureCreatedByColumns -> agrega created_by para RBAC
  */
 try {
   ensureTenantCore();
   runMigrations();
   ensureContactsAccountId();
   ensureTenantColumns();
+  ensureCreatedByColumns();
   console.log("✅ DB migrations OK");
 } catch (e) {
   console.error("❌ DB migration failed", e);

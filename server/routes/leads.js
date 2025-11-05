@@ -3,29 +3,40 @@ const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
 const { requireTenantRole } = require("../lib/tenant");
+const {
+  canRead,
+  canWrite,
+  canDelete,
+  getOwnershipFilter,
+  resolveUserId,
+} = require("../lib/authorize");
 
 const router = Router();
 
 /**
  * GET /leads
  * Lista de leads del tenant actual.
+ * - Admins ven todos los leads del tenant
+ * - Users solo ven sus propios leads
  * Opcional: ?limit=100
  */
 router.get(
   "/leads",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
+    const { whereSql, params } = getOwnershipFilter(req);
+
     const rows = db
       .prepare(
         `
         SELECT *
         FROM leads
-        WHERE tenant_id = ?
+        WHERE tenant_id = ? ${whereSql}
         ORDER BY updated_at DESC, id ASC
         LIMIT ?
       `
       )
-      .all(req.tenantId, limit);
+      .all(req.tenantId, ...params, limit);
     res.json(rows);
   })
 );
@@ -33,9 +44,12 @@ router.get(
 /**
  * GET /leads/:id
  * Detalle de lead dentro del tenant actual.
+ * - Admins pueden ver cualquier lead
+ * - Users solo pueden ver sus propios leads
  */
 router.get(
   "/leads/:id",
+  canRead("leads"),
   wrap(async (req, res) => {
     const row = db
       .prepare(`SELECT * FROM leads WHERE id = ? AND tenant_id = ?`)
@@ -47,12 +61,13 @@ router.get(
 
 /**
  * POST /leads
- * Crea lead (owner/admin).
+ * Crea lead.
+ * - Todos los usuarios autenticados pueden crear leads
+ * - Se asigna automáticamente el created_by del usuario
  * Body: { id, name, email?, phone?, company?, status? }
  */
 router.post(
   "/leads",
-  requireTenantRole(["owner", "admin"]),
   wrap(async (req, res) => {
     let { id, name, email, phone, company, status } = req.body || {};
 
@@ -63,7 +78,8 @@ router.post(
     company = typeof company === "string" ? company.trim() : null;
     status = typeof status === "string" ? status.trim() : null;
 
-    if (!id || !name) return res.status(400).json({ error: "id_and_name_required" });
+    if (!id || !name)
+      return res.status(400).json({ error: "id_and_name_required" });
     if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
       return res.status(400).json({ error: "invalid_lead_id" });
     }
@@ -74,12 +90,14 @@ router.post(
       .get(id, req.tenantId);
     if (existing) return res.status(409).json({ error: "lead_exists" });
 
+    const userId = resolveUserId(req);
     const now = Date.now();
+    
     db.prepare(
       `
       INSERT INTO leads
-        (id, name, email, phone, company, status, tenant_id, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?)
+        (id, name, email, phone, company, status, tenant_id, created_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `
     ).run(
       id,
@@ -89,6 +107,7 @@ router.post(
       company ?? null,
       status ?? null,
       req.tenantId,
+      userId,
       now,
       now
     );
@@ -103,11 +122,13 @@ router.post(
 
 /**
  * PATCH /leads/:id
- * Actualiza lead (owner/admin).
+ * Actualiza lead.
+ * - Admins pueden editar cualquier lead
+ * - Users solo pueden editar sus propios leads
  */
 router.patch(
   "/leads/:id",
-  requireTenantRole(["owner", "admin"]),
+  canWrite("leads"),
   wrap(async (req, res) => {
     const found = db
       .prepare(`SELECT * FROM leads WHERE id = ? AND tenant_id = ?`)
@@ -157,17 +178,20 @@ router.patch(
 
 /**
  * DELETE /leads/:id
- * Elimina lead (owner/admin).
+ * Elimina lead.
+ * - Admins pueden eliminar cualquier lead
+ * - Users solo pueden eliminar sus propios leads
  */
 router.delete(
   "/leads/:id",
-  requireTenantRole(["owner", "admin"]),
+  canDelete("leads"),
   wrap(async (req, res) => {
     const info = db
       .prepare(`DELETE FROM leads WHERE id = ? AND tenant_id = ?`)
       .run(req.params.id, req.tenantId);
 
-    if (info.changes === 0) return res.status(404).json({ error: "not_found" });
+    if (info.changes === 0)
+      return res.status(404).json({ error: "not_found" });
     res.json({ ok: true });
   })
 );

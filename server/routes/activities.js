@@ -3,6 +3,13 @@ const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
 const { requireTenantRole } = require("../lib/tenant");
+const {
+  resolveUserId,
+  canRead,
+  canWrite,
+  canDelete,
+  getOwnershipFilter,
+} = require("../lib/authorize");
 
 const router = Router();
 
@@ -18,7 +25,8 @@ router.get(
     const { deal_id, contact_id, account_id, lead_id, status, remind_after } = req.query || {};
     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-    let sql = `SELECT * FROM activities WHERE tenant_id = ?`;
+    const ownership = getOwnershipFilter(req);
+    let sql = `SELECT * FROM activities WHERE tenant_id = ? ${ownership}`;
     const params = [req.tenantId];
 
     if (deal_id)      { sql += " AND deal_id = ?";      params.push(String(deal_id)); }
@@ -38,6 +46,7 @@ router.get(
 /** Detalle */
 router.get(
   "/activities/:id",
+  canRead("activities"),
   wrap(async (req, res) => {
     const row = db
       .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
@@ -51,7 +60,6 @@ router.get(
 /** Crear */
 router.post(
   "/activities",
-  requireTenantRole(["owner", "admin"]),
   wrap(async (req, res) => {
     let {
       id,
@@ -119,14 +127,15 @@ router.post(
       if (!d) return res.status(400).json({ error: "invalid_deal_id" });
     }
 
+    const userId = resolveUserId(req);
     const now = Date.now();
     db.prepare(
       `
       INSERT INTO activities (
         id, type, title, due_date, remind_at_ms, status, notes,
         account_id, contact_id, lead_id, deal_id,
-        tenant_id, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        tenant_id, created_by, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `
     ).run(
       id,
@@ -141,6 +150,7 @@ router.post(
       lead_id ?? null,
       deal_id ?? null,
       req.tenantId,
+      userId,
       now,
       now
     );
@@ -156,7 +166,7 @@ router.post(
 /** Actualizar (parcial) */
 router.patch(
   "/activities/:id",
-  requireTenantRole(["owner", "admin"]),
+  canWrite("activities"),
   wrap(async (req, res) => {
     const found = db
       .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
@@ -251,7 +261,7 @@ router.patch(
 /** Borrar */
 router.delete(
   "/activities/:id",
-  requireTenantRole(["owner", "admin"]),
+  canDelete("activities"),
   wrap(async (req, res) => {
     const info = db
       .prepare(`DELETE FROM activities WHERE id = ? AND tenant_id = ?`)

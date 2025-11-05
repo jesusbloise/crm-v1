@@ -3,29 +3,40 @@ const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
 const { requireTenantRole } = require("../lib/tenant");
+const {
+  canRead,
+  canWrite,
+  canDelete,
+  getOwnershipFilter,
+  resolveUserId,
+} = require("../lib/authorize");
 
 const router = Router();
 
 /**
  * GET /contacts
  * Lista contactos del tenant actual.
+ * - Admins ven todos los contactos del tenant
+ * - Users solo ven sus propios contactos
  * Opcional: ?limit=100
  */
 router.get(
   "/contacts",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
+    const { whereSql, params } = getOwnershipFilter(req);
+
     const rows = db
       .prepare(
         `
         SELECT *
         FROM contacts
-        WHERE tenant_id = ?
+        WHERE tenant_id = ? ${whereSql}
         ORDER BY updated_at DESC, id ASC
         LIMIT ?
       `
       )
-      .all(req.tenantId, limit);
+      .all(req.tenantId, ...params, limit);
     res.json(rows);
   })
 );
@@ -33,9 +44,12 @@ router.get(
 /**
  * GET /contacts/:id
  * Detalle por id dentro del tenant.
+ * - Admins pueden ver cualquier contacto
+ * - Users solo pueden ver sus propios contactos
  */
 router.get(
   "/contacts/:id",
+  canRead("contacts"),
   wrap(async (req, res) => {
     const row = db
       .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
@@ -47,14 +61,16 @@ router.get(
 
 /**
  * POST /contacts
- * Crea contacto (owner/admin).
+ * Crea contacto.
+ * - Todos los usuarios autenticados pueden crear contactos
+ * - Se asigna automáticamente el created_by del usuario
  * Body: { id, name, email?, phone?, company?, position?, account_id? }
  */
 router.post(
   "/contacts",
-  requireTenantRole(["owner", "admin"]),
   wrap(async (req, res) => {
-    let { id, name, email, phone, company, position, account_id } = req.body || {};
+    let { id, name, email, phone, company, position, account_id } =
+      req.body || {};
 
     id = typeof id === "string" ? id.trim() : "";
     name = typeof name === "string" ? name.trim() : "";
@@ -64,31 +80,38 @@ router.post(
     position = typeof position === "string" ? position.trim() : null;
     account_id = typeof account_id === "string" ? account_id.trim() : null;
 
-    if (!id || !name) return res.status(400).json({ error: "id_and_name_required" });
+    if (!id || !name)
+      return res.status(400).json({ error: "id_and_name_required" });
     if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
       return res.status(400).json({ error: "invalid_contact_id" });
     }
 
     // ¿Existe ese id en este tenant?
     const existing = db
-      .prepare(`SELECT 1 AS one FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
+      .prepare(
+        `SELECT 1 AS one FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`
+      )
       .get(id, req.tenantId);
     if (existing) return res.status(409).json({ error: "contact_exists" });
 
     // Si viene account_id, validar que exista en este tenant
     if (account_id) {
       const acc = db
-        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
+        .prepare(
+          `SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`
+        )
         .get(account_id, req.tenantId);
       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
     }
 
+    const userId = resolveUserId(req);
     const now = Date.now();
+    
     db.prepare(
       `
       INSERT INTO contacts
-        (id, name, email, phone, company, position, account_id, tenant_id, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
+        (id, name, email, phone, company, position, account_id, tenant_id, created_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
     `
     ).run(
       id,
@@ -99,6 +122,7 @@ router.post(
       position ?? null,
       account_id ?? null,
       req.tenantId,
+      userId,
       now,
       now
     );
@@ -119,11 +143,13 @@ router.post(
 
 /**
  * PATCH /contacts/:id
- * Actualiza contacto (owner/admin).
+ * Actualiza contacto.
+ * - Admins pueden editar cualquier contacto
+ * - Users solo pueden editar sus propios contactos
  */
 router.patch(
   "/contacts/:id",
-  requireTenantRole(["owner", "admin"]),
+  canWrite("contacts"),
   wrap(async (req, res) => {
     const found = db
       .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
@@ -184,17 +210,20 @@ router.patch(
 
 /**
  * DELETE /contacts/:id
- * Elimina contacto (owner/admin).
+ * Elimina contacto.
+ * - Admins pueden eliminar cualquier contacto
+ * - Users solo pueden eliminar sus propios contactos
  */
 router.delete(
   "/contacts/:id",
-  requireTenantRole(["owner", "admin"]),
+  canDelete("contacts"),
   wrap(async (req, res) => {
     const info = db
       .prepare(`DELETE FROM contacts WHERE id = ? AND tenant_id = ?`)
       .run(req.params.id, req.tenantId);
 
-    if (info.changes === 0) return res.status(404).json({ error: "not_found" });
+    if (info.changes === 0)
+      return res.status(404).json({ error: "not_found" });
     res.json({ ok: true });
   })
 );

@@ -317,6 +317,44 @@ function ensureContactsAccountId() {
 }
 
 /**
+ * 🔑 ALTER idempotente: agrega created_by a todas las tablas de recursos
+ * para permitir control de acceso basado en ownership + roles.
+ */
+function ensureCreatedByColumns() {
+  const tables = [
+    "leads",
+    "contacts",
+    "accounts",
+    "deals",
+    "activities",
+    "notes",
+  ];
+
+  db.exec("BEGIN");
+  try {
+    for (const t of tables) {
+      if (!hasColumn(t, "created_by")) {
+        db.exec(`ALTER TABLE ${t} ADD COLUMN created_by TEXT`);
+        // Backfill: asignar al primer admin del tenant o dejar NULL
+        // (se corregirá con script de migración)
+      }
+
+      // Índice para queries filtrados por created_by
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_${t}_created_by ON ${t}(created_by)`
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_${t}_tenant_created_by ON ${t}(tenant_id, created_by)`
+      );
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
  * 🔑 ALTER idempotente: agrega tenant_id a todas las tablas si falta,
  * indexa y backfill DEFAULT_TENANT.
  */
@@ -414,6 +452,7 @@ module.exports = {
   ensureContactsAccountId,
   ensureTenantColumns,
   ensureTenantCore,
+  ensureCreatedByColumns,
 };
 
 // // server/db/migrate.js
