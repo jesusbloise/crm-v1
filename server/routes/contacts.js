@@ -24,19 +24,19 @@ router.get(
   "/contacts",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
-    const { whereSql, params } = getOwnershipFilter(req);
+    const ownership = getOwnershipFilter(req);
 
     const rows = db
       .prepare(
         `
         SELECT *
         FROM contacts
-        WHERE tenant_id = ? ${whereSql}
+        WHERE tenant_id = ? ${ownership}
         ORDER BY updated_at DESC, id ASC
         LIMIT ?
       `
       )
-      .all(req.tenantId, ...params, limit);
+      .all(req.tenantId, limit);
     res.json(rows);
   })
 );

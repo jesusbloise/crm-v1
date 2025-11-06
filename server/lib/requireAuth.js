@@ -1,5 +1,6 @@
 // server/lib/requireAuth.js
 const jwt = require("jsonwebtoken");
+const db = require("../db/connection");
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 const BYPASS = process.env.ALLOW_DEV_AUTH_BYPASS === "1";
@@ -54,6 +55,20 @@ module.exports = function requireAuth(req, res, next) {
     const uid = normalizeUserId(payload?.sub ?? payload?.id);
     const email = payload?.email || null;
     const roles = payload?.roles || {};
+
+    // ⚡ NUEVO: Verificar que el usuario esté activo
+    const user = db.prepare(`SELECT active FROM users WHERE id = ?`).get(uid);
+    
+    if (!user) {
+      return res.status(401).json({ error: "user_not_found" });
+    }
+
+    if (user.active === 0) {
+      return res.status(403).json({ 
+        error: "user_deactivated",
+        message: "Tu cuenta ha sido desactivada. Contacta al administrador." 
+      });
+    }
 
     req.user = { id: uid, email, roles };
     req.auth = {

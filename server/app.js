@@ -10,6 +10,7 @@ const {
   ensureTenantColumns,
   ensureTenantCore,
   ensureCreatedByColumns,
+  ensureUsersActive,
 } = require("./db/migrate");
 
 const injectTenant = require("./lib/injectTenant");
@@ -58,6 +59,7 @@ try {
   ensureContactsAccountId();
   ensureTenantColumns();
   ensureCreatedByColumns();
+  ensureUsersActive();
   console.log("✅ DB migrations OK");
 } catch (e) {
   console.error("❌ DB migration failed", e);
@@ -80,6 +82,7 @@ app.use(require("./routes/ics"));    // /integrations/ics/*
 app.use(googleRoutes);               // /integrations/google/*
 
 /* ---------- Rutas protegidas (tu API actual) ---------- */
+app.use(require("./routes/admin"));
 app.use(require("./routes/invitations"));
 app.use(require("./routes/me"));
 app.use(require("./routes/tenants"));

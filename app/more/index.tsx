@@ -14,6 +14,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -102,6 +103,7 @@ export default function More() {
   const [tenants, setTenants] = useState<TenantItem[]>([{ id: "demo", name: "Demo" }]);
   const [busyChip, setBusyChip] = useState<string | null>(null);
   const [busyLogout, setBusyLogout] = useState(false);
+  const [userIsAdmin, setUserIsAdmin] = useState(false);
 
   // Discover / join por ID
   const [query, setQuery] = useState("");
@@ -119,13 +121,47 @@ export default function More() {
       setTenant(localActive);
       try {
         const data = await fetchTenants();
+        console.log("📋 fetchTenants response:", JSON.stringify(data, null, 2));
         if (data?.items?.length) setTenants(data.items);
         if (data?.active_tenant) setTenant(data.active_tenant);
+        
+        // Verificar si es admin en algún workspace
+        const adminStatus = await isAdminInAnyWorkspace(data?.items || []);
+        console.log("🔐 Admin check DETALLADO:", {
+          totalTenants: data?.items?.length,
+          tenants: data?.items?.map(t => ({ 
+            id: t.id, 
+            name: t.name, 
+            role: t.role,
+            roleType: typeof t.role 
+          })),
+          isAdmin: adminStatus,
+          hasItems: !!data?.items?.length
+        });
+        setUserIsAdmin(adminStatus);
       } catch (e: any) {
         console.warn("fetchTenants error:", e?.message || e);
       }
     })();
   }, []);
+
+  // Función para verificar si el usuario es admin en algún workspace
+  const isAdminInAnyWorkspace = async (tenantList: TenantItem[]) => {
+    console.log("🔍 isAdminInAnyWorkspace - Input:", tenantList);
+    
+    // Si tiene algún tenant donde sea admin, puede acceder
+    const hasAdminRole = tenantList.some(t => {
+      console.log(`  Checking tenant ${t.name}: role="${t.role}" (type: ${typeof t.role})`);
+      return t.role === "admin";
+    });
+    
+    console.log("🔍 Resultado final:", { 
+      tenantCount: tenantList.length,
+      roles: tenantList.map(t => ({ id: t.id, role: t.role })),
+      hasAdminRole 
+    });
+    return hasAdminRole;
+  };
 
   const onSearch = async () => {
     const q = query.trim();
@@ -250,16 +286,24 @@ export default function More() {
     <View style={styles.screen}>
       <Stack.Screen options={{ title: "Más" }} />
 
-      {/* ---- TUS WORKSPACES ---- */}
-      <Text style={styles.title}>Tus workspaces</Text>
-      <View style={styles.row}>
-        {tenants.map((it) => (
-          <Chip key={it.id} item={it} />
-        ))}
-      </View>
-      <Text style={styles.hint}>Un toque cambia al instante.</Text>
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={true}
+        bounces={true}
+        alwaysBounceVertical={true}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* ---- TUS WORKSPACES ---- */}
+        <Text style={styles.title}>Tus workspaces</Text>
+        <View style={styles.row}>
+          {tenants.map((it) => (
+            <Chip key={it.id} item={it} />
+          ))}
+        </View>
+        <Text style={styles.hint}>Un toque cambia al instante.</Text>
 
-      <View style={{ height: 24 }} />
+        <View style={{ height: 24 }} />
 
       {/* ---- DESCUBRIR / ENTRAR POR ID ---- */}
       <View style={styles.card}>
@@ -315,51 +359,126 @@ export default function More() {
       <View style={{ height: 16 }} />
       <Text style={styles.title}>Cuenta</Text>
 
-      <Pressable
-        onPress={() => router.push("/profile" as any)}
-        style={({ pressed }) => [
-          {
-            backgroundColor: CARD,
-            borderColor: BORDER,
-            borderWidth: 1,
-            borderRadius: 12,
-            paddingHorizontal: 14,
-            paddingVertical: 12,
-            opacity: pressed ? 0.85 : 1,
-            alignSelf: "flex-start",
-            marginTop: 8,
-          },
-        ]}
-        android_ripple={{ color: "rgba(255,255,255,0.08)" }}
-      >
-        <Text style={{ color: TEXT, fontWeight: "800" }}>Ver perfil</Text>
-      </Pressable>
+      {/* Lista moderna de opciones */}
+      <View style={styles.menuList}>
+        <Pressable
+          onPress={() => router.push("/profile" as any)}
+          style={({ pressed }) => [
+            styles.menuItem,
+            pressed && styles.menuItemPressed
+          ]}
+          android_ripple={{ color: "rgba(124,58,237,0.15)" }}
+        >
+          <View style={styles.menuItemLeft}>
+            <View style={[styles.menuIcon, { backgroundColor: ACCENT + "20" }]}>
+              <Text style={[styles.menuIconText, { color: ACCENT }]}>👤</Text>
+            </View>
+            <View style={styles.menuItemContent}>
+              <Text style={styles.menuItemTitle}>Ver perfil</Text>
+              <Text style={styles.menuItemSubtitle}>Información y configuración personal</Text>
+            </View>
+          </View>
+          <Text style={styles.menuArrow}>›</Text>
+        </Pressable>
 
-      {/* ---- ACCIONES ---- */}
-      <Pressable
-        onPress={() => router.push("/more/workspaces-new")}
-        style={[styles.actionBtn, { backgroundColor: "#10b981" }]}
-      >
-        <Text style={styles.actionTxt}>Nuevo workspace</Text>
-      </Pressable>
+        <Pressable
+          onPress={() => router.push("/more/workspaces-new")}
+          style={({ pressed }) => [
+            styles.menuItem,
+            pressed && styles.menuItemPressed
+          ]}
+          android_ripple={{ color: "rgba(16,185,129,0.15)" }}
+        >
+          <View style={styles.menuItemLeft}>
+            <View style={[styles.menuIcon, { backgroundColor: "#10b98120" }]}>
+              <Text style={[styles.menuIconText, { color: "#10b981" }]}>➕</Text>
+            </View>
+            <View style={styles.menuItemContent}>
+              <Text style={styles.menuItemTitle}>Nuevo workspace</Text>
+              <Text style={styles.menuItemSubtitle}>Crear un espacio de trabajo nuevo</Text>
+            </View>
+          </View>
+          <Text style={styles.menuArrow}>›</Text>
+        </Pressable>
 
-      <Pressable
-        onPress={onLogout}
-        disabled={busyLogout}
-        style={[styles.actionBtn, { backgroundColor: "#ef4444" }, busyLogout && { opacity: 0.6 }]}
-      >
-        <Text style={styles.actionTxt}>
-          {busyLogout ? "Saliendo…" : "Cerrar sesión"}
-        </Text>
-      </Pressable>
+        {/* ---- Botón de Administrador ---- */}
+        <Pressable
+          onPress={() => router.push("/more/admin-users" as any)}
+          style={({ pressed }) => [
+            styles.menuItem,
+            pressed && styles.menuItemPressed
+          ]}
+          android_ripple={{ color: "rgba(245,158,11,0.15)" }}
+        >
+          <View style={styles.menuItemLeft}>
+            <View style={[styles.menuIcon, { backgroundColor: "#f59e0b20" }]}>
+              <Text style={[styles.menuIconText, { color: "#f59e0b" }]}>👥</Text>
+            </View>
+            <View style={styles.menuItemContent}>
+              <Text style={styles.menuItemTitle}>Administrador</Text>
+              <Text style={styles.menuItemSubtitle}>Ver todos los usuarios registrados</Text>
+            </View>
+          </View>
+          <Text style={styles.menuArrow}>›</Text>
+        </Pressable>
 
-      {/* ---- Botón de prueba de notificación (10s) ---- */}
-      <Pressable
-        onPress={testLocalNotif10s}
-        style={{ padding: 12, borderRadius: 12, backgroundColor: "#7C3AED", margin: 16 }}
-      >
-        <Text style={{ color: "#fff", fontWeight: "900" }}>Test notificación (10s)</Text>
-      </Pressable>
+        <Pressable
+          onPress={onLogout}
+          disabled={busyLogout}
+          style={({ pressed }) => [
+            styles.menuItem,
+            styles.menuItemDanger,
+            pressed && styles.menuItemPressed,
+            busyLogout && { opacity: 0.6 }
+          ]}
+          android_ripple={{ color: "rgba(239,68,68,0.15)" }}
+        >
+          <View style={styles.menuItemLeft}>
+            <View style={[styles.menuIcon, { backgroundColor: "#ef444420" }]}>
+              <Text style={[styles.menuIconText, { color: "#ef4444" }]}>
+                {busyLogout ? "⏳" : "🚪"}
+              </Text>
+            </View>
+            <View style={styles.menuItemContent}>
+              <Text style={[styles.menuItemTitle, { color: "#ef4444" }]}>
+                {busyLogout ? "Saliendo..." : "Cerrar sesión"}
+              </Text>
+              <Text style={styles.menuItemSubtitle}>
+                Salir de tu cuenta en este dispositivo
+              </Text>
+            </View>
+          </View>
+          <Text style={[styles.menuArrow, { color: "#ef4444" }]}>›</Text>
+        </Pressable>
+      </View>
+
+      {/* ---- Desarrollo / Debug ---- */}
+      <View style={{ height: 24 }} />
+      <Text style={styles.title}>Desarrollo</Text>
+      
+      <View style={styles.menuList}>
+        <Pressable
+          onPress={testLocalNotif10s}
+          style={({ pressed }) => [
+            styles.menuItem,
+            { borderBottomWidth: 0 },
+            pressed && styles.menuItemPressed
+          ]}
+          android_ripple={{ color: "rgba(124,58,237,0.15)" }}
+        >
+          <View style={styles.menuItemLeft}>
+            <View style={[styles.menuIcon, { backgroundColor: ACCENT + "20" }]}>
+              <Text style={[styles.menuIconText, { color: ACCENT }]}>🔔</Text>
+            </View>
+            <View style={styles.menuItemContent}>
+              <Text style={styles.menuItemTitle}>Test notificación (10s)</Text>
+              <Text style={styles.menuItemSubtitle}>Programar notificación de prueba</Text>
+            </View>
+          </View>
+          <Text style={styles.menuArrow}>›</Text>
+        </Pressable>
+      </View>
+      </ScrollView>
 
       {/* ---- MODAL JOIN ---- */}
       <Modal visible={joinOpen} transparent animationType="fade" onRequestClose={() => setJoinOpen(false)}>
@@ -408,7 +527,17 @@ export default function More() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, padding: 16 },
+  screen: { 
+    flex: 1, 
+    backgroundColor: BG,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 40,
+  },
 
   title: { color: TEXT, fontSize: 18, fontWeight: "900", marginBottom: 12 },
   row: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
@@ -483,6 +612,73 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   actionTxt: { color: "white", fontWeight: "800" },
+
+  // Estilos de lista de menú moderna
+  menuList: {
+    marginTop: 12,
+    backgroundColor: CARD,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    overflow: "hidden",
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  menuItemPressed: {
+    backgroundColor: "rgba(124,58,237,0.08)",
+  },
+  menuItemDanger: {
+    borderBottomWidth: 0,
+  },
+  menuItemLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    flex: 1,
+  },
+  menuIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  menuIconText: {
+    fontSize: 20,
+    fontWeight: "700",
+  },
+  menuItemContent: {
+    flex: 1,
+  },
+  menuItemTitle: {
+    color: TEXT,
+    fontSize: 16,
+    fontWeight: "800",
+    marginBottom: 3,
+  },
+  menuItemSubtitle: {
+    color: SUBTLE,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  menuArrow: {
+    color: SUBTLE,
+    fontSize: 28,
+    fontWeight: "300",
+    marginLeft: 8,
+  },
 
   modalOverlay: {
     flex: 1,

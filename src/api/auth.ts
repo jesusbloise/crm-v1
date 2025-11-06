@@ -182,6 +182,113 @@ export async function switchTenant(tenant_id: string) {
   return res;
 }
 
+/** Obtiene el rol del usuario en el workspace activo. */
+export async function getCurrentUserRole() {
+  try {
+    const tenants = await fetchTenants();
+    const activeTenant = await getActiveTenant();
+    const current = tenants.items?.find(t => t.id === activeTenant);
+    return current?.role || null;
+  } catch (error) {
+    console.warn("Error getting user role:", error);
+    return null;
+  }
+}
+
+/** Verifica si el usuario actual es admin u owner. */
+export async function isAdmin() {
+  const role = await getCurrentUserRole();
+  return role === "admin" || role === "owner";
+}
+
+/* =======================
+   Admin functions
+======================= */
+
+/** Obtiene todos los usuarios de un workspace (solo admin/owner). */
+export async function getWorkspaceUsers(tenantId: string) {
+  return authFetch<{ 
+    tenant: { id: string; name: string; created_by: string; created_at: number };
+    items: Array<{ 
+      id: string; 
+      name: string; 
+      email: string; 
+      avatar_url?: string;
+      headline?: string;
+      role: string;
+      member_since: number;
+      member_updated_at: number;
+    }> 
+  }>(
+    `/tenants/${tenantId}/members`,
+    { method: "GET" }
+  );
+}
+
+/** Cambia el rol de un usuario en el workspace (solo admin/owner). */
+export async function changeUserRole(tenantId: string, userId: string, role: "owner" | "admin" | "member") {
+  return authFetch<{ 
+    ok: boolean; 
+    message: string;
+    member: {
+      id: string;
+      name: string;
+      email: string;
+      avatar_url?: string;
+      role: string;
+      updated_at: number;
+    }
+  }>(
+    `/tenants/${tenantId}/members/${userId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }
+  );
+}
+
+/** Obtiene TODOS los usuarios registrados en el sistema (solo admin/owner). */
+export async function getAllUsers() {
+  return authFetch<{ 
+    total: number;
+    items: Array<{ 
+      id: string; 
+      name: string; 
+      email: string; 
+      avatar_url?: string;
+      headline?: string;
+      is_active: boolean;
+      created_at: number;
+      updated_at: number;
+      last_login_at?: number;
+      memberships: Array<{ tenant_id: string; role: string }>;
+    }> 
+  }>(
+    `/admin/users`,
+    { method: "GET" }
+  );
+}
+
+/** Activa o desactiva un usuario (solo admin/owner). */
+export async function toggleUserActive(userId: string) {
+  return authFetch<{ 
+    ok: boolean; 
+    message: string;
+    user: {
+      id: string;
+      name: string;
+      email: string;
+      avatar_url?: string;
+      is_active: boolean;
+      updated_at: number;
+      memberships: Array<{ tenant_id: string; role: string }>;
+    }
+  }>(
+    `/admin/users/${userId}/toggle`,
+    { method: "PATCH" }
+  );
+}
+
 /* =======================
    Shorthands opcionales
 ======================= */

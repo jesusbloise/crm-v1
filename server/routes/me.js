@@ -73,6 +73,8 @@ r.get("/me/tenants", (req, res) => {
     )
     .all(userId);
 
+  console.log(`📋 /me/tenants for user ${userId}:`, rows.map(r => ({ name: r.name, role: r.role })));
+
   const activeId = req.tenantId || null;
   const items = rows.map((r) => ({
     id: r.id,

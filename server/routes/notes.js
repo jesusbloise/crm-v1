@@ -26,7 +26,7 @@ router.get(
     const clauses = ["tenant_id = ?"];
     const params = [req.tenantId];
 
-    if (ownership) {
+    if (ownership && ownership !== "") {
       clauses.push(ownership.replace("AND ", ""));
     }
 

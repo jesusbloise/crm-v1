@@ -261,6 +261,12 @@ function ensureTenantCore() {
     // ⬇️ NUEVO: URL del feed ICS (solo lectura)
     ensureCol("users", "google_ics_url", "TEXT");
 
+    // ⬇️ NUEVO: Estado activo/inactivo del usuario (1 = activo, 0 = inactivo)
+    ensureCol("users", "is_active", "INTEGER DEFAULT 1", () => {
+      // Activar todos los usuarios existentes por defecto
+      db.exec(`UPDATE users SET is_active = 1 WHERE is_active IS NULL`);
+    });
+
     // Índices
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_tenants_updated_at ON tenants(updated_at);
@@ -447,12 +453,30 @@ function ensureTenantColumns() {
   }
 }
 
+/** Agrega columna 'active' a la tabla users si no existe */
+function ensureUsersActive() {
+  db.exec("BEGIN");
+  try {
+    if (!hasColumn("users", "active")) {
+      console.log("📦 Agregando columna 'active' a la tabla users...");
+      db.exec(`ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1`);
+      // Por defecto todos los usuarios existentes están activos
+      db.exec(`UPDATE users SET active = 1 WHERE active IS NULL`);
+    }
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
 module.exports = {
   runMigrations,
   ensureContactsAccountId,
   ensureTenantColumns,
   ensureTenantCore,
   ensureCreatedByColumns,
+  ensureUsersActive,
 };
 
 // // server/db/migrate.js

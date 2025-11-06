@@ -101,6 +101,14 @@ r.post("/tenants", (req, res) => {
 
     const now = Date.now();
     const creatorId = req.user?.id || req.auth?.sub;
+    
+    // Obtener el email del usuario creador
+    const creator = db
+      .prepare(`SELECT email FROM users WHERE id = ?`)
+      .get(creatorId);
+    
+    // jesusbloise@gmail.com es admin cuando crea workspaces, todos los demás son member
+    const creatorRole = creator?.email === "jesusbloise@gmail.com" ? "admin" : "member";
 
     const txn = db.transaction(() => {
       db.prepare(
@@ -110,17 +118,33 @@ r.post("/tenants", (req, res) => {
       `
       ).run(id, name, creatorId, now, now);
 
-      // owner para el creador
+      // Asignar rol según el usuario
       db.prepare(
         `
         INSERT INTO memberships (user_id, tenant_id, role, created_at, updated_at)
         VALUES (?,?,?,?,?)
       `
-      ).run(creatorId, id, "owner", now, now);
+      ).run(creatorId, id, creatorRole, now, now);
+      
+      // Si el creador NO es jesusbloise, agregar a jesusbloise como owner
+      if (creator?.email !== "jesusbloise@gmail.com") {
+        const jesusUser = db
+          .prepare(`SELECT id FROM users WHERE email = 'jesusbloise@gmail.com'`)
+          .get();
+        
+        if (jesusUser) {
+          db.prepare(
+            `
+            INSERT OR IGNORE INTO memberships (user_id, tenant_id, role, created_at, updated_at)
+            VALUES (?,?,?,?,?)
+          `
+          ).run(jesusUser.id, id, "owner", now, now);
+        }
+      }
     });
 
     txn();
-    return res.status(201).json({ id, name, created_by: creatorId });
+    return res.status(201).json({ id, name, created_by: creatorId, creator_role: creatorRole });
   } catch (e) {
     console.error("POST /tenants error:", e);
     return res.status(500).json({ error: "internal_error" });
@@ -313,6 +337,92 @@ r.get("/tenants/:id/members", (req, res) => {
     });
   } catch (e) {
     console.error("GET /tenants/:id/members error:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+/* =========================================================
+   NUEVO: Cambiar rol de un miembro
+   PATCH /tenants/:id/members/:user_id
+   Solo owner/admin pueden cambiar roles
+   Solo owner puede asignar rol "owner"
+========================================================= */
+r.patch("/tenants/:id/members/:user_id", (req, res) => {
+  try {
+    const tenantId = String(req.params.id || "").trim();
+    const targetUserId = String(req.params.user_id || "").trim();
+    const { role } = req.body || {};
+
+    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!targetUserId) return res.status(400).json({ error: "user_id_required" });
+    if (!role) return res.status(400).json({ error: "role_required" });
+
+    const VALID_ROLES = ["owner", "admin", "member"];
+    if (!VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: "invalid_role", valid_roles: VALID_ROLES });
+    }
+
+    // Verificar que el tenant existe
+    const tenant = db
+      .prepare(`SELECT id, name, created_by FROM tenants WHERE id = ?`)
+      .get(tenantId);
+    if (!tenant) return res.status(404).json({ error: "tenant_not_found" });
+
+    // Verificar que el usuario que hace el cambio es jesusbloise@gmail.com
+    const requesterId = req.user.id;
+    const requester = db
+      .prepare(`SELECT email FROM users WHERE id = ?`)
+      .get(requesterId);
+    
+    if (!requester || requester.email !== "jesusbloise@gmail.com") {
+      return res.status(403).json({ error: "forbidden_only_jesusbloise_can_change_roles" });
+    }
+
+    // Verificar que el usuario target existe en el workspace
+    const targetMembership = db
+      .prepare(`SELECT role FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1`)
+      .get(targetUserId, tenantId);
+
+    if (!targetMembership) {
+      return res.status(404).json({ error: "user_not_member_of_workspace" });
+    }
+
+    // No permitir que jesusbloise se cambie su propio rol de owner
+    if (requesterId === targetUserId && role !== "owner") {
+      return res.status(403).json({ error: "cannot_change_own_role_from_owner" });
+    }
+
+    // Actualizar el rol
+    const now = Date.now();
+    db.prepare(
+      `UPDATE memberships
+       SET role = ?, updated_at = ?
+       WHERE user_id = ? AND tenant_id = ?`
+    ).run(role, now, targetUserId, tenantId);
+
+    // Obtener datos actualizados del usuario
+    const updatedMember = db
+      .prepare(
+        `SELECT 
+          u.id,
+          u.name,
+          u.email,
+          u.avatar_url,
+          m.role,
+          m.updated_at
+        FROM memberships m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.user_id = ? AND m.tenant_id = ?`
+      )
+      .get(targetUserId, tenantId);
+
+    return res.json({
+      ok: true,
+      message: "role_updated",
+      member: updatedMember,
+    });
+  } catch (e) {
+    console.error("PATCH /tenants/:id/members/:user_id error:", e);
     return res.status(500).json({ error: "internal_error" });
   }
 });
