@@ -2,69 +2,117 @@
 const { Router } = require("express");
 const db = require("../db/connection");
 const requireAuth = require("../lib/requireAuth");
+const { requireRoleInAny } = require("../lib/authorize");
+const { log: auditLog, ACTIONS } = require("../lib/auditLog");
 
 const r = Router();
-
-// Protección adicional por si reutilizan este router en otro lado.
 r.use(requireAuth);
 
 const ALLOW_SELF_JOIN = process.env.ALLOW_SELF_JOIN === "1";
 
-/**
- * GET /tenants
- * Lista los tenants a los que pertenece el usuario autenticado.
- */
+/* =========================================================
+   Helpers
+========================================================= */
+function noStore(res) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+}
+
+function resolveUserId(req) {
+  return req.user?.id || req.auth?.sub;
+}
+
+/** Resuelve tenant activo (header tiene prioridad; si no, el del token) */
+r.use((req, _res, next) => {
+  const headerTenant =
+    (req.get("x-tenant-id") || req.get("tenant") || "").trim() || null;
+  const tokenTenant = req.auth?.active_tenant || null;
+  req.tenantId = headerTenant || tokenTenant || null;
+  next();
+});
+
+/** Rol del solicitante dentro de un tenant */
+function getRequesterRole(req, tenantId) {
+  const requesterId = resolveUserId(req);
+  if (!requesterId || !tenantId) return null;
+  const row = db
+    .prepare(
+      `SELECT role FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1`
+    )
+    .get(requesterId, tenantId);
+  return row?.role || null;
+}
+
+/** Valida si el solicitante es owner o admin en ese tenant */
+function isAdminOrOwner(req, tenantId) {
+  const role = getRequesterRole(req, tenantId);
+  return role === "owner" || role === "admin";
+}
+
+/* =========================================================
+   GET /tenants → lista todos los workspaces del usuario
+========================================================= */
 r.get("/tenants", (req, res) => {
   try {
+    const uid = resolveUserId(req);
     const rows = db
       .prepare(
         `
-        SELECT
-          t.id,
-          t.name,
-          m.role,
-          t.created_at,
-          t.updated_at,
-          u.name as owner_name,
-          u.email as owner_email
-        FROM memberships m
-        JOIN tenants t ON t.id = m.tenant_id
-        LEFT JOIN users u ON u.id = t.created_by
-        WHERE m.user_id = ?
-        ORDER BY t.name COLLATE NOCASE ASC
-      `
+      SELECT
+        t.id,
+        t.name,
+        m.role,
+        t.created_at,
+        t.updated_at,
+        u.name AS owner_name,
+        u.email AS owner_email
+      FROM memberships m
+      JOIN tenants t ON t.id = m.tenant_id
+      LEFT JOIN users u ON u.id = t.created_by
+      WHERE m.user_id = ?
+      ORDER BY t.name COLLATE NOCASE ASC
+    `
       )
-      .all(req.user.id);
+      .all(uid);
 
-    return res.json({ items: rows });
+    const activeTenant = req.tenantId || rows[0]?.id || null;
+
+    noStore(res);
+    return res.json({ items: rows, active_tenant: activeTenant });
   } catch (e) {
     console.error("GET /tenants error:", e);
     return res.status(500).json({ error: "internal_error" });
   }
 });
 
-/**
- * GET /tenants/current
- * Devuelve el tenant activo (resuelto por header X-Tenant-Id o token).
- */
+/* =========================================================
+   GET /tenants/current → workspace activo
+========================================================= */
 r.get("/tenants/current", (req, res) => {
   try {
-    if (!req.tenantId) return res.json({ tenant: null });
+    if (!req.tenantId) {
+      noStore(res);
+      return res.json({ tenant: null });
+    }
 
     const tenant = db
-      .prepare(`
-        SELECT 
-          t.id, 
-          t.name, 
-          t.created_by,
-          u.name as owner_name,
-          u.email as owner_email
-        FROM tenants t
-        LEFT JOIN users u ON u.id = t.created_by
-        WHERE t.id = ?
-      `)
+      .prepare(
+        `
+      SELECT 
+        t.id, 
+        t.name, 
+        t.created_by,
+        u.name AS owner_name,
+        u.email AS owner_email
+      FROM tenants t
+      LEFT JOIN users u ON u.id = t.created_by
+      WHERE t.id = ?
+    `
+      )
       .get(req.tenantId);
 
+    noStore(res);
     return res.json({ tenant: tenant || null });
   } catch (e) {
     console.error("GET /tenants/current error:", e);
@@ -72,43 +120,55 @@ r.get("/tenants/current", (req, res) => {
   }
 });
 
-/**
- * POST /tenants
- * Crea un tenant nuevo y agrega al usuario actual como owner.
- * Body: { id, name }
- *
- * ⚠️ Ahora guarda también tenants.created_by = req.user.id
- */
-r.post("/tenants", (req, res) => {
-  // Permitimos que cualquier usuario autenticado pueda crear workspaces
-  if (!req.user?.id && !req.auth?.sub) {
+/* =========================================================
+   POST /tenants → crea un nuevo workspace
+   🔒 SOLO admin/owner pueden crear workspaces (en CUALQUIER workspace)
+========================================================= */
+r.post("/tenants", requireRoleInAny(["admin", "owner"]), (req, res) => {
+  const requesterId = resolveUserId(req);
+  
+  // 🔍 DEBUG: Log al inicio del handler
+  console.log('🔍 [POST /tenants] Handler started:', {
+    requesterId,
+    body: req.body,
+    tenantId: req.tenantId,
+    'req.user.id': req.user?.id,
+    'req.auth.sub': req.auth?.sub
+  });
+  
+  if (!requesterId) {
+    console.log('❌ [POST /tenants] No requesterId');
     return res.status(401).json({ error: "unauthorized" });
   }
 
   const { id, name } = req.body || {};
-  if (!id || !name) return res.status(400).json({ error: "id_and_name_required" });
+  if (!id || !name) {
+    console.log('❌ [POST /tenants] Missing id or name');
+    return res.status(400).json({ error: "id_and_name_required" });
+  }
 
-  // Validación simple del id (alfa, guion y guion_bajo)
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    console.log('❌ [POST /tenants] Invalid tenant_id format');
     return res.status(400).json({ error: "invalid_tenant_id" });
   }
 
   try {
+    // ✅ Ya validado por requireRoleInAny middleware, no hace falta re-validar
+    console.log(`✅ [POST /tenants] User ${requesterId} passed middleware, creating workspace...`);
+    
+    // Determinar rol del creador en el nuevo workspace
+    const requester = db
+      .prepare("SELECT email FROM users WHERE id = ?")
+      .get(requesterId);
+    const isJesus = requester?.email === "jesusbloise@gmail.com";
+    const creatorRole = isJesus ? "owner" : "admin";
+
     const exists = db
-      .prepare(`SELECT 1 AS one FROM tenants WHERE id = ? LIMIT 1`)
+      .prepare("SELECT 1 FROM tenants WHERE id = ? LIMIT 1")
       .get(id);
     if (exists) return res.status(409).json({ error: "tenant_exists" });
 
     const now = Date.now();
-    const creatorId = req.user?.id || req.auth?.sub;
-    
-    // Obtener el email del usuario creador
-    const creator = db
-      .prepare(`SELECT email FROM users WHERE id = ?`)
-      .get(creatorId);
-    
-    // jesusbloise@gmail.com es admin cuando crea workspaces, todos los demás son member
-    const creatorRole = creator?.email === "jesusbloise@gmail.com" ? "admin" : "member";
 
     const txn = db.transaction(() => {
       db.prepare(
@@ -116,67 +176,83 @@ r.post("/tenants", (req, res) => {
         INSERT INTO tenants (id, name, created_by, created_at, updated_at)
         VALUES (?,?,?,?,?)
       `
-      ).run(id, name, creatorId, now, now);
+      ).run(id, name, requesterId, now, now);
 
-      // Asignar rol según el usuario
       db.prepare(
         `
         INSERT INTO memberships (user_id, tenant_id, role, created_at, updated_at)
         VALUES (?,?,?,?,?)
       `
-      ).run(creatorId, id, creatorRole, now, now);
-      
-      // Si el creador NO es jesusbloise, agregar a jesusbloise como owner
-      if (creator?.email !== "jesusbloise@gmail.com") {
-        const jesusUser = db
-          .prepare(`SELECT id FROM users WHERE email = 'jesusbloise@gmail.com'`)
+      ).run(requesterId, id, creatorRole, now, now);
+
+      // Asegura que jesusbloise quede como owner también
+      if (!isJesus) {
+        const jesus = db
+          .prepare(
+            "SELECT id FROM users WHERE email = 'jesusbloise@gmail.com' LIMIT 1"
+          )
           .get();
-        
-        if (jesusUser) {
+        if (jesus) {
           db.prepare(
             `
             INSERT OR IGNORE INTO memberships (user_id, tenant_id, role, created_at, updated_at)
             VALUES (?,?,?,?,?)
           `
-          ).run(jesusUser.id, id, "owner", now, now);
+          ).run(jesus.id, id, "owner", now, now);
         }
       }
     });
 
     txn();
-    return res.status(201).json({ id, name, created_by: creatorId, creator_role: creatorRole });
+    
+    // 📝 Audit: workspace creado
+    auditLog({ 
+      userId: requesterId, 
+      tenantId: id,
+      action: ACTIONS.CREATE_WORKSPACE,
+      resourceType: "workspace",
+      resourceId: id,
+      details: { 
+        workspace_id: id,
+        workspace_name: name,
+        creator_role: creatorRole
+      }
+    }, req);
+    
+    return res.status(201).json({
+      id,
+      name,
+      created_by: requesterId,
+      creator_role: creatorRole,
+    });
   } catch (e) {
     console.error("POST /tenants error:", e);
     return res.status(500).json({ error: "internal_error" });
   }
 });
 
-/**
- * POST /tenants/switch
- * Valida que el usuario pertenezca al tenant y confirma el cambio.
- * Body: { tenant_id }
- *
- * Nota: el “switch real” lo haces enviando el header X-Tenant-Id desde el cliente.
- */
+/* =========================================================
+   (Opcional) POST /tenants/switch → valida y cambia workspace activo
+   *Tu front usa /me/tenant/switch, pero dejamos este por compat*
+========================================================= */
 r.post("/tenants/switch", (req, res) => {
   const { tenant_id } = req.body || {};
-  if (!tenant_id) return res.status(400).json({ error: "tenant_id_required" });
+  if (!tenant_id)
+    return res.status(400).json({ error: "tenant_id_required" });
 
   try {
     const membership = db
       .prepare(
         `
-        SELECT role
+      SELECT role
         FROM memberships
-        WHERE user_id = ? AND tenant_id = ?
-        LIMIT 1
-      `
+       WHERE user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `
       )
-      .get(req.user.id, tenant_id);
+      .get(resolveUserId(req), tenant_id);
 
-    if (!membership) {
-      return res.status(403).json({ error: "forbidden_tenant" });
-    }
+    if (!membership) return res.status(403).json({ error: "forbidden_tenant" });
 
     return res.json({ ok: true, tenant_id, role: membership.role });
   } catch (e) {
@@ -186,39 +262,31 @@ r.post("/tenants/switch", (req, res) => {
 });
 
 /* =========================================================
-   Descubrir tenants y Unirse por ID (auto-join opcional)
-   Controlado por env ALLOW_SELF_JOIN=1
+   GET /tenants/discover → búsqueda de workspaces
 ========================================================= */
-
-/**
- * GET /tenants/discover?query=ac
- * Búsqueda acotada por id o name (prefijo/substring). Máx 20 resultados.
- * Devuelve solo { id, name } para evitar filtrar data sensible.
- */
 r.get("/tenants/discover", (req, res) => {
   try {
     const q = String(req.query.query || "").trim();
     if (!q) return res.json({ items: [] });
-    const limit = 20;
 
     const rows = db
       .prepare(
         `
-        SELECT 
-          t.id, 
-          t.name, 
-          t.created_by,
-          u.name as owner_name,
-          u.email as owner_email,
-          (t.created_by = ?) as is_creator
-        FROM tenants t
-        LEFT JOIN users u ON u.id = t.created_by
-        WHERE t.id LIKE ? OR t.name LIKE ?
-        ORDER BY t.name COLLATE NOCASE ASC
-        LIMIT ?
-      `
+      SELECT 
+        t.id, 
+        t.name, 
+        t.created_by,
+        u.name AS owner_name,
+        u.email AS owner_email,
+        (t.created_by = ?) AS is_creator
+      FROM tenants t
+      LEFT JOIN users u ON u.id = t.created_by
+      WHERE t.id LIKE ? OR t.name LIKE ?
+      ORDER BY t.name COLLATE NOCASE ASC
+      LIMIT 20
+    `
       )
-      .all(req.user.id, `%${q}%`, `%${q}%`, limit);
+      .all(resolveUserId(req), `%${q}%`, `%${q}%`);
 
     return res.json({ items: rows });
   } catch (e) {
@@ -227,49 +295,49 @@ r.get("/tenants/discover", (req, res) => {
   }
 });
 
-/**
- * POST /tenants/join
- * Body: { tenant_id }
- * Si ALLOW_SELF_JOIN=1 → crea membership (member) si no existía.
- * Si =0 → 403 (usar invitaciones).
- */
+/* =========================================================
+   POST /tenants/join → unirse a workspace (si está permitido)
+========================================================= */
 r.post("/tenants/join", (req, res) => {
   try {
     const { tenant_id } = req.body || {};
-    if (!tenant_id) return res.status(400).json({ error: "tenant_id_required" });
+    if (!tenant_id)
+      return res.status(400).json({ error: "tenant_id_required" });
 
     const t = db
-      .prepare(`SELECT id, name FROM tenants WHERE id = ?`)
+      .prepare("SELECT id, name FROM tenants WHERE id = ?")
       .get(tenant_id);
     if (!t) return res.status(404).json({ error: "tenant_not_found" });
 
-    if (!ALLOW_SELF_JOIN) {
+    if (!ALLOW_SELF_JOIN)
       return res
         .status(403)
         .json({ error: "self_join_disabled_use_invitations" });
-    }
 
-    const userId = req.user?.id || req.auth?.sub;
+    const userId = resolveUserId(req);
     if (!userId) return res.status(401).json({ error: "unauthorized" });
 
     const exists = db
       .prepare(
-        `SELECT 1 FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1`
+        "SELECT 1 FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1"
       )
       .get(userId, t.id);
-    if (exists) {
+    if (exists)
       return res.json({ ok: true, joined: false, message: "already_member" });
-    }
 
     const now = Date.now();
     db.prepare(
-      `INSERT INTO memberships (user_id, tenant_id, role, created_at, updated_at)
-       VALUES (?, ?, 'member', ?, ?)`
+      `
+      INSERT INTO memberships (user_id, tenant_id, role, created_at, updated_at)
+      VALUES (?, ?, 'member', ?, ?)
+    `
     ).run(userId, t.id, now, now);
 
-    return res
-      .status(201)
-      .json({ ok: true, joined: true, tenant: { id: t.id, name: t.name } });
+    return res.status(201).json({
+      ok: true,
+      joined: true,
+      tenant: { id: t.id, name: t.name },
+    });
   } catch (e) {
     console.error("POST /tenants/join error:", e);
     return res.status(500).json({ error: "internal_error" });
@@ -277,52 +345,52 @@ r.post("/tenants/join", (req, res) => {
 });
 
 /* =========================================================
-   NUEVO: Miembros del workspace
-   GET /tenants/:id/members   (requiere ser miembro del tenant)
+   GET /tenants/:id/members → lista miembros del workspace
 ========================================================= */
-
 r.get("/tenants/:id/members", (req, res) => {
   try {
     const tenantId = String(req.params.id || "").trim();
-    if (!tenantId) return res.status(400).json({ error: "tenant_id_required" });
+    if (!tenantId)
+      return res.status(400).json({ error: "tenant_id_required" });
 
     const t = db
-      .prepare(`SELECT id, name, created_by, created_at FROM tenants WHERE id = ?`)
+      .prepare(
+        "SELECT id, name, created_by, created_at FROM tenants WHERE id = ?"
+      )
       .get(tenantId);
     if (!t) return res.status(404).json({ error: "tenant_not_found" });
 
-    // Debe pertenecer al tenant para ver miembros
+    // Debe ser miembro
     const isMember = db
       .prepare(
         `SELECT role FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1`
       )
-      .get(req.user.id, tenantId);
+      .get(resolveUserId(req), tenantId);
     if (!isMember) return res.status(403).json({ error: "forbidden_tenant" });
 
-    // Lista de miembros con datos de perfil básicos
     const rows = db
       .prepare(
         `
-        SELECT
-          u.id,
-          u.name,
-          u.email,
-          u.avatar_url,
-          u.headline,
-          m.role,
-          m.created_at AS member_since,
-          m.updated_at AS member_updated_at
-        FROM memberships m
-        JOIN users u ON u.id = m.user_id
-        WHERE m.tenant_id = ?
-        ORDER BY
-          CASE m.role
-            WHEN 'owner' THEN 0
-            WHEN 'admin' THEN 1
-            ELSE 2
-          END,
-          u.name COLLATE NOCASE ASC
-      `
+      SELECT
+        u.id,
+        u.name,
+        u.email,
+        u.avatar_url,
+        u.headline,
+        m.role,
+        m.created_at AS member_since,
+        m.updated_at AS member_updated_at
+      FROM memberships m
+      JOIN users u ON u.id = m.user_id
+      WHERE m.tenant_id = ?
+      ORDER BY
+        CASE m.role
+          WHEN 'owner' THEN 0
+          WHEN 'admin' THEN 1
+          ELSE 2
+        END,
+        u.name COLLATE NOCASE ASC
+    `
       )
       .all(tenantId);
 
@@ -342,10 +410,133 @@ r.get("/tenants/:id/members", (req, res) => {
 });
 
 /* =========================================================
-   NUEVO: Cambiar rol de un miembro
-   PATCH /tenants/:id/members/:user_id
-   Solo owner/admin pueden cambiar roles
-   Solo owner puede asignar rol "owner"
+   DELETE /tenants/:id → eliminar workspace
+   🔒 SOLO admin/owner del workspace específico pueden eliminarlo
+   - Verifica que el usuario sea admin o owner en ESE workspace
+   - Elimina todos los datos relacionados (memberships, leads, etc.)
+   - No se puede eliminar el workspace 'demo' por seguridad
+========================================================= */
+r.delete("/tenants/:id", (req, res) => {
+  try {
+    const tenantId = String(req.params.id || "").trim();
+    console.log("\n🗑️ DELETE /tenants/:id");
+    console.log("   Tenant ID solicitado:", tenantId);
+    console.log("   Usuario:", resolveUserId(req));
+    
+    if (!tenantId) {
+      console.log("   ❌ Error: tenant_id vacío");
+      return res.status(400).json({ error: "tenant_id_required" });
+    }
+
+    // Verificar que el workspace existe
+    const tenant = db
+      .prepare("SELECT id, name, created_by FROM tenants WHERE id = ?")
+      .get(tenantId);
+    
+    console.log("   Workspace encontrado:", tenant ? `${tenant.name} (${tenant.id})` : "NO EXISTE");
+    
+    if (!tenant) {
+      console.log("   ❌ Error: workspace no existe en DB");
+      return res.status(404).json({ error: "tenant_not_found" });
+    }
+
+    // Protección: No permitir eliminar el workspace demo
+    if (tenantId === "demo") {
+      return res.status(403).json({ 
+        error: "cannot_delete_demo_workspace",
+        message: "El workspace 'demo' no puede ser eliminado"
+      });
+    }
+
+    // Verificar que el usuario sea admin o owner en ESE workspace específico
+    const requesterId = resolveUserId(req);
+    const requesterRole = getRequesterRole(req, tenantId);
+    
+    if (!requesterRole) {
+      return res.status(403).json({ 
+        error: "forbidden_not_member",
+        message: "No eres miembro de este workspace"
+      });
+    }
+
+    if (requesterRole !== "admin" && requesterRole !== "owner") {
+      return res.status(403).json({ 
+        error: "forbidden_requires_admin_or_owner",
+        message: "Solo admin u owner pueden eliminar workspaces"
+      });
+    }
+
+    // Eliminar en transacción todo lo relacionado al workspace
+    const txn = db.transaction(() => {
+      // 1. Eliminar memberships
+      db.prepare("DELETE FROM memberships WHERE tenant_id = ?").run(tenantId);
+      
+      // 2. Eliminar leads
+      db.prepare("DELETE FROM leads WHERE tenant_id = ?").run(tenantId);
+      
+      // 3. Eliminar contacts
+      db.prepare("DELETE FROM contacts WHERE tenant_id = ?").run(tenantId);
+      
+      // 4. Eliminar accounts
+      db.prepare("DELETE FROM accounts WHERE tenant_id = ?").run(tenantId);
+      
+      // 5. Eliminar deals
+      db.prepare("DELETE FROM deals WHERE tenant_id = ?").run(tenantId);
+      
+      // 6. Eliminar notes
+      db.prepare("DELETE FROM notes WHERE tenant_id = ?").run(tenantId);
+      
+      // 7. Eliminar activities
+      db.prepare("DELETE FROM activities WHERE tenant_id = ?").run(tenantId);
+      
+      // 8. Eliminar events
+      db.prepare("DELETE FROM events WHERE tenant_id = ?").run(tenantId);
+      
+      // 9. Eliminar audit logs del workspace
+      db.prepare("DELETE FROM audit_logs WHERE tenant_id = ?").run(tenantId);
+      
+      // 10. Finalmente eliminar el tenant
+      db.prepare("DELETE FROM tenants WHERE id = ?").run(tenantId);
+    });
+
+    txn();
+
+    // 📝 Audit: workspace eliminado (se guarda en NULL tenant ya que el workspace fue eliminado)
+    auditLog({ 
+      userId: requesterId, 
+      tenantId: null, // El tenant ya no existe
+      action: ACTIONS.DELETE_WORKSPACE,
+      resourceType: "workspace",
+      resourceId: tenantId,
+      details: { 
+        workspace_id: tenantId,
+        workspace_name: tenant.name,
+        deleted_by_role: requesterRole
+      }
+    }, req);
+
+    return res.json({ 
+      ok: true, 
+      message: "workspace_deleted",
+      deleted_workspace: {
+        id: tenant.id,
+        name: tenant.name
+      }
+    });
+
+  } catch (e) {
+    console.error("DELETE /tenants/:id error:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+/* =========================================================
+   PATCH /tenants/:id/members/:user_id → cambiar rol
+   Reglas:
+   - OWNER puede todo (asignar/quitar owner, admin, member)
+   - ADMIN solo puede: member ⇄ admin
+   - Nadie puede degradar/eliminar al owner (salvo otro owner)
+   - Nadie puede cambiarse a sí mismo de owner a otro rol
 ========================================================= */
 r.patch("/tenants/:id/members/:user_id", (req, res) => {
   try {
@@ -358,69 +549,84 @@ r.patch("/tenants/:id/members/:user_id", (req, res) => {
     if (!role) return res.status(400).json({ error: "role_required" });
 
     const VALID_ROLES = ["owner", "admin", "member"];
-    if (!VALID_ROLES.includes(role)) {
-      return res.status(400).json({ error: "invalid_role", valid_roles: VALID_ROLES });
-    }
+    if (!VALID_ROLES.includes(role))
+      return res
+        .status(400)
+        .json({ error: "invalid_role", valid_roles: VALID_ROLES });
 
-    // Verificar que el tenant existe
     const tenant = db
-      .prepare(`SELECT id, name, created_by FROM tenants WHERE id = ?`)
+      .prepare("SELECT id, name, created_by FROM tenants WHERE id = ?")
       .get(tenantId);
     if (!tenant) return res.status(404).json({ error: "tenant_not_found" });
 
-    // Verificar que el usuario que hace el cambio es jesusbloise@gmail.com
-    const requesterId = req.user.id;
-    const requester = db
-      .prepare(`SELECT email FROM users WHERE id = ?`)
-      .get(requesterId);
-    
-    if (!requester || requester.email !== "jesusbloise@gmail.com") {
-      return res.status(403).json({ error: "forbidden_only_jesusbloise_can_change_roles" });
-    }
+    const requesterId = resolveUserId(req);
+    const requesterRole = getRequesterRole(req, tenantId);
+    if (!requesterRole)
+      return res.status(403).json({ error: "forbidden_tenant" });
 
-    // Verificar que el usuario target existe en el workspace
+    // El target debe ser miembro del tenant
     const targetMembership = db
-      .prepare(`SELECT role FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1`)
+      .prepare(
+        `
+      SELECT role FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1
+    `
+      )
       .get(targetUserId, tenantId);
-
-    if (!targetMembership) {
+    if (!targetMembership)
       return res.status(404).json({ error: "user_not_member_of_workspace" });
-    }
 
-    // No permitir que jesusbloise se cambie su propio rol de owner
-    if (requesterId === targetUserId && role !== "owner") {
+    // No permitir cambiarse a sí mismo desde owner a otro rol
+    if (requesterId === targetUserId && requesterRole === "owner" && role !== "owner") {
       return res.status(403).json({ error: "cannot_change_own_role_from_owner" });
     }
 
-    // Actualizar el rol
+    // Reglas de mutación:
+    if (requesterRole === "admin") {
+      // Admin NO puede tocar owner ni otorgar/quitar owner
+      if (targetMembership.role === "owner" || role === "owner") {
+        return res
+          .status(403)
+          .json({ error: "admin_cannot_assign_or_modify_owner" });
+      }
+      // Admin solo puede alternar entre member y admin
+      if (!(role === "member" || role === "admin")) {
+        return res
+          .status(403)
+          .json({ error: "admin_can_only_set_member_or_admin" });
+      }
+    } else if (requesterRole !== "owner") {
+      // Miembros no pueden cambiar roles
+      return res.status(403).json({ error: "forbidden_requires_admin_or_owner" });
+    }
+    // Si es owner: puede todo (incluido setear owner)
+
     const now = Date.now();
     db.prepare(
-      `UPDATE memberships
-       SET role = ?, updated_at = ?
-       WHERE user_id = ? AND tenant_id = ?`
+      `
+      UPDATE memberships
+         SET role = ?, updated_at = ?
+       WHERE user_id = ? AND tenant_id = ?
+    `
     ).run(role, now, targetUserId, tenantId);
 
-    // Obtener datos actualizados del usuario
     const updatedMember = db
       .prepare(
-        `SELECT 
-          u.id,
-          u.name,
-          u.email,
-          u.avatar_url,
-          m.role,
-          m.updated_at
-        FROM memberships m
-        JOIN users u ON u.id = m.user_id
-        WHERE m.user_id = ? AND m.tenant_id = ?`
+        `
+      SELECT 
+        u.id,
+        u.name,
+        u.email,
+        u.avatar_url,
+        m.role,
+        m.updated_at
+      FROM memberships m
+      JOIN users u ON u.id = m.user_id
+      WHERE m.user_id = ? AND m.tenant_id = ?
+    `
       )
       .get(targetUserId, tenantId);
 
-    return res.json({
-      ok: true,
-      message: "role_updated",
-      member: updatedMember,
-    });
+    return res.json({ ok: true, message: "role_updated", member: updatedMember });
   } catch (e) {
     console.error("PATCH /tenants/:id/members/:user_id error:", e);
     return res.status(500).json({ error: "internal_error" });
@@ -428,4 +634,3 @@ r.patch("/tenants/:id/members/:user_id", (req, res) => {
 });
 
 module.exports = r;
-

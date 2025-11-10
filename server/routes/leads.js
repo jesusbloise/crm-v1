@@ -93,6 +93,15 @@ router.post(
     const userId = resolveUserId(req);
     const now = Date.now();
     
+    // 🔍 DEBUG: Ver qué userId se va a usar
+    console.log('🔍 [POST /leads] Creating lead:', {
+      leadId: id,
+      userId,
+      tenantId: req.tenantId,
+      'req.user.id': req.user?.id,
+      'req.auth.sub': req.auth?.sub
+    });
+    
     db.prepare(
       `
       INSERT INTO leads
@@ -111,6 +120,8 @@ router.post(
       now,
       now
     );
+    
+    console.log('✅ [POST /leads] Lead created successfully with created_by:', userId);
 
     const created = db
       .prepare(`SELECT * FROM leads WHERE id = ? AND tenant_id = ?`)

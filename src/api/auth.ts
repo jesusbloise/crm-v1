@@ -2,6 +2,9 @@
 import { getBaseURL } from "@/src/config/baseUrl";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+/** =========================
+ *  Constantes de storage
+ * ========================= */
 const TOKEN_KEY = "auth.token";
 const TENANT_KEY = "auth.tenant";
 const DEFAULT_TENANT = "demo";
@@ -36,16 +39,16 @@ export async function getActiveTenant() {
 }
 export async function getActiveTenantDetails() {
   try {
-    const response = await authFetch<{ 
-      tenant: { 
-        id: string; 
+    const response = await authFetch<{
+      tenant: {
+        id: string;
         name: string;
         owner_name?: string;
         owner_email?: string;
-      } 
+      };
     }>("/tenants/current");
     return response.tenant;
-  } catch (error) {
+  } catch {
     const tenantId = await getActiveTenant();
     return { id: tenantId };
   }
@@ -70,25 +73,32 @@ export async function authHeaders(extra: HeadersInit = {}) {
 }
 
 /* =======================================================
-   (Compat) authFetch — para llamadas sueltas.
-   Para negocio usa mejor api.* de src/api/http.ts
+   authFetch — centraliza headers y manejo de errores
 ======================================================= */
 export async function authFetch<T = Json>(path: string, init: RequestInit = {}) {
   const headers = await authHeaders(init.headers || {});
   const res = await fetch(`${base()}${path}`, { ...init, headers });
+
   let data: any = null;
   try {
     data = await res.json();
   } catch {
     data = null;
   }
+
   if (!res.ok) {
+    // Limpieza defensiva en 401/403
+    if (res.status === 401 || res.status === 403) {
+      await clearToken().catch(() => {});
+      // OJO: no navegamos aquí; solo limpiamos para evitar loops
+    }
     const msg =
       (typeof data?.message === "string" && data.message) ||
       (typeof data?.error === "string" && data.error) ||
       `HTTP ${res.status}`;
     throw new Error(msg);
   }
+
   return (data as T) ?? ({} as T);
 }
 
@@ -152,83 +162,145 @@ export async function bootstrapAuth() {
 
 /** Lista de tenants del usuario (incluye cuál está activo). */
 export async function fetchTenants() {
-  return authFetch<{ 
-    items: Array<{ 
-      id: string; 
-      name: string; 
-      role: string; 
+  return authFetch<{
+    items: Array<{
+      id: string;
+      name: string;
+      role: string;
       owner_name?: string;
       owner_email?: string;
-      is_active?: boolean 
-    }>; 
-    active_tenant?: string 
-  }>(
-    "/me/tenants",
-    { method: "GET" }
-  );
+      is_active?: boolean;
+    }>;
+    active_tenant?: string;
+  }>("/me/tenants", { method: "GET" });
 }
 
 /** Cambia de workspace (valida membresía y devuelve nuevo JWT). */
 export async function switchTenant(tenant_id: string) {
-  const res = await authFetch<{ token: string; active_tenant: string; tenant?: { id: string; name: string; role: string } }>(
-    "/me/tenant/switch",
-    {
-      method: "POST",
-      body: JSON.stringify({ tenant_id }),
-    }
-  );
+  const res = await authFetch<{
+    token: string;
+    active_tenant: string;
+    tenant?: { id: string; name: string; role: string };
+  }>("/me/tenant/switch", {
+    method: "POST",
+    body: JSON.stringify({ tenant_id }),
+  });
   if (res?.token) await setToken(res.token);
   if (res?.active_tenant) await setActiveTenant(res.active_tenant);
   return res;
 }
 
-/** Obtiene el rol del usuario en el workspace activo. */
+/** 
+ * Elimina un workspace 
+ * 🔒 Solo admin/owner del workspace pueden eliminarlo
+ */
+export async function deleteTenant(tenant_id: string) {
+  return authFetch<{
+    ok: boolean;
+    message: string;
+    deleted_workspace: { id: string; name: string };
+  }>(`/tenants/${tenant_id}`, {
+    method: "DELETE",
+  });
+}
+
+/** Obtiene el rol del usuario en el workspace activo (vía endpoint dedicado). */
+export async function getRoleNow(): Promise<"owner" | "admin" | "member" | null> {
+  try {
+    const data = await authFetch<{ tenant_id: string | null; role: string | null }>(
+      "/tenants/role?_=" + Date.now(),
+      { method: "GET" }
+    );
+    const r = (data?.role || "").toLowerCase();
+    if (r === "owner" || r === "admin" || r === "member") return r;
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Fallback: deduce el rol leyendo /me/tenants. */
 export async function getCurrentUserRole() {
   try {
     const tenants = await fetchTenants();
     const activeTenant = await getActiveTenant();
-    const current = tenants.items?.find(t => t.id === activeTenant);
-    return current?.role || null;
+    const current = tenants.items?.find((t) => t.id === activeTenant);
+    return (current?.role || null) as string | null;
   } catch (error) {
     console.warn("Error getting user role:", error);
     return null;
   }
 }
 
-/** Verifica si el usuario actual es admin u owner. */
+/** Verifica si el usuario actual es admin u owner (usa roleNow y cae a fallback). */
 export async function isAdmin() {
+  const roleNow = await getRoleNow();
+  if (roleNow) return roleNow === "admin" || roleNow === "owner";
   const role = await getCurrentUserRole();
   return role === "admin" || role === "owner";
 }
 
 /* =======================
-   Admin functions
+   Admin functions (alineadas con la UI)
 ======================= */
 
-/** Obtiene todos los usuarios de un workspace (solo admin/owner). */
+/** Lista TODOS los usuarios (para el panel de admin). */
+export async function adminListUsers() {
+  // Respuesta esperada por app/more/admin-users.tsx: { users: User[] }
+  return authFetch<{ users: any[] }>("/admin/users", { method: "GET" });
+}
+
+/** Activa/Desactiva un usuario. */
+export async function adminToggleActive(userId: string) {
+  // POST /admin/users/:userId/toggle-active
+  return authFetch<{ ok?: boolean; message?: string }>(
+    `/admin/users/${userId}/toggle-active`,
+    { method: "POST" }
+  );
+}
+
+/** Cambia el rol de un usuario en un workspace. */
+export async function adminChangeRole(
+  userId: string,
+  tenantId: string,
+  newRole: "admin" | "member"
+) {
+  // POST /admin/users/:userId/change-role  { tenantId, newRole }
+  return authFetch<{ ok?: boolean; message?: string }>(
+    `/admin/users/${userId}/change-role`,
+    {
+      method: "POST",
+      body: JSON.stringify({ tenantId, newRole }),
+    }
+  );
+}
+
+/* =======================
+   Extra opcionales
+======================= */
 export async function getWorkspaceUsers(tenantId: string) {
-  return authFetch<{ 
+  return authFetch<{
     tenant: { id: string; name: string; created_by: string; created_at: number };
-    items: Array<{ 
-      id: string; 
-      name: string; 
-      email: string; 
+    items: Array<{
+      id: string;
+      name: string;
+      email: string;
       avatar_url?: string;
       headline?: string;
       role: string;
       member_since: number;
       member_updated_at: number;
-    }> 
-  }>(
-    `/tenants/${tenantId}/members`,
-    { method: "GET" }
-  );
+    }>;
+  }>(`/tenants/${tenantId}/members`, { method: "GET" });
 }
 
-/** Cambia el rol de un usuario en el workspace (solo admin/owner). */
-export async function changeUserRole(tenantId: string, userId: string, role: "owner" | "admin" | "member") {
-  return authFetch<{ 
-    ok: boolean; 
+export async function changeUserRole(
+  tenantId: string,
+  userId: string,
+  role: "owner" | "admin" | "member"
+) {
+  return authFetch<{
+    ok: boolean;
     message: string;
     member: {
       id: string;
@@ -237,24 +309,20 @@ export async function changeUserRole(tenantId: string, userId: string, role: "ow
       avatar_url?: string;
       role: string;
       updated_at: number;
-    }
-  }>(
-    `/tenants/${tenantId}/members/${userId}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({ role }),
-    }
-  );
+    };
+  }>(`/tenants/${tenantId}/members/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  });
 }
 
-/** Obtiene TODOS los usuarios registrados en el sistema (solo admin/owner). */
 export async function getAllUsers() {
-  return authFetch<{ 
+  return authFetch<{
     total: number;
-    items: Array<{ 
-      id: string; 
-      name: string; 
-      email: string; 
+    items: Array<{
+      id: string;
+      name: string;
+      email: string;
       avatar_url?: string;
       headline?: string;
       is_active: boolean;
@@ -262,35 +330,21 @@ export async function getAllUsers() {
       updated_at: number;
       last_login_at?: number;
       memberships: Array<{ tenant_id: string; role: string }>;
-    }> 
-  }>(
-    `/admin/users`,
-    { method: "GET" }
-  );
+    }>;
+  }>("/admin/users", { method: "GET" });
 }
 
-/** Activa o desactiva un usuario (solo admin/owner). */
 export async function toggleUserActive(userId: string) {
-  return authFetch<{ 
-    ok: boolean; 
-    message: string;
-    user: {
-      id: string;
-      name: string;
-      email: string;
-      avatar_url?: string;
-      is_active: boolean;
-      updated_at: number;
-      memberships: Array<{ tenant_id: string; role: string }>;
-    }
-  }>(
+  // Compat antigua (PATCH /admin/users/:id/toggle)
+  // Mejor usar adminToggleActive(userId)
+  return authFetch<{ ok: boolean; message: string; user: any }>(
     `/admin/users/${userId}/toggle`,
     { method: "PATCH" }
   );
 }
 
 /* =======================
-   Shorthands opcionales
+   Shorthands
 ======================= */
 export async function apiGet<T = Json>(path: string) {
   return authFetch<T>(path, { method: "GET" });
@@ -304,4 +358,3 @@ export async function apiPut<T = Json>(path: string, body: Json) {
 export async function apiDelete<T = Json>(path: string) {
   return authFetch<T>(path, { method: "DELETE" });
 }
-

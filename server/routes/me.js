@@ -44,6 +44,22 @@ function resolveUserId(req) {
 }
 
 /* =========================================================
+ *  Middleware local: resolver tenant activo para este router
+ * =======================================================*/
+r.use((req, _res, next) => {
+  // Header tiene prioridad (permite cambiar rápido desde el cliente)
+  const headerTenant =
+    (req.get("x-tenant-id") || req.get("tenant") || "").trim() || null;
+
+  // Si no hay header, cae al tenant del token (seteado en /me/tenant/switch)
+  const tokenTenant = req.auth?.active_tenant || null;
+
+  // Estándar interno para este router
+  req.tenantId = headerTenant || tokenTenant || null;
+  next();
+});
+
+/* =========================================================
  *        TENANTS
  * =======================================================*/
 
@@ -73,7 +89,10 @@ r.get("/me/tenants", (req, res) => {
     )
     .all(userId);
 
-  console.log(`📋 /me/tenants for user ${userId}:`, rows.map(r => ({ name: r.name, role: r.role })));
+  console.log(
+    `📋 /me/tenants for user ${userId}:`,
+    rows.map((r) => ({ name: r.name, role: r.role }))
+  );
 
   const activeId = req.tenantId || null;
   const items = rows.map((r) => ({
@@ -129,6 +148,33 @@ r.post("/me/tenant/switch", (req, res) => {
     active_tenant: tenant_id,
     tenant: { id: tenant_id, name: membership.name, role: membership.role },
   });
+});
+
+/**
+ * GET /tenants/role
+ * Devuelve el rol del usuario en el tenant activo.
+ * Respuesta: { tenant_id: string|null, role: "owner"|"admin"|"member"|null }
+ */
+r.get("/tenants/role", (req, res) => {
+  const userId = resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+  const tenantId = req.tenantId;
+  if (!tenantId) {
+    // Sin tenant activo -> responde neutro para que el front haga fallback
+    return res.json({ tenant_id: null, role: null });
+  }
+
+  const row = db
+    .prepare(
+      `SELECT role 
+         FROM memberships 
+        WHERE user_id = ? AND tenant_id = ?
+        LIMIT 1`
+    )
+    .get(userId, tenantId);
+
+  return res.json({ tenant_id: tenantId, role: row?.role || null });
 });
 
 /* =========================================================
@@ -237,7 +283,9 @@ r.put("/me/profile", (req, res) => {
   params.push(userId);
 
   try {
-    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(
+      ...params
+    );
 
     const fresh = db
       .prepare(
@@ -277,7 +325,9 @@ r.put("/me/password", (req, res) => {
     .get(userId);
   if (!user) return res.status(404).json({ error: "user_not_found" });
 
-  const hasHash = Boolean(user.password_hash && String(user.password_hash).length > 0);
+  const hasHash = Boolean(
+    user.password_hash && String(user.password_hash).length > 0
+  );
 
   if (hasHash) {
     if (!current_password)
@@ -313,9 +363,7 @@ r.put("/me/avatar", upload.single("avatar"), (req, res) => {
   if (!userId) return res.status(401).json({ error: "unauthorized" });
   if (!req.file) return res.status(400).json({ error: "no_file" });
 
-  const base =
-    process.env.PUBLIC_BASE_URL ||
-    `${req.protocol}://${req.get("host")}`;
+  const base = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
   const url = `${base}/uploads/avatars/${req.file.filename}`;
 
   try {

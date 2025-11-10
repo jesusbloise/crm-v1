@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const db = require("../db/connection");
+const { log: auditLog, ACTIONS } = require("../lib/auditLog");
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
@@ -90,10 +91,19 @@ router.post("/auth/login", (req, res, next) => {
     const user = db
       .prepare(`SELECT * FROM users WHERE email = ?`)
       .get(String(email).toLowerCase());
-    if (!user) return res.status(401).json({ error: "credenciales_invalidas" });
+    
+    if (!user) {
+      // 📝 Audit: login fallido
+      auditLog({ action: ACTIONS.LOGIN_FAILED, details: { email, reason: "user_not_found" } }, req);
+      return res.status(401).json({ error: "credenciales_invalidas" });
+    }
 
     const ok = bcrypt.compareSync(String(password), user.password_hash || "");
-    if (!ok) return res.status(401).json({ error: "credenciales_invalidas" });
+    if (!ok) {
+      // 📝 Audit: login fallido
+      auditLog({ userId: user.id, action: ACTIONS.LOGIN_FAILED, details: { email, reason: "invalid_password" } }, req);
+      return res.status(401).json({ error: "credenciales_invalidas" });
+    }
 
     // Resolver tenant activo (valida membership del header si vino)
     const membership = resolveActiveTenantForLogin(req, user.id);
@@ -108,6 +118,15 @@ router.post("/auth/login", (req, res, next) => {
     };
 
     const token = signToken(payload);
+    
+    // 📝 Audit: login exitoso
+    auditLog({ 
+      userId: user.id, 
+      tenantId: activeTenant,
+      action: ACTIONS.LOGIN, 
+      details: { email: user.email, tenant: activeTenant, role: membership?.role } 
+    }, req);
+    
     return res.json({
       id: user.id,
       name: user.name,
@@ -149,46 +168,35 @@ router.post("/auth/register", (req, res, next) => {
        VALUES (@id, @name, @email, @password_hash, @created_at, @updated_at)`
     ).run(user);
 
-    // === NUEVO: crear tenant propio del usuario ===
-    const localPart = lowerEmail.split("@")[0];
-    const tenantId = `t_${crypto.randomUUID().slice(0, 8)}`;
-    const tenantName = `${localPart}'s workspace`;
-
-    const tenant = {
-      id: tenantId,
-      name: tenantName,
-      created_at: now(),
-      updated_at: now(),
-    };
-
-    db.prepare(
-      `INSERT INTO tenants (id, name, created_at, updated_at)
-       VALUES (@id, @name, @created_at, @updated_at)`
-    ).run(tenant);
-
-    // Membership como OWNER en su tenant
-    db.prepare(
-      `INSERT INTO memberships (user_id, tenant_id, role, created_at)
-       VALUES (?, ?, ?, ?)`
-    ).run(user.id, tenant.id, "owner", now());
-
-    // (Opcional) además, agregar al demo como member si quieres mantener acceso
-    const AUTO_JOIN_DEMO = process.env.AUTO_JOIN_DEMO === "1";
-    if (AUTO_JOIN_DEMO) {
-      const defaultTenant = db
-        .prepare(`SELECT id, name FROM tenants WHERE id = ?`)
-        .get(DEFAULT_TENANT);
-      if (defaultTenant) {
-        db.prepare(
-          `INSERT OR IGNORE INTO memberships (user_id, tenant_id, role, created_at)
-           VALUES (?, ?, ?, ?)`
-        ).run(user.id, defaultTenant.id, "member", now());
-      }
+    // ===================================================================
+    // NUEVO SISTEMA: Usuarios nuevos son "member" en workspace DEFAULT
+    // Solo admin/owner pueden crear workspaces nuevos
+    // ===================================================================
+    
+    // Verificar que existe el workspace por defecto
+    const defaultTenant = db
+      .prepare(`SELECT id, name FROM tenants WHERE id = ?`)
+      .get(DEFAULT_TENANT);
+    
+    if (!defaultTenant) {
+      // Crear workspace 'demo' si no existe
+      db.prepare(
+        `INSERT INTO tenants (id, name, created_at, updated_at)
+         VALUES (?, 'Demo', ?, ?)`
+      ).run(DEFAULT_TENANT, now(), now());
     }
 
-    // Activo = su propio tenant recien creado (no usamos DEFAULT_TENANT acá)
-    const activeTenant = tenant.id;
-    const roles = rolesFromMembershipRole("owner");
+    // Agregar usuario como MEMBER al workspace por defecto
+    db.prepare(
+      `INSERT INTO memberships (user_id, tenant_id, role, created_at, updated_at)
+       VALUES (?, ?, 'member', ?, ?)`
+    ).run(user.id, DEFAULT_TENANT, now(), now());
+
+    console.log(`✅ Nuevo usuario registrado: ${user.email} como 'member' en workspace '${DEFAULT_TENANT}'`);
+
+    // Activo = workspace por defecto
+    const activeTenant = DEFAULT_TENANT;
+    const roles = rolesFromMembershipRole("member");
 
     const payload = {
       sub: user.id,
@@ -198,13 +206,21 @@ router.post("/auth/register", (req, res, next) => {
     };
     const token = signToken(payload);
 
+    // 📝 Audit: nuevo usuario registrado
+    auditLog({ 
+      userId: user.id, 
+      tenantId: DEFAULT_TENANT,
+      action: ACTIONS.REGISTER, 
+      details: { email: user.email, name: user.name, role: "member" } 
+    }, req);
+
     return res.status(201).json({
       id: user.id,
       name: user.name,
       email: user.email,
       token,
       active_tenant: activeTenant,
-      tenant: { id: tenant.id, name: tenant.name, role: "owner" },
+      tenant: { id: DEFAULT_TENANT, name: defaultTenant?.name || "Demo", role: "member" },
     });
   } catch (e) {
     next(e);

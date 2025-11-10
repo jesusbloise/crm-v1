@@ -1,14 +1,23 @@
 // app/more/admin-users.tsx
-import { Stack } from "expo-router";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Stack, router, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { api } from "../../src/api/http";
 import { COLORS, RADIUS } from "../../src/theme";
 
 interface Workspace {
   tenant_id: string;
   tenant_name: string;
-  role: string;
+  role: "owner" | "admin" | "member" | string;
 }
 
 interface User {
@@ -29,14 +38,24 @@ interface ConfirmDialog {
   userId?: string;
   currentActive?: boolean;
   tenantId?: string;
-  newRole?: string;
+  newRole?: "admin" | "member";
 }
 
+type RoleNow = "owner" | "admin" | "member" | null;
+
 export default function AdminUsers() {
+  // Acceso según rol actual en el tenant
+  const [roleNow, setRoleNow] = useState<RoleNow>(null);
+  const [checkingRole, setCheckingRole] = useState(true);
+  const [roleError, setRoleError] = useState<string | null>(null);
+
+  // Datos
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+
+  // Confirmaciones
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog>({
     visible: false,
     title: "",
@@ -44,30 +63,79 @@ export default function AdminUsers() {
     type: null,
   });
 
-  useEffect(() => {
-    loadUsers();
+  /** ------------------------------------------
+   * Guardia de acceso por rol actual
+   * ------------------------------------------ */
+  const refreshRole = useCallback(async () => {
+    setCheckingRole(true);
+    setRoleError(null);
+    try {
+      // Debe existir endpoint que responda { tenant_id, role }
+      const res = await api.get<{ tenant_id: string | null; role: string | null }>(
+        "/tenants/role?_=" + Date.now()
+      );
+      const r = (res?.role || "").toLowerCase() as RoleNow;
+      if (r === "owner" || r === "admin" || r === "member") {
+        setRoleNow(r);
+      } else {
+        setRoleNow(null);
+      }
+    } catch (e: any) {
+      setRoleError(e?.message || "No se pudo verificar tu rol actual.");
+      setRoleNow(null);
+    } finally {
+      setCheckingRole(false);
+    }
   }, []);
 
-  const loadUsers = async () => {
+  const hasAccess = useMemo(() => roleNow === "owner" || roleNow === "admin", [roleNow]);
+
+  /** ------------------------------------------
+   * Cargar usuarios
+   * ------------------------------------------ */
+  const loadUsers = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       const data = await api.get<{ users: User[] }>("/admin/users");
       setUsers(data.users || []);
     } catch (err: any) {
-      console.error("Error loading users:", err);
-      setError(err.message || "Error al cargar usuarios");
+      setError(err?.message || "Error al cargar usuarios");
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const handleToggleActive = async (userId: string, currentActive: boolean) => {
-    console.log("🔵 handleToggleActive llamado:", { userId, currentActive });
+  /** ------------------------------------------
+   * Ciclo de vida / foco
+   * ------------------------------------------ */
+  useEffect(() => {
+    refreshRole();
+  }, [refreshRole]);
+
+  useFocusEffect(
+    useCallback(() => {
+      // Al entrar en foco, revalida rol y recarga usuarios si corresponde
+      (async () => {
+        await refreshRole();
+        // Si tiene acceso, carga usuarios
+        // (si no, veremos la pantalla 403)
+        // Evita doble carga si refreshRole está lento:
+        setTimeout(() => {
+          if (hasAccess) loadUsers();
+        }, 0);
+      })();
+    }, [refreshRole, loadUsers, hasAccess])
+  );
+
+  /** ------------------------------------------
+   * Acciones
+   * ------------------------------------------ */
+  const handleToggleActive = (userId: string, currentActive: boolean) => {
     setConfirmDialog({
       visible: true,
       title: currentActive ? "Desactivar usuario" : "Activar usuario",
-      message: currentActive 
+      message: currentActive
         ? "¿Estás seguro de desactivar este usuario? No podrá iniciar sesión."
         : "¿Estás seguro de activar este usuario?",
       type: "toggle-active",
@@ -78,32 +146,32 @@ export default function AdminUsers() {
 
   const executeToggleActive = async () => {
     if (!confirmDialog.userId) return;
-    
-    console.log("🟢 Usuario confirmó toggle-active");
-    setConfirmDialog({ ...confirmDialog, visible: false });
-    
+    setConfirmDialog((d) => ({ ...d, visible: false }));
+
     try {
       setUpdatingUserId(confirmDialog.userId);
-      console.log("📡 Enviando POST a /admin/users/" + confirmDialog.userId + "/toggle-active");
-      const result = await api.post(`/admin/users/${confirmDialog.userId}/toggle-active`, {});
-      console.log("✅ Respuesta recibida:", result);
+      await api.post(`/admin/users/${confirmDialog.userId}/toggle-active`, {});
       await loadUsers();
     } catch (err: any) {
-      console.error("❌ Error en toggle-active:", err);
-      Alert.alert("Error", err.message || "No se pudo cambiar el estado del usuario");
+      Alert.alert("Error", err?.message || "No se pudo cambiar el estado del usuario");
     } finally {
       setUpdatingUserId(null);
     }
   };
 
-  const handleChangeRole = async (userId: string, tenantId: string, currentRole: string) => {
-    const newRole = currentRole === "admin" ? "member" : "admin";
-    console.log("🔵 handleChangeRole llamado:", { userId, tenantId, currentRole, newRole });
-    
+  const handleChangeRole = (userId: string, tenantId: string, currentRole: string) => {
+    // Desde UI, solo alternamos entre admin <-> member
+    if (currentRole === "owner") {
+      Alert.alert("Rol protegido", "El rol 'Owner' no puede modificarse desde esta pantalla.");
+      return;
+    }
+    const newRole: "admin" | "member" = currentRole === "admin" ? "member" : "admin";
     setConfirmDialog({
       visible: true,
       title: "Cambiar rol",
-      message: `¿Cambiar rol de ${currentRole === "admin" ? "Admin" : "Miembro"} a ${newRole === "admin" ? "Admin" : "Miembro"}?`,
+      message: `¿Cambiar rol de ${currentRole === "admin" ? "Admin" : "Miembro"} a ${
+        newRole === "admin" ? "Admin" : "Miembro"
+      }?`,
       type: "change-role",
       userId,
       tenantId,
@@ -113,87 +181,135 @@ export default function AdminUsers() {
 
   const executeChangeRole = async () => {
     if (!confirmDialog.userId || !confirmDialog.tenantId || !confirmDialog.newRole) return;
-    
-    console.log("🟢 Usuario confirmó change-role");
-    setConfirmDialog({ ...confirmDialog, visible: false });
-    
+    setConfirmDialog((d) => ({ ...d, visible: false }));
+
     try {
       setUpdatingUserId(confirmDialog.userId);
-      console.log("📡 Enviando POST a /admin/users/" + confirmDialog.userId + "/change-role");
-      const result = await api.post(`/admin/users/${confirmDialog.userId}/change-role`, {
+      await api.post(`/admin/users/${confirmDialog.userId}/change-role`, {
         tenantId: confirmDialog.tenantId,
-        newRole: confirmDialog.newRole
+        newRole: confirmDialog.newRole,
       });
-      console.log("✅ Respuesta recibida:", result);
       await loadUsers();
     } catch (err: any) {
-      console.error("❌ Error en change-role:", err);
-      Alert.alert("Error", err.message || "No se pudo cambiar el rol");
+      Alert.alert("Error", err?.message || "No se pudo cambiar el rol");
     } finally {
       setUpdatingUserId(null);
     }
   };
 
   const handleConfirm = () => {
-    if (confirmDialog.type === "toggle-active") {
-      executeToggleActive();
-    } else if (confirmDialog.type === "change-role") {
-      executeChangeRole();
-    }
+    if (confirmDialog.type === "toggle-active") executeToggleActive();
+    if (confirmDialog.type === "change-role") executeChangeRole();
   };
 
   const handleCancel = () => {
-    console.log("❌ Usuario canceló la acción");
     setConfirmDialog({ visible: false, title: "", message: "", type: null });
   };
 
+  /** ------------------------------------------
+   * Helpers UI
+   * ------------------------------------------ */
   const getRoleBadgeColor = (role: string) => {
     switch (role) {
+      case "owner":
+        return { bg: COLORS.tints.primary, text: COLORS.primary };
       case "admin":
         return { bg: COLORS.tints.primary, text: COLORS.primary };
-      default: // member
+      default:
         return { bg: COLORS.tints.neutral, text: COLORS.sub };
     }
   };
 
-  const formatDate = (timestamp: number) => {
-    return new Date(timestamp).toLocaleDateString("es-ES", {
+  const formatDate = (timestamp: number) =>
+    new Date(timestamp).toLocaleDateString("es-ES", {
       year: "numeric",
       month: "short",
       day: "numeric",
     });
-  };
 
-  if (loading) {
+  /** ------------------------------------------
+   * Render
+   * ------------------------------------------ */
+
+  // Verificando permisos
+  if (checkingRole) {
     return (
       <View style={styles.container}>
-        <Stack.Screen 
-          options={{ 
+        <Stack.Screen
+          options={{
             title: "Administrador",
             headerStyle: { backgroundColor: COLORS.card },
             headerTintColor: COLORS.text,
-          }} 
+          }}
         />
         <View style={styles.centerContent}>
           <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>Cargando usuarios...</Text>
+          <Text style={styles.loadingText}>Verificando permisos…</Text>
         </View>
       </View>
     );
   }
 
-  if (error) {
+  // Sin acceso
+  if (!hasAccess) {
     return (
       <View style={styles.container}>
-        <Stack.Screen 
-          options={{ 
+        <Stack.Screen
+          options={{
             title: "Administrador",
             headerStyle: { backgroundColor: COLORS.card },
             headerTintColor: COLORS.text,
-          }} 
+          }}
         />
         <View style={styles.centerContent}>
-          <Text style={styles.errorText}>❌ {error}</Text>
+          <Text style={styles.errorText}>
+            {roleError
+              ? roleError
+              : "No tienes permisos para acceder al panel de administración."}
+          </Text>
+          <Pressable
+            onPress={() => router.back()}
+            style={[styles.retryButton, { backgroundColor: COLORS.tints.neutral }]}
+          >
+            <Text style={[styles.retryButtonText, { color: COLORS.text }]}>Volver</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  // Cargando usuarios
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <Stack.Screen
+          options={{
+            title: "Administrador",
+            headerStyle: { backgroundColor: COLORS.card },
+            headerTintColor: COLORS.text,
+          }}
+        />
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.loadingText}>Cargando usuarios…</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // Error al cargar
+  if (error) {
+    return (
+      <View style={styles.container}>
+        <Stack.Screen
+          options={{
+            title: "Administrador",
+            headerStyle: { backgroundColor: COLORS.card },
+            headerTintColor: COLORS.text,
+          }}
+        />
+        <View style={styles.centerContent}>
+          <Text style={styles.errorText}>{error}</Text>
           <Pressable onPress={loadUsers} style={styles.retryButton}>
             <Text style={styles.retryButtonText}>Reintentar</Text>
           </Pressable>
@@ -202,18 +318,19 @@ export default function AdminUsers() {
     );
   }
 
+  // OK
   return (
     <View style={styles.container}>
-      <Stack.Screen 
-        options={{ 
+      <Stack.Screen
+        options={{
           title: "Administrador",
           headerStyle: { backgroundColor: COLORS.card },
           headerTintColor: COLORS.text,
-        }} 
+        }}
       />
-      
+
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>👥 Usuarios Registrados</Text>
+        <Text style={styles.headerTitle}>Usuarios Registrados</Text>
         <Text style={styles.headerSubtitle}>
           {users.length} usuario{users.length !== 1 ? "s" : ""} en total
         </Text>
@@ -225,89 +342,111 @@ export default function AdminUsers() {
             <View style={styles.userHeader}>
               <View style={styles.avatar}>
                 <Text style={styles.avatarText}>
-                  {user.name?.charAt(0)?.toUpperCase() || user.email?.charAt(0)?.toUpperCase() || "?"}
+                  {user.name?.charAt(0)?.toUpperCase() ||
+                    user.email?.charAt(0)?.toUpperCase() ||
+                    "?"}
                 </Text>
               </View>
               <View style={styles.userInfo}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                   <Text style={styles.userName}>{user.name || "Sin nombre"}</Text>
-                  <View style={[
-                    styles.statusBadge, 
-                    { backgroundColor: user.active ? COLORS.tints.success : COLORS.tints.danger }
-                  ]}>
-                    <Text style={[
-                      styles.statusText, 
-                      { color: user.active ? COLORS.success : COLORS.danger }
-                    ]}>
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      {
+                        backgroundColor: user.active
+                          ? COLORS.tints.success
+                          : COLORS.tints.danger,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusText,
+                        { color: user.active ? COLORS.success : COLORS.danger },
+                      ]}
+                    >
                       {user.active ? "Activo" : "Inactivo"}
                     </Text>
                   </View>
                 </View>
                 <Text style={styles.userEmail}>{user.email}</Text>
-                <Text style={styles.userDate}>
-                  Registro: {formatDate(user.created_at)}
-                </Text>
+                <Text style={styles.userDate}>Registro: {formatDate(user.created_at)}</Text>
               </View>
             </View>
 
-            {/* Botones de acción */}
+            {/* Botones de acción global (activar/desactivar) */}
             <View style={styles.actionsContainer}>
               <Pressable
                 onPress={() => handleToggleActive(user.id, user.active)}
                 disabled={updatingUserId === user.id}
                 style={({ pressed }) => [
                   styles.actionButton,
-                  { backgroundColor: user.active ? COLORS.tints.danger : COLORS.tints.success },
+                  {
+                    backgroundColor: user.active
+                      ? COLORS.tints.danger
+                      : COLORS.tints.success,
+                  },
                   pressed && styles.actionButtonPressed,
-                  updatingUserId === user.id && styles.actionButtonDisabled
+                  updatingUserId === user.id && styles.actionButtonDisabled,
                 ]}
               >
-                <Text style={[
-                  styles.actionButtonText,
-                  { color: user.active ? COLORS.danger : COLORS.success }
-                ]}>
-                  {updatingUserId === user.id ? "..." : (user.active ? "🚫 Desactivar" : "✅ Activar")}
+                <Text
+                  style={[
+                    styles.actionButtonText,
+                    { color: user.active ? COLORS.danger : COLORS.success },
+                  ]}
+                >
+                  {updatingUserId === user.id
+                    ? "Procesando…"
+                    : user.active
+                    ? "Desactivar"
+                    : "Activar"}
                 </Text>
               </Pressable>
             </View>
 
-            {user.workspaces.length > 0 && (
+            {/* Roles por workspace */}
+            {user.workspaces.length > 0 ? (
               <View style={styles.workspacesContainer}>
                 <Text style={styles.workspacesTitle}>Workspaces:</Text>
                 {user.workspaces.map((ws) => {
                   const colors = getRoleBadgeColor(ws.role);
+                  const disableChange = ws.role === "owner" || updatingUserId === user.id;
                   return (
-                    <View key={ws.tenant_id} style={styles.workspaceItem}>
+                    <View key={`${user.id}-${ws.tenant_id}`} style={styles.workspaceItem}>
                       <Text style={styles.workspaceName} numberOfLines={1}>
                         {ws.tenant_name}
                       </Text>
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                         <View style={[styles.roleBadge, { backgroundColor: colors.bg }]}>
                           <Text style={[styles.roleText, { color: colors.text }]}>
-                            {ws.role === "admin" ? "Admin" : "Miembro"}
+                            {ws.role === "owner"
+                              ? "Owner"
+                              : ws.role === "admin"
+                              ? "Admin"
+                              : "Miembro"}
                           </Text>
                         </View>
                         <Pressable
-                          onPress={() => handleChangeRole(user.id, ws.tenant_id, ws.role)}
-                          disabled={updatingUserId === user.id}
+                          onPress={() =>
+                            handleChangeRole(user.id, ws.tenant_id, ws.role)
+                          }
+                          disabled={disableChange}
                           style={({ pressed }) => [
                             styles.changeRoleButton,
                             pressed && styles.changeRoleButtonPressed,
-                            updatingUserId === user.id && styles.actionButtonDisabled
+                            disableChange && styles.actionButtonDisabled,
                           ]}
                         >
-                          <Text style={styles.changeRoleButtonText}>
-                            {updatingUserId === user.id ? "..." : "🔄"}
-                          </Text>
+                          <Text style={styles.changeRoleButtonText}>Cambiar</Text>
                         </Pressable>
                       </View>
                     </View>
                   );
                 })}
               </View>
-            )}
-
-            {user.workspaces.length === 0 && (
+            ) : (
               <Text style={styles.noWorkspaces}>Sin workspaces asignados</Text>
             )}
           </View>
@@ -317,7 +456,7 @@ export default function AdminUsers() {
       {/* Modal de confirmación */}
       <Modal
         visible={confirmDialog.visible}
-        transparent={true}
+        transparent
         animationType="fade"
         onRequestClose={handleCancel}
       >
@@ -325,25 +464,25 @@ export default function AdminUsers() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>{confirmDialog.title}</Text>
             <Text style={styles.modalMessage}>{confirmDialog.message}</Text>
-            
+
             <View style={styles.modalButtons}>
               <Pressable
                 onPress={handleCancel}
                 style={({ pressed }) => [
                   styles.modalButton,
                   styles.modalButtonCancel,
-                  pressed && styles.modalButtonPressed
+                  pressed && styles.modalButtonPressed,
                 ]}
               >
                 <Text style={styles.modalButtonTextCancel}>Cancelar</Text>
               </Pressable>
-              
+
               <Pressable
                 onPress={handleConfirm}
                 style={({ pressed }) => [
                   styles.modalButton,
                   styles.modalButtonConfirm,
-                  pressed && styles.modalButtonPressed
+                  pressed && styles.modalButtonPressed,
                 ]}
               >
                 <Text style={styles.modalButtonTextConfirm}>
@@ -535,20 +674,23 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   changeRoleButton: {
-    width: 32,
+    minWidth: 76,
     height: 32,
     borderRadius: RADIUS.sm,
     backgroundColor: COLORS.tints.primary,
     justifyContent: "center",
     alignItems: "center",
+    paddingHorizontal: 10,
   },
   changeRoleButtonPressed: {
     opacity: 0.7,
   },
   changeRoleButtonText: {
-    fontSize: 16,
+    fontSize: 13,
+    fontWeight: "700",
+    color: COLORS.primary,
   },
-  // Estilos del modal
+  // Modal
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0, 0, 0, 0.6)",

@@ -2,37 +2,52 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../db/connection");
-
-// Helper: Verificar si el usuario es admin o owner en algún workspace
-const isAdminOrOwner = (userId) => {
-  const membership = db
-    .prepare("SELECT role FROM memberships WHERE user_id = ? AND role IN ('admin', 'owner') LIMIT 1")
-    .get(userId);
-  return !!membership;
-};
+const { requireRole, resolveUserId } = require("../lib/authorize");
+const { log: auditLog, ACTIONS } = require("../lib/auditLog");
 
 /* ==================== GET /admin/users ==================== */
-router.get("/admin/users", (req, res) => {
+// 🔒 Solo admin/owner pueden ver lista de usuarios
+router.get("/admin/users", requireRole(["admin", "owner"]), (req, res) => {
   try {
-    // Verificar que el usuario esté autenticado
-    if (!req.user?.id) {
-      return res.status(401).json({ error: "unauthorized" });
+    const requesterId = resolveUserId(req);
+    const currentTenant = req.tenantId;
+    
+    console.log(`🔐 Admin access granted to user ${requesterId} in tenant ${currentTenant}`);
+    
+    // 📝 Audit: acceso al panel de admin
+    auditLog({ 
+      userId: requesterId, 
+      tenantId: currentTenant,
+      action: ACTIONS.ACCESS_ADMIN_PANEL,
+      details: { endpoint: "/admin/users" }
+    }, req);
+    
+    // Si no hay tenant activo, devolver error
+    if (!currentTenant) {
+      return res.status(400).json({ 
+        error: "no_active_tenant",
+        message: "Debes tener un workspace activo para ver usuarios"
+      });
     }
 
-    // Obtener todos los usuarios
+    // Obtener solo los usuarios que son miembros del workspace actual
     const users = db
       .prepare(`
-        SELECT 
-          id,
-          email,
-          name,
-          active,
-          created_at,
-          updated_at
-        FROM users
-        ORDER BY created_at DESC
+        SELECT DISTINCT
+          u.id,
+          u.email,
+          u.name,
+          u.active,
+          u.created_at,
+          u.updated_at
+        FROM users u
+        INNER JOIN memberships m ON m.user_id = u.id
+        WHERE m.tenant_id = ?
+        ORDER BY u.created_at DESC
       `)
-      .all();
+      .all(currentTenant);
+
+    console.log(`📊 Found ${users.length} users in tenant ${currentTenant}`);
 
     // Para cada usuario, obtener sus workspaces
     const usersWithWorkspaces = users.map(user => {
@@ -64,31 +79,16 @@ router.get("/admin/users", (req, res) => {
 });
 
 /* ==================== POST /admin/users/:userId/toggle-active ==================== */
-router.post("/admin/users/:userId/toggle-active", (req, res) => {
+// 🔒 Solo admin/owner pueden activar/desactivar usuarios
+router.post("/admin/users/:userId/toggle-active", requireRole(["admin", "owner"]), (req, res) => {
   try {
     const { userId } = req.params;
+    const requesterId = resolveUserId(req);
     
-    // Verificar que el usuario esté autenticado
-    if (!req.user?.id) {
-      console.log("❌ No hay req.user.id");
-      return res.status(401).json({ error: "unauthorized" });
-    }
-
-    console.log("👤 Usuario autenticado:", req.user.id, req.user.email);
-    
-    // Verificar que sea admin o owner
-    const isAdmin = isAdminOrOwner(req.user.id);
-    console.log("🔐 ¿Es admin/owner?:", isAdmin);
-    
-    if (!isAdmin) {
-      console.log("❌ Usuario no es admin/owner");
-      return res.status(403).json({ error: "forbidden_only_admins_can_modify" });
-    }
-    
-    console.log("✅ Usuario autorizado para modificar");
+    console.log(`� Toggle active request from ${requesterId} for user ${userId}`);
 
     // No permitir que se desactive a sí mismo
-    if (userId === req.user.id) {
+    if (userId === requesterId) {
       return res.status(400).json({ error: "cannot_deactivate_yourself" });
     }
 
@@ -103,6 +103,16 @@ router.post("/admin/users/:userId/toggle-active", (req, res) => {
     db.prepare("UPDATE users SET active = ?, updated_at = ? WHERE id = ?")
       .run(newActive, Date.now(), userId);
 
+    // 📝 Audit: activar/desactivar usuario
+    auditLog({ 
+      userId: requesterId, 
+      tenantId: req.tenantId,
+      action: ACTIONS.TOGGLE_USER_ACTIVE,
+      resourceType: "user",
+      resourceId: userId,
+      details: { active: newActive === 1, modified_by: requesterId }
+    }, req);
+
     res.json({ success: true, active: newActive === 1 });
   } catch (err) {
     console.error("Error toggling user active status:", err);
@@ -111,34 +121,22 @@ router.post("/admin/users/:userId/toggle-active", (req, res) => {
 });
 
 /* ==================== POST /admin/users/:userId/change-role ==================== */
-router.post("/admin/users/:userId/change-role", (req, res) => {
+// 🔒 Solo admin/owner pueden cambiar roles
+router.post("/admin/users/:userId/change-role", requireRole(["admin", "owner"]), (req, res) => {
   try {
     const { userId } = req.params;
     const { tenantId, newRole } = req.body;
+    const requesterId = resolveUserId(req);
     
-    // Verificar que el usuario esté autenticado
-    if (!req.user?.id) {
-      console.log("❌ No hay req.user.id");
-      return res.status(401).json({ error: "unauthorized" });
-    }
-
-    console.log("👤 Usuario autenticado:", req.user.id, req.user.email);
-    
-    // Verificar que sea admin o owner
-    const isAdmin = isAdminOrOwner(req.user.id);
-    console.log("🔐 ¿Es admin/owner?:", isAdmin);
-    
-    if (!isAdmin) {
-      console.log("❌ Usuario no es admin/owner");
-      return res.status(403).json({ error: "forbidden_only_admins_can_modify" });
-    }
-    
-    console.log("✅ Usuario autorizado para modificar");
+    console.log(`� Change role request from ${requesterId} for user ${userId} to ${newRole} in tenant ${tenantId}`);
 
     // Validar el rol
-    const validRoles = ["admin", "member"];
+    const validRoles = ["admin", "member", "owner"];
     if (!validRoles.includes(newRole)) {
-      return res.status(400).json({ error: "invalid_role" });
+      return res.status(400).json({ 
+        error: "invalid_role",
+        valid_roles: validRoles 
+      });
     }
 
     // Verificar que la membresía exista
@@ -151,13 +149,41 @@ router.post("/admin/users/:userId/change-role", (req, res) => {
     }
 
     // No permitir cambiar el rol de sí mismo
-    if (userId === req.user.id) {
+    if (userId === requesterId) {
       return res.status(400).json({ error: "cannot_change_own_role" });
     }
+
+    // Solo owner puede otorgar rol "owner"
+    if (newRole === "owner" && req.userRole !== "owner") {
+      return res.status(403).json({ 
+        error: "only_owner_can_assign_owner",
+        message: "Solo un owner puede asignar el rol de owner" 
+      });
+    }
+
+    // Obtener rol anterior para el log
+    const previousRole = membership.role;
 
     // Actualizar el rol
     db.prepare("UPDATE memberships SET role = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ?")
       .run(newRole, Date.now(), userId, tenantId);
+
+    console.log(`✅ Role changed: user ${userId} is now ${newRole} in tenant ${tenantId}`);
+
+    // 📝 Audit: cambio de rol
+    auditLog({ 
+      userId: requesterId, 
+      tenantId: tenantId,
+      action: ACTIONS.CHANGE_ROLE,
+      resourceType: "user",
+      resourceId: userId,
+      details: { 
+        previous_role: previousRole,
+        new_role: newRole,
+        modified_by: requesterId,
+        tenant_id: tenantId
+      }
+    }, req);
 
     res.json({ success: true, role: newRole });
   } catch (err) {

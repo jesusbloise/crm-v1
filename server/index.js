@@ -3,9 +3,9 @@ require("dotenv").config();
 
 const app = require("./app");
 
-// Evita NaN si PORT viene vacío; respeta 3001 en dev para calzar con el cliente
+// Evita NaN si PORT viene vacío; default 4000 según .env actual
 const rawPort = process.env.PORT;
-const PORT = Number.isFinite(Number(rawPort)) && Number(rawPort) > 0 ? Number(rawPort) : 3001;
+const PORT = Number.isFinite(Number(rawPort)) && Number(rawPort) > 0 ? Number(rawPort) : 4000;
 const HOST = process.env.HOST || "0.0.0.0";
 
 const server = app.listen(PORT, HOST, () => {

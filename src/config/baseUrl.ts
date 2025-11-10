@@ -11,8 +11,8 @@ export function getBaseURL() {
   const explicit = process.env.EXPO_PUBLIC_API_URL;
   if (explicit && explicit.trim()) return explicit.trim();
 
-  // 2) Puerto por defecto (puedes cambiarlo con EXPO_PUBLIC_API_PORT si quieres)
-  const PORT = Number(process.env.EXPO_PUBLIC_API_PORT || 3001);
+  // 2) Puerto por defecto (4000 para calzar con server/.env)
+  const PORT = Number(process.env.EXPO_PUBLIC_API_PORT || 4000);
 
   // 3) Web (cuando corres con expo web / vite / next)
   if (Platform.OS === "web") {
