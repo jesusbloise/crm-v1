@@ -18,6 +18,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   login as apiLogin,
   me as apiMe,
+  clearActiveTenant,
+  clearToken,
   getActiveTenantDetails,
   isAuthenticated,
   setActiveTenant
@@ -192,17 +194,40 @@ export default function RootLayout() {
       try {
         const hasToken = await isAuthenticated();
         if (hasToken) {
-          const info = await apiMe().catch(() => null);
-          // ⬇️ Usamos active_tenant del backend
+          const info = await apiMe().catch(async (err) => {
+            // Si falla /me, limpiamos token corrupto y forzamos login
+            console.log("⚠️ Error al verificar sesión, limpiando token...", err?.message);
+            await clearToken();
+            await clearActiveTenant();
+            return null;
+          });
+          
           if (info?.active_tenant) {
             await setActiveTenant(info.active_tenant);
+            console.log("✅ Tenant sincronizado del backend:", info.active_tenant);
+            setAuthed(true);
+          } else if (AUTO_LOGIN) {
+            // Si /me no devuelve tenant, hacer auto-login
+            console.log("🔄 /me sin tenant, haciendo auto-login...");
+            const data = await apiLogin({ email: "admin@demo.local", password: "demo" }).catch(() => null);
+            if (data?.active_tenant) {
+              await setActiveTenant(data.active_tenant);
+              console.log("✅ Tenant guardado tras auto-login:", data.active_tenant);
+            }
+            setAuthed(Boolean(data));
+          } else {
+            setAuthed(Boolean(info));
           }
-          setAuthed(Boolean(info));
         } else if (AUTO_LOGIN) {
+          console.log("🔄 AUTO_LOGIN activado, iniciando sesión demo...");
           const data = await apiLogin({ email: "admin@demo.local", password: "demo" }).catch(() => null);
-          if (data?.active_tenant) await setActiveTenant(data.active_tenant);
+          if (data?.active_tenant) {
+            await setActiveTenant(data.active_tenant);
+            console.log("✅ Tenant guardado tras auto-login:", data.active_tenant);
+          }
           setAuthed(Boolean(data));
         } else {
+          console.log("❌ No hay token y AUTO_LOGIN desactivado");
           setAuthed(false);
         }
       } finally {

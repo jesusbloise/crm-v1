@@ -427,7 +427,7 @@ export default function More() {
             )}
           </View>
           <Text style={[styles.role, active && styles.roleActive]}>
-            Creado por: {item.owner_name || item.owner_email || "Desconocido"}
+            Tu rol: {item.role || "member"} • Creado por: {item.owner_name || item.owner_email || "Desconocido"}
           </Text>
         </Pressable>
 
