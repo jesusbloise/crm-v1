@@ -5,7 +5,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "seed:prod": "node scripts/seedProduction.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
