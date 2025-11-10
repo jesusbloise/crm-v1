@@ -69,6 +69,7 @@ try {
 /* ---------- Rutas públicas ---------- */
 app.use(require("./routes/health")); // GET /health
 app.use(require("./routes/auth"));   // /auth/register, /auth/login, /auth/me
+app.use(require("./routes/seed"));   // GET /seed/production (temporal)
 
 /* ---------- Protección global ---------- */
 app.use(requireAuth);
