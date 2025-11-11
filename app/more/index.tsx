@@ -466,6 +466,22 @@ export default function More() {
         alwaysBounceVertical
         keyboardShouldPersistTaps="handled"
       >
+        {/* 🔍 DEBUG BUTTON - TEMPORAL */}
+        <Pressable
+          style={{
+            backgroundColor: "#dc2626",
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 16,
+            alignItems: "center",
+          }}
+          onPress={() => router.push("/debug-api")}
+        >
+          <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 16 }}>
+            🔍 DEBUG API
+          </Text>
+        </Pressable>
+
         {/* ---- TUS WORKSPACES ---- */}
         <Text style={styles.title}>Tus workspaces</Text>
         <View style={styles.row}>
