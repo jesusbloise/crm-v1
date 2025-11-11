@@ -1,296 +1,272 @@
-# 🧹 PROYECTO LIMPIO - ESTADO ACTUAL
+# 🚀 Estado del Proyecto CRM
 
-**Fecha de limpieza:** 11 de Noviembre, 2025  
-**Commits de limpieza:**
-- `94c5681` - Eliminación de configs de deployment y código PostgreSQL
-- `049d17b` - Eliminación de archivos .env restantes y docs de análisis
+**Última actualización:** 2024
 
----
+## 📊 Resumen Ejecutivo
 
-## ✅ LO QUE FUNCIONA EN LOCAL
+Este proyecto ha sido **completamente limpiado** y configurado con **PostgreSQL** como base de datos unificada para desarrollo y producción.
 
-### Backend (server/)
-- ✅ **SQLite puro** - Sin dependencias de PostgreSQL, Railway, Render, o Vercel
-- ✅ **Servidor corriendo en puerto 4000**
-- ✅ **Migraciones automáticas** al iniciar el servidor
-- ✅ **Multi-tenancy completo** - Workspaces con memberships y roles
-- ✅ **Autenticación:**
-  - Usuario demo: `admin@demo.local` / `demo` (sin DB)
-  - Registro de usuarios reales con bcrypt
-  - JWT tokens con roles (user, admin, owner)
-- ✅ **API REST completa:**
-  - `/auth/*` - Login, registro, me
-  - `/leads/*` - CRUD de leads
-  - `/contacts/*` - CRUD de contactos
-  - `/accounts/*` - CRUD de cuentas
-  - `/deals/*` - CRUD de deals/oportunidades
-  - `/activities/*` - Tareas y actividades
-  - `/notes/*` - Notas
-  - `/me/tenants` - Lista de workspaces del usuario
-  - `/tenants/*` - CRUD de workspaces (solo admins/owners)
+### ✅ Acciones Completadas
 
-### Frontend (app/)
-- ✅ **Expo para móvil** (Android/iOS)
-- ✅ **Web via Expo Web**
-- ✅ **Auto-login en desarrollo** (`EXPO_PUBLIC_AUTO_LOGIN=1`)
-- ✅ **Configuración por plataforma:**
-  - Web: `http://localhost:4000`
-  - Android Emulator: `http://10.0.2.2:4000`
-  - Android/iOS físico: `http://TU_IP_LOCAL:4000`
+1. **Limpieza Masiva de Configuraciones Antiguas**
+   - ❌ Eliminado: Todas las configuraciones de Vercel, Render, Railway
+   - ❌ Eliminado: 8 documentos de deployment obsoletos
+   - ❌ Eliminado: 12 scripts temporales y de migración
+   - ❌ Eliminado: 4 archivos `.env` antiguos
+   - ✅ Actualizado: `.gitignore` para ignorar `.env` y archivos de base de datos
 
-### Configuración
-- ✅ **2 archivos .env únicamente:**
-  - `.env` (raíz) - Para Expo y frontend
-  - `server/.env` - Para backend y API
-- ✅ **.gitignore actualizado** - Ignora todos los .env, .db, y node_modules
+2. **Migración a PostgreSQL**
+   - ✅ Base de datos: **PostgreSQL** (local y producción)
+   - ✅ Sistema unificado: mismo motor en todos los ambientes
+   - ✅ Migraciones automáticas al iniciar el servidor
+   - ✅ 12 tablas principales creadas
+   - ✅ Multi-tenancy implementado
+   - ✅ Timestamps con BIGINT (soporta Date.now())
 
----
+3. **Commits Realizados**
+   ```
+   cb12e4b - docs: add clean project status documentation
+   049d17b - clean: remove remaining .env files and analysis docs
+   94c5681 - clean: remove all deployment configs, temp scripts, and PostgreSQL code
+   ```
 
-## 🗑️ LO QUE SE ELIMINÓ
+## 🏗️ Arquitectura Actual
 
-### Archivos de configuración de plataformas:
-- ❌ `vercel.json` - Config de Vercel
-- ❌ `.env.render` - Variables de Render
-- ❌ `.env.production` - Variables de producción
-- ❌ `.env.development` - Variables de desarrollo duplicadas
-- ❌ `eas.json` - Build config de Expo (opcional, se puede regenerar)
-
-### Documentos y reportes temporales:
-- ❌ `CHECKLIST.md`
-- ❌ `DEPLOYMENT.md`
-- ❌ `DEPLOYMENT-STATUS.md`
-- ❌ `SYNC-GUIDE.md`
-- ❌ `GUIA-MOBILE-UPDATE.md`
-- ❌ `CAMBIOS-REALIZADOS.md`
-- ❌ `ANALISIS-COMPLETO-SISTEMA.md`
-- ❌ `ANALISIS-FALLAS-ROLES.md`
-
-### Scripts temporales de fixes:
-- ❌ `server/scripts/resetPassword.js` - Reset de contraseña para Render
-- ❌ `server/scripts/fixTimestampsPostgres.js` - Fix de timestamps para PostgreSQL
-- ❌ `server/scripts/seedProduction.js` - Seed específico para producción
-- ❌ `server/scripts/checkAdminAuth.js` - Verificación de admin
-- ❌ `server/scripts/checkJesusRole.js` - Verificación de roles
-- ❌ `server/scripts/checkTenants.js` - Verificación de tenants
-- ❌ `server/scripts/fixWorkspaceCreators.js` - Fix de creators
-- ❌ `server/scripts/seedDevAuth.js` - Seed de autenticación
-- ❌ `server/scripts/updateAdminRoles.js` - Update de roles
-- ❌ `server/scripts/updateJesusRole.js` - Update de role específico
-- ❌ `server/scripts/backfillTenant.js` - Backfill de tenant
-
-### Archivos de backend:
-- ❌ `server/db/migrate-pg.js` - Migraciones de PostgreSQL
-- ❌ `server/routes/seed.js` - Endpoints temporales de seed
-- ❌ `server/routes/check.js` - Endpoints temporales de verificación
-
-### Código limpiado:
-- ❌ **server/db/connection.js** - Eliminada toda la lógica de PostgreSQL y adaptadores
-- ❌ **server/index.js** - Eliminadas referencias a PostgreSQL y Railway
-- ❌ **server/app.js** - Eliminadas rutas temporales y código comentado de frontend serving
-
-### Base de datos removida de Git:
-- ❌ `server/crm.db` - Base de datos SQLite (ahora en .gitignore)
-- ❌ `server/crm.db-shm` - SQLite shared memory
-- ❌ `server/crm.db-wal` - SQLite write-ahead log
-
----
-
-## 📁 ESTRUCTURA ACTUAL DEL PROYECTO
-
-```
-crm-v1/
-├── .env                          # ✅ Variables de Expo/Frontend
-├── .gitignore                    # ✅ Actualizado con .env y .db
-├── package.json                  # ✅ Dependencias de Expo
-├── app.config.ts                 # ✅ Config de Expo
-├── tsconfig.json                 # ✅ TypeScript config
-│
-├── app/                          # ✅ Frontend Expo
-│   ├── _layout.tsx               # Layout principal
-│   ├── index.tsx                 # Pantalla home
-│   ├── auth/                     # Login y registro
-│   ├── leads/                    # CRUD de leads
-│   ├── contacts/                 # CRUD de contactos
-│   ├── accounts/                 # CRUD de cuentas
-│   ├── deals/                    # CRUD de deals
-│   ├── tasks/                    # CRUD de actividades
-│   └── more/                     # Configuración y workspaces
-│
-├── src/                          # ✅ Código compartido frontend
-│   ├── api/                      # Clientes HTTP
-│   ├── components/               # Componentes React
-│   ├── config/                   # Config y baseUrl
-│   └── ui/                       # Componentes de UI
-│
-└── server/                       # ✅ Backend Node.js + Express
-    ├── .env                      # ✅ Variables de backend
-    ├── package.json              # ✅ Dependencias del server
-    ├── index.js                  # ✅ Entry point (ejecuta migraciones)
-    ├── app.js                    # ✅ Express app (rutas)
-    │
-    ├── db/                       # Base de datos
-    │   ├── connection.js         # ✅ LIMPIO - Solo SQLite
-    │   ├── migrate.js            # ✅ Migraciones SQLite
-    │   └── seed.js               # Seed básico de desarrollo
-    │
-    ├── lib/                      # Utilidades
-    │   ├── jwt.js                # Firma y verificación JWT
-    │   ├── requireAuth.js        # Middleware de autenticación
-    │   ├── injectTenant.js       # Middleware de multi-tenancy
-    │   └── ...
-    │
-    └── routes/                   # ✅ Rutas API
-        ├── auth.js               # ✅ LIMPIO - Login y registro
-        ├── health.js             # Health check
-        ├── leads.js              # CRUD de leads
-        ├── contacts.js           # CRUD de contactos
-        ├── accounts.js           # CRUD de cuentas
-        ├── deals.js              # CRUD de deals
-        ├── activities.js         # CRUD de actividades
-        ├── notes.js              # CRUD de notas
-        ├── me.js                 # Info del usuario actual
-        └── tenants.js            # CRUD de workspaces
-```
-
----
-
-## 🚀 CÓMO USAR EL PROYECTO
-
-### 1. Desarrollo Local
+### Stack Tecnológico
 
 **Backend:**
-```bash
-cd server
-npm install
-npm run dev
-```
-El servidor arrancará en `http://localhost:4000`
+- Node.js + Express
+- PostgreSQL (pg@8.16.3)
+- JWT para autenticación
+- Multi-tenancy (workspaces)
 
-**Frontend (Expo):**
-```bash
-npm install
-npx expo start
-```
+**Frontend:**
+- Expo (React Native)
+- Web y Mobile
+- TypeScript
 
-**Usuario demo (sin DB):**
-- Email: `admin@demo.local`
-- Password: `demo`
+**Base de Datos:**
+- **Desarrollo:** PostgreSQL local (localhost:5432)
+- **Producción:** PostgreSQL (via DATABASE_URL)
 
-### 2. Crear Usuario Real
+### Estructura de Base de Datos
 
-**Desde la app móvil:**
-1. Ir a pantalla de registro
-2. Llenar formulario
-3. El usuario se crea como `member` en workspace `demo`
+**Tablas Principales:**
+- `tenants` - Workspaces/Organizaciones
+- `users` - Usuarios del sistema
+- `memberships` - Relación usuario-workspace
+- `leads` - Prospectos
+- `contacts` - Contactos
+- `accounts` - Cuentas/Empresas
+- `deals` - Oportunidades de venta
+- `activities` - Actividades (llamadas, emails, reuniones)
+- `notes` - Notas adjuntas a cualquier entidad
+- `events` - Eventos de calendario
+- `audit_logs` - Logs de auditoría
 
-**Desde terminal:**
-```bash
-curl -X POST http://localhost:4000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Tu Nombre","email":"tu@email.com","password":"tupassword"}'
-```
+**Índices Optimizados:**
+- Índices por `tenant_id` en todas las tablas principales
+- Índices compuestos para consultas frecuentes
+- Índices en timestamps para ordenamiento
 
-### 3. Variables de Entorno
+## 🔧 Configuración de Desarrollo
 
-**`.env` (raíz del proyecto):**
-```bash
-# URL del backend para Expo
-EXPO_PUBLIC_API_URL=http://192.168.TU.IP:4000
+### Variables de Entorno Requeridas
 
-# Auto-login en desarrollo (opcional)
-EXPO_PUBLIC_AUTO_LOGIN=1
+**Archivo:** `server/.env`
 
-# Google OAuth (opcional)
-EXPO_PUBLIC_GOOGLE_CLIENT_ID=tu-client-id
-```
-
-**`server/.env`:**
-```bash
-# Puerto del servidor
+```env
+# Servidor
 PORT=4000
-
-# JWT Secret (cambiar en producción)
-JWT_SECRET=pon-un-secreto-bien-largo
-
-# Tenant por defecto
+JWT_SECRET=tu-secreto-jwt-seguro
 DEFAULT_TENANT=demo
 
-# Flags opcionales
-AUTH_SKIP_MEMBERSHIP=1
-ALLOW_SELF_JOIN=1
-
-# Google OAuth (opcional)
-GOOGLE_CLIENT_ID=tu-client-id
-GOOGLE_REDIRECT_URI=https://auth.expo.io/@tu-usuario/crm-v1
+# PostgreSQL Local
+PGHOST=localhost
+PGPORT=5432
+PGUSER=postgres
+PGPASSWORD=tu_contraseña
+PGDATABASE=crm_db
 ```
 
----
+### Instalación de PostgreSQL
 
-## 📝 NOTAS IMPORTANTES
+Ver guía completa en: **[POSTGRESQL-SETUP.md](./POSTGRESQL-SETUP.md)**
 
-1. **Base de datos local:** `server/crm.db` se crea automáticamente al iniciar el servidor por primera vez
-2. **Migraciones:** Se ejecutan automáticamente en `server/index.js` antes de levantar el servidor
-3. **Multi-tenancy:** Sistema completo de workspaces, pero con lógica simplificada para un solo workspace por defecto
-4. **Roles:** 
-   - `member` - Puede ver y crear registros
-   - `admin` - Puede editar y eliminar
-   - `owner` - Puede gestionar usuarios y workspace
-5. **Sin dependencias de cloud:** Todo el código está limpio de referencias a Vercel, Render, Railway, PostgreSQL
+**Quick Start:**
+1. Instalar PostgreSQL 15+ desde https://www.postgresql.org/download/
+2. Crear base de datos: `psql -U postgres -c "CREATE DATABASE crm_db;"`
+3. Configurar `.env` con credenciales
+4. Iniciar servidor: `cd server && npm run dev`
 
----
+## 🚀 Deployment en Producción
 
-## 🎯 PRÓXIMOS PASOS PARA DEPLOYMENT
+### Variable de Entorno
 
-Cuando decidas hacer deploy, considera:
+En producción, usa **una única variable**:
 
-1. **Opción A: Render (Recomendada para gratis)**
-   - Backend + PostgreSQL incluido
-   - Configurar `DATABASE_URL` en variables de entorno
-   - Agregar lógica de PostgreSQL solo si es necesario
+```env
+DATABASE_URL=postgresql://user:password@host:5432/database
+```
 
-2. **Opción B: Railway**
-   - Backend + PostgreSQL
-   - Similar a Render
+### Proveedores Recomendados
 
-3. **Opción C: Vercel Serverless Functions**
-   - Requiere adaptar Express a funciones serverless
-   - Necesita base de datos externa (PlanetScale, Supabase, etc.)
+**Base de Datos PostgreSQL:**
+- **Render** (Recomendado): PostgreSQL nativo, free tier disponible
+- **Railway**: PostgreSQL nativo, $5/mes
+- **Neon**: Serverless PostgreSQL, free tier generoso
+- **Heroku**: PostgreSQL addon, desde $5/mes
 
-4. **Frontend:**
-   - Expo Web en Vercel/Netlify
-   - O build de producción en cualquier hosting estático
+**Hosting del Servidor:**
+- **Render**: Web Service, auto-deploy desde Git
+- **Railway**: Auto-deploy, $5/mes
+- **Fly.io**: Contenedores, free tier disponible
 
-**IMPORTANTE:** Antes de hacer deploy, asegúrate de:
-- Cambiar `JWT_SECRET` a un valor seguro
-- Configurar `EXPO_PUBLIC_API_URL` a tu URL de producción
-- Revisar que `.env` no esté en Git (ya está en .gitignore)
+**Hosting del Frontend (Expo Web):**
+- **Vercel**: Auto-deploy, free tier
+- **Netlify**: Auto-deploy, free tier
 
----
+## 📁 Archivos Importantes
 
-## 🧪 TESTING LOCAL
+### Configuración
+- `server/.env` - Variables de entorno (NO comitear)
+- `server/package.json` - Dependencias del backend
+- `package.json` - Dependencias del frontend (Expo)
 
-Para verificar que todo funciona:
+### Base de Datos
+- `server/db/connection.js` - Conexión a PostgreSQL
+- `server/db/migrate-pg.js` - Migraciones automáticas
 
-1. **Health check:**
+### Servidor
+- `server/index.js` - Punto de entrada del servidor
+- `server/app.js` - Configuración de Express
+- `server/routes/*` - Rutas de la API
+
+### Frontend
+- `app/_layout.tsx` - Layout principal de Expo
+- `app/*/index.tsx` - Pantallas principales
+- `src/api/*` - Clientes de API
+
+## 🗑️ Archivos Eliminados
+
+**Documentos Obsoletos:**
+- CHECKLIST.md
+- DEPLOYMENT.md
+- DEPLOYMENT-STATUS.md
+- SYNC-GUIDE.md
+- GUIA-MOBILE-UPDATE.md
+- CAMBIOS-REALIZADOS.md
+- ANALISIS-COMPLETO-SISTEMA.md
+- ANALISIS-FALLAS-ROLES.md
+
+**Configuraciones Antiguas:**
+- vercel.json
+- .env.render
+- .env.production
+- .env.development
+- app/.env
+
+**Scripts Temporales (12 archivos):**
+- resetPassword.js
+- fixTimestampsPostgres.js
+- seedProduction.js
+- checkAdminAuth.js
+- checkJesusRole.js
+- checkTenants.js
+- fixWorkspaceCreators.js
+- seedDevAuth.js
+- updateAdminRoles.js
+- updateJesusRole.js
+- backfillTenant.js
+- fixWorkspaceData.js
+
+**Rutas Eliminadas:**
+- server/routes/seed.js
+- server/routes/check.js
+
+## 🔄 Próximos Pasos
+
+### 1. Setup Local (AHORA)
 ```bash
-curl http://localhost:4000/health
-# Respuesta: {"ok":true}
+# Instalar PostgreSQL (ver POSTGRESQL-SETUP.md)
+
+# Crear base de datos
+psql -U postgres -c "CREATE DATABASE crm_db;"
+
+# Configurar .env
+cd server
+cp .env.example .env  # Editar con tus credenciales
+
+# Instalar dependencias
+npm install
+
+# Iniciar servidor (migraciones automáticas)
+npm run dev
 ```
 
-2. **Login demo:**
+### 2. Verificar Funcionamiento
 ```bash
-curl -X POST http://localhost:4000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@demo.local","password":"demo"}'
-# Respuesta: {"token":"...", "active_tenant":"demo"}
+# Servidor debería mostrar:
+# 🐘 Ejecutando migraciones PostgreSQL...
+# ✅ PostgreSQL conectado
+# ✅ Migraciones completadas
+# 🚀 API running on http://0.0.0.0:4000
+
+# Probar API
+curl http://localhost:4000/api/health
 ```
 
-3. **Listar workspaces:**
-```bash
-curl http://localhost:4000/me/tenants \
-  -H "Authorization: Bearer TU_TOKEN"
-```
+### 3. Deploy a Producción (DESPUÉS)
+1. Crear base de datos PostgreSQL en proveedor elegido
+2. Obtener `DATABASE_URL`
+3. Configurar variables de entorno en plataforma de hosting
+4. Deploy (automático desde Git)
+
+## 📚 Documentación
+
+- **[POSTGRESQL-SETUP.md](./POSTGRESQL-SETUP.md)** - Guía completa de PostgreSQL
+- **[README.md](./README.md)** - Documentación general del proyecto
+
+## ⚠️ Notas Importantes
+
+1. **Base de Datos:** El proyecto ahora usa **PostgreSQL exclusivamente**. SQLite fue eliminado porque causaba problemas en producción.
+
+2. **Multi-tenancy:** Todas las consultas deben filtrar por `tenant_id` (manejado automáticamente por middleware).
+
+3. **Migraciones:** Las migraciones son **idempotentes** y se ejecutan automáticamente al iniciar el servidor.
+
+4. **Seguridad:** 
+   - NUNCA comitear `.env`
+   - Cambiar `JWT_SECRET` en producción
+   - Usar contraseñas fuertes
+
+5. **Timestamps:** Se usan BIGINT para timestamps (Date.now()) porque superan el límite de INTEGER.
+
+## 🆘 Solución de Problemas
+
+### Error: "password authentication failed"
+- Verificar credenciales en `.env`
+- Resetear contraseña de PostgreSQL si es necesario
+
+### Error: "database does not exist"
+- Crear la base de datos: `CREATE DATABASE crm_db;`
+
+### Error: "could not connect to server"
+- PostgreSQL no está corriendo
+- Windows: Services.msc → postgresql
+- macOS: `brew services start postgresql@16`
+
+Ver más soluciones en [POSTGRESQL-SETUP.md](./POSTGRESQL-SETUP.md)
+
+## 📞 Contacto
+
+Para dudas o problemas, revisar:
+1. [POSTGRESQL-SETUP.md](./POSTGRESQL-SETUP.md) - Setup de base de datos
+2. Logs del servidor - `npm run dev` muestra errores detallados
+3. Git history - `git log --oneline` para ver cambios recientes
 
 ---
 
-**Estado:** ✅ Proyecto limpio y listo para desarrollo local o nuevo deployment desde cero
+**Estado:** ✅ Proyecto limpio y listo para desarrollo local y deployment
+**Última limpieza:** Commits 94c5681, 049d17b, cb12e4b
+**Base de datos:** PostgreSQL (local y producción)
