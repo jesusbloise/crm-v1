@@ -70,6 +70,43 @@ app.use(require("./routes/deals"));
 app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
 
+/* ---------- Servir Frontend (Expo Web) ---------- */
+const distPath = path.join(__dirname, "..", "dist");
+const fs = require("fs");
+
+// Solo servir frontend si existe el directorio dist
+if (fs.existsSync(distPath)) {
+  console.log("📦 Sirviendo frontend desde:", distPath);
+  app.use(express.static(distPath));
+  
+  // SPA fallback - todas las rutas que no sean /api/* devuelven index.html
+  app.get("*", (req, res, next) => {
+    // Si es una petición a la API, continúa al 404
+    if (req.path.startsWith("/api") || 
+        req.path.startsWith("/auth") || 
+        req.path.startsWith("/health") ||
+        req.path.startsWith("/me") ||
+        req.path.startsWith("/tenants") ||
+        req.path.startsWith("/leads") ||
+        req.path.startsWith("/contacts") ||
+        req.path.startsWith("/accounts") ||
+        req.path.startsWith("/deals") ||
+        req.path.startsWith("/activities") ||
+        req.path.startsWith("/notes") ||
+        req.path.startsWith("/admin") ||
+        req.path.startsWith("/integrations") ||
+        req.path.startsWith("/events") ||
+        req.path.startsWith("/invitations") ||
+        req.path.startsWith("/seed") ||
+        req.path.startsWith("/check")) {
+      return next();
+    }
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+} else {
+  console.log("⚠️  No se encontró directorio dist/ - solo API disponible");
+}
+
 /* ---------- Manejo de errores de subida ---------- */
 app.use((err, _req, res, next) => {
   if (err && (err.name === "MulterError" || err.message === "invalid_type")) {
