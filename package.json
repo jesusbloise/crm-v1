@@ -1,7 +1,7 @@
 {
   "name": "crm-v1",
   "main": "expo-router/entry",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "scripts": {
     "build:web": "expo export -p web --clear --output-dir dist",
     "preview:web": "npx serve dist -l 5174",
