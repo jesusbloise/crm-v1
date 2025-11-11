@@ -40,6 +40,16 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // ✅ Las migraciones ahora se ejecutan en index.js ANTES de levantar el servidor
 // Este archivo solo define las rutas
 
+/* ---------- Servir Frontend (Expo Web) PRIMERO ---------- */
+const distPath = path.join(__dirname, "..", "dist");
+const fs = require("fs");
+
+// Solo servir frontend si existe el directorio dist
+if (fs.existsSync(distPath)) {
+  console.log("📦 Sirviendo frontend desde:", distPath);
+  app.use(express.static(distPath));
+}
+
 /* ---------- Rutas públicas ---------- */
 app.use(require("./routes/health")); // GET /health
 app.use(require("./routes/auth"));   // /auth/register, /auth/login, /auth/me
@@ -70,16 +80,9 @@ app.use(require("./routes/deals"));
 app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
 
-/* ---------- Servir Frontend (Expo Web) ---------- */
-const distPath = path.join(__dirname, "..", "dist");
-const fs = require("fs");
-
-// Solo servir frontend si existe el directorio dist
+/* ---------- SPA Fallback para Frontend ---------- */
+// SPA fallback - devuelve index.html para rutas que no sean API
 if (fs.existsSync(distPath)) {
-  console.log("📦 Sirviendo frontend desde:", distPath);
-  app.use(express.static(distPath));
-  
-  // SPA fallback - todas las rutas que no sean /api/* devuelven index.html
   app.get("*", (req, res, next) => {
     // Si es una petición a la API, continúa al 404
     if (req.path.startsWith("/api") || 
@@ -98,13 +101,12 @@ if (fs.existsSync(distPath)) {
         req.path.startsWith("/events") ||
         req.path.startsWith("/invitations") ||
         req.path.startsWith("/seed") ||
-        req.path.startsWith("/check")) {
+        req.path.startsWith("/check") ||
+        req.path.startsWith("/uploads")) {
       return next();
     }
     res.sendFile(path.join(distPath, "index.html"));
   });
-} else {
-  console.log("⚠️  No se encontró directorio dist/ - solo API disponible");
 }
 
 /* ---------- Manejo de errores de subida ---------- */
