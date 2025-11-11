@@ -44,6 +44,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use(require("./routes/health")); // GET /health
 app.use(require("./routes/auth"));   // /auth/register, /auth/login, /auth/me
 app.use(require("./routes/seed"));   // GET /seed/production (temporal)
+app.use(require("./routes/check"));  // GET /check/db (temporal - verificación)
 
 /* ---------- Protección global ---------- */
 app.use(requireAuth);
