@@ -3,7 +3,8 @@
   "main": "expo-router/entry",
   "version": "1.0.1",
   "scripts": {
-    "build:web": "expo export -p web --clear --output-dir dist",
+    "build:web": "NODE_ENV=production expo export -p web --clear --output-dir dist",
+    "build:web:vercel": "expo export -p web --clear --output-dir dist",
     "preview:web": "npx serve dist -l 5174",
     "start": "expo start",
     "start:production": "EXPO_PUBLIC_ENV=production expo start",
