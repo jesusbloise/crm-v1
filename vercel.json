@@ -5,7 +5,7 @@
   "build": {
     "env": {
       "NODE_ENV": "production",
-      "EXPO_PUBLIC_API_URL": "https://crm-v1-production.up.railway.app",
+      "EXPO_PUBLIC_API_URL": "https://crm-v1-iilx.onrender.com",
       "EXPO_PUBLIC_HTTP_TIMEOUT_MS": "25000",
       "MULTI_TENANT_ENABLED": "false",
       "DEFAULT_TENANT": "demo",
