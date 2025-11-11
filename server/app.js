@@ -4,15 +4,6 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 
-const {
-  runMigrations,
-  ensureContactsAccountId,
-  ensureTenantColumns,
-  ensureTenantCore,
-  ensureCreatedByColumns,
-  ensureUsersActive,
-} = require("./db/migrate");
-
 const injectTenant = require("./lib/injectTenant");
 const requireAuth = require("./lib/requireAuth");
 
@@ -46,25 +37,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* ---------- Migraciones / preparación segura ---------- */
-/**
- * ⚠️ Orden recomendado:
- * 1) ensureTenantCore -> crea users/tenants/memberships y asegura columnas google_*
- * 2) runMigrations    -> crea tablas de negocio (leads, contacts, deals, activities, etc.)
- * 3) ensureContactsAccountId y ensureTenantColumns -> alters idempotentes
- * 4) ensureCreatedByColumns -> agrega created_by para RBAC
- */
-try {
-  ensureTenantCore();
-  runMigrations();
-  ensureContactsAccountId();
-  ensureTenantColumns();
-  ensureCreatedByColumns();
-  ensureUsersActive();
-  console.log("✅ DB migrations OK");
-} catch (e) {
-  console.error("❌ DB migration failed", e);
-  process.exit(1);
-}
+// ✅ Las migraciones ahora se ejecutan en index.js ANTES de levantar el servidor
+// Este archivo solo define las rutas
 
 /* ---------- Rutas públicas ---------- */
 app.use(require("./routes/health")); // GET /health
