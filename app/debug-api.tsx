@@ -1,9 +1,9 @@
 // app/debug-api.tsx
-import { useEffect, useState } from "react";
-import { View, Text, ScrollView, StyleSheet, Pressable } from "react-native";
-import { Stack } from "expo-router";
+import { getActiveTenant, getToken } from "@/src/api/auth";
 import { getBaseURL } from "@/src/config/baseUrl";
-import { getToken, getActiveTenant } from "@/src/api/auth";
+import { Stack } from "expo-router";
+import { useEffect, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 export default function DebugAPI() {
   const [info, setInfo] = useState<any>(null);

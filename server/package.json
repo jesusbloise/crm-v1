@@ -17,7 +17,8 @@
     "googleapis": "^164.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
-    "node-ical": "^0.22.1"
+    "node-ical": "^0.22.1",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "node-fetch": "^2.7.0",
