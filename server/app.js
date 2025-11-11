@@ -40,19 +40,13 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // ✅ Las migraciones ahora se ejecutan en index.js ANTES de levantar el servidor
 // Este archivo solo define las rutas
 
-/* ---------- Frontend deshabilitado (usar Vercel) ---------- */
-// const distPath = path.join(__dirname, "..", "dist");
 // const fs = require("fs");
-// if (fs.existsSync(distPath)) {
-//   console.log("📦 Sirviendo frontend desde:", distPath);
 //   app.use(express.static(distPath));
 // }
 
 /* ---------- Rutas públicas ---------- */
 app.use(require("./routes/health")); // GET /health
 app.use(require("./routes/auth"));   // /auth/register, /auth/login, /auth/me
-app.use(require("./routes/seed"));   // GET /seed/production (temporal)
-app.use(require("./routes/check"));  // GET /check/db (temporal - verificación)
 
 /* ---------- Protección global ---------- */
 app.use(requireAuth);
@@ -79,7 +73,6 @@ app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
 
 /* ---------- SPA Fallback deshabilitado (usar Vercel) ---------- */
-// if (fs.existsSync(distPath)) {
 //   app.get("*", (req, res, next) => {
 //     ...
 //   });

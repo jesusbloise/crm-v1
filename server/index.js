@@ -8,30 +8,24 @@ const rawPort = process.env.PORT;
 const PORT = Number.isFinite(Number(rawPort)) && Number(rawPort) > 0 ? Number(rawPort) : 4000;
 const HOST = process.env.HOST || "0.0.0.0";
 
-// 🐘 Ejecuta migraciones antes de levantar el servidor
+// � Ejecuta migraciones antes de levantar el servidor
 (async () => {
   try {
-    if (process.env.DATABASE_URL) {
-      console.log("🐘 Detectado PostgreSQL, ejecutando migraciones...");
-      const { runMigrations } = require("./db/migrate-pg");
-      await runMigrations();
-    } else {
-      console.log("📦 Usando SQLite, ejecutando migraciones...");
-      const {
-        runMigrations,
-        ensureTenantCore,
-        ensureTenantColumns,
-        ensureContactsAccountId,
-        ensureCreatedByColumns,
-        ensureUsersActive,
-      } = require("./db/migrate");
-      runMigrations();
-      ensureTenantCore();
-      ensureTenantColumns();
-      ensureContactsAccountId();
-      ensureCreatedByColumns();
-      ensureUsersActive();
-    }
+    console.log("� Ejecutando migraciones SQLite...");
+    const {
+      runMigrations,
+      ensureTenantCore,
+      ensureTenantColumns,
+      ensureContactsAccountId,
+      ensureCreatedByColumns,
+      ensureUsersActive,
+    } = require("./db/migrate");
+    runMigrations();
+    ensureTenantCore();
+    ensureTenantColumns();
+    ensureContactsAccountId();
+    ensureCreatedByColumns();
+    ensureUsersActive();
     console.log("✅ Migraciones completadas");
   } catch (err) {
     console.error("❌ Error en migraciones:", err);

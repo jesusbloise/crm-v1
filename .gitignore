@@ -31,7 +31,20 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
+.env.development
+.env.production
+.env.render
+server/.env
+
+# database
+server/crm.db
+server/crm.db-shm
+server/crm.db-wal
+*.db
+*.db-shm
+*.db-wal
 
 # typescript
 *.tsbuildinfo
