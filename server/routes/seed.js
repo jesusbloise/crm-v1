@@ -7,6 +7,35 @@
 const { Router } = require("express");
 const router = Router();
 
+router.get("/seed/fix-timestamps", async (req, res) => {
+  try {
+    console.log("\n🔧 Ejecutando fix de timestamps...\n");
+    
+    const { exec } = require("child_process");
+    const { promisify } = require("util");
+    const execPromise = promisify(exec);
+    
+    const { stdout, stderr } = await execPromise("node scripts/fixTimestampsPostgres.js", {
+      cwd: __dirname + "/..",
+    });
+    
+    res.json({
+      success: true,
+      message: "✅ Timestamps convertidos a BIGINT",
+      output: stdout,
+      errors: stderr || null,
+    });
+  } catch (error) {
+    console.error("❌ Error ejecutando fix:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      output: error.stdout || null,
+      errors: error.stderr || null,
+    });
+  }
+});
+
 router.get("/seed/production", async (req, res) => {
   try {
     console.log("\n🌱 Ejecutando seed de producción desde endpoint...\n");
