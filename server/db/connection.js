@@ -23,36 +23,45 @@ if (USE_POSTGRES) {
   });
 
   // Wrapper para hacer que PostgreSQL funcione como better-sqlite3
+  // Convierte placeholders de SQLite (?) a PostgreSQL ($1, $2, $3)
+  const convertSqlToPostgres = (sql) => {
+    let index = 0;
+    return sql.replace(/\?/g, () => `$${++index}`);
+  };
+
   db = {
-    prepare: (sql) => ({
-      run: async (...params) => {
-        const client = await pool.connect();
-        try {
-          const result = await client.query(sql, params);
-          return { changes: result.rowCount };
-        } finally {
-          client.release();
-        }
-      },
-      get: async (...params) => {
-        const client = await pool.connect();
-        try {
-          const result = await client.query(sql, params);
-          return result.rows[0] || null;
-        } finally {
-          client.release();
-        }
-      },
-      all: async (...params) => {
-        const client = await pool.connect();
-        try {
-          const result = await client.query(sql, params);
-          return result.rows;
-        } finally {
-          client.release();
-        }
-      },
-    }),
+    prepare: (sql) => {
+      const pgSql = convertSqlToPostgres(sql);
+      return {
+        run: async (...params) => {
+          const client = await pool.connect();
+          try {
+            const result = await client.query(pgSql, params);
+            return { changes: result.rowCount };
+          } finally {
+            client.release();
+          }
+        },
+        get: async (...params) => {
+          const client = await pool.connect();
+          try {
+            const result = await client.query(pgSql, params);
+            return result.rows[0] || null;
+          } finally {
+            client.release();
+          }
+        },
+        all: async (...params) => {
+          const client = await pool.connect();
+          try {
+            const result = await client.query(pgSql, params);
+            return result.rows;
+          } finally {
+            client.release();
+          }
+        },
+      };
+    },
     exec: async (sql) => {
       const client = await pool.connect();
       try {
