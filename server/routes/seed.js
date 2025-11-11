@@ -7,6 +7,35 @@
 const { Router } = require("express");
 const router = Router();
 
+router.get("/seed/reset-password", async (req, res) => {
+  try {
+    console.log("\n🔑 Reseteando contraseña...\n");
+    
+    const { exec } = require("child_process");
+    const { promisify } = require("util");
+    const execPromise = promisify(exec);
+    
+    const { stdout, stderr } = await execPromise("node scripts/resetPassword.js", {
+      cwd: __dirname + "/..",
+    });
+    
+    res.json({
+      success: true,
+      message: "✅ Contraseña reseteada",
+      output: stdout,
+      errors: stderr || null,
+    });
+  } catch (error) {
+    console.error("❌ Error reseteando contraseña:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      output: error.stdout || null,
+      errors: error.stderr || null,
+    });
+  }
+});
+
 router.get("/seed/fix-timestamps", async (req, res) => {
   try {
     console.log("\n🔧 Ejecutando fix de timestamps...\n");
