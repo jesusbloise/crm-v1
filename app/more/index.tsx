@@ -33,8 +33,6 @@ const BG = "#0b0c10",
   SUBTLE = "#a9b0bd",
   ACCENT = "#7c3aed";
 
-const ANDROID_CHANNEL_ID = "crm-reminders";
-
 (Notifications as any).setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -42,51 +40,6 @@ const ANDROID_CHANNEL_ID = "crm-reminders";
     shouldSetBadge: false,
   }),
 } as any);
-
-async function testLocalNotif10s() {
-  try {
-    if (Platform.OS === "web") {
-      alert("(WEB) simulando notificación en 10s…");
-      setTimeout(() => alert("(WEB) Test 10s"), 10_000);
-      return;
-    }
-    const perm = await Notifications.requestPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert(
-        "Permisos",
-        "Activa las notificaciones para esta app en Ajustes del sistema"
-      );
-      return;
-    }
-    if (Platform.OS === "android") {
-      await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
-        name: "CRM Reminders",
-        importance: Notifications.AndroidImportance.MAX,
-        sound: "default",
-        vibrationPattern: [0, 250, 250, 250],
-        enableVibrate: true,
-        showBadge: true,
-        bypassDnd: true,
-      });
-    }
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: "Notificación de prueba",
-        body: "Deberías ver/oir esto ~10s después de tocar el botón",
-        sound: Platform.OS === "ios" ? true : undefined,
-        data: { kind: "debug-10s" },
-      },
-      trigger:
-        Platform.OS === "android"
-          ? (({ seconds: 10, channelId: ANDROID_CHANNEL_ID } as any) as Notifications.NotificationTriggerInput)
-          : (({ seconds: 10 } as any) as Notifications.NotificationTriggerInput),
-    });
-    Alert.alert("Programada", "Sonará en ~10s");
-  } catch (e: any) {
-    console.warn("testLocalNotif10s error:", e);
-    Alert.alert("Error", String(e?.message ?? e));
-  }
-}
 
 type TenantItem = {
   id: string;
@@ -534,22 +487,6 @@ export default function More() {
         alwaysBounceVertical
         keyboardShouldPersistTaps="handled"
       >
-        {/* 🔍 DEBUG BUTTON - TEMPORAL */}
-        <Pressable
-          style={{
-            backgroundColor: "#dc2626",
-            padding: 12,
-            borderRadius: 8,
-            marginBottom: 16,
-            alignItems: "center",
-          }}
-          onPress={() => router.push("/debug-api")}
-        >
-          <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 16 }}>
-            🔍 DEBUG API
-          </Text>
-        </Pressable>
-
         {/* ---- TUS WORKSPACES ---- */}
         <Text style={styles.title}>Tus workspaces</Text>
         <View style={styles.row}>
@@ -750,36 +687,6 @@ export default function More() {
               </View>
             </View>
             <Text style={[styles.menuArrow, { color: "#ef4444" }]}>›</Text>
-          </Pressable>
-        </View>
-
-        {/* ---- Desarrollo / Debug ---- */}
-        <View style={{ height: 24 }} />
-        <Text style={styles.title}>Desarrollo</Text>
-        <View style={styles.menuList}>
-          <Pressable
-            onPress={testLocalNotif10s}
-            style={({ pressed }) => [
-              styles.menuItem,
-              { borderBottomWidth: 0 },
-              pressed && styles.menuItemPressed,
-            ]}
-            android_ripple={{ color: "rgba(124,58,237,0.15)" }}
-          >
-            <View style={styles.menuItemLeft}>
-              <View style={[styles.menuIcon, { backgroundColor: ACCENT + "20" }]}>
-                <Text style={[styles.menuIconText, { color: ACCENT }]}>
-                  Notificar
-                </Text>
-              </View>
-              <View style={styles.menuItemContent}>
-                <Text style={styles.menuItemTitle}>Test notificación (10s)</Text>
-                <Text style={styles.menuItemSubtitle}>
-                  Programar notificación de prueba
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.menuArrow}>›</Text>
           </Pressable>
         </View>
       </ScrollView>
