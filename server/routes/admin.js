@@ -6,72 +6,60 @@ const { requireRole, resolveUserId } = require("../lib/authorize");
 const { log: auditLog, ACTIONS } = require("../lib/auditLog");
 
 /* ==================== GET /admin/users ==================== */
-// 🔒 Solo admin/owner pueden ver lista de usuarios
-router.get("/admin/users", requireRole(["admin", "owner"]), (req, res) => {
+// 🔒 Solo admin/owner GLOBALES pueden ver lista de usuarios
+router.get("/admin/users", requireRole(["admin", "owner"]), async (req, res) => {
   try {
     const requesterId = resolveUserId(req);
-    const currentTenant = req.tenantId;
     
-    console.log(`🔐 Admin access granted to user ${requesterId} in tenant ${currentTenant}`);
+    console.log(`🔐 Admin access granted to user ${requesterId}`);
     
     // 📝 Audit: acceso al panel de admin
     auditLog({ 
       userId: requesterId, 
-      tenantId: currentTenant,
+      tenantId: req.tenantId,
       action: ACTIONS.ACCESS_ADMIN_PANEL,
       details: { endpoint: "/admin/users" }
     }, req);
     
-    // Si no hay tenant activo, devolver error
-    if (!currentTenant) {
-      return res.status(400).json({ 
-        error: "no_active_tenant",
-        message: "Debes tener un workspace activo para ver usuarios"
-      });
-    }
-
-    // Obtener solo los usuarios que son miembros del workspace actual
-    const users = db
+    // Obtener TODOS los usuarios con su ROL GLOBAL (✅ PostgreSQL)
+    const users = await db
       .prepare(`
-        SELECT DISTINCT
+        SELECT 
           u.id,
           u.email,
           u.name,
+          u.role,
           u.active,
           u.created_at,
           u.updated_at
         FROM users u
-        INNER JOIN memberships m ON m.user_id = u.id
-        WHERE m.tenant_id = ?
-        ORDER BY u.created_at DESC
+        ORDER BY 
+          CASE u.role
+            WHEN 'owner' THEN 1
+            WHEN 'admin' THEN 2
+            ELSE 3
+          END,
+          u.created_at DESC
       `)
-      .all(currentTenant);
+      .all();
 
-    console.log(`📊 Found ${users.length} users in tenant ${currentTenant}`);
+    console.log(`📊 Found ${users.length} users`);
 
-    // Para cada usuario, obtener sus workspaces
-    const usersWithWorkspaces = users.map(user => {
-      const workspaces = db
-        .prepare(`
-          SELECT 
-            t.id as tenant_id,
-            t.name as tenant_name,
-            m.role
-          FROM memberships m
-          JOIN tenants t ON t.id = m.tenant_id
-          WHERE m.user_id = ?
-          ORDER BY t.name
-        `)
-        .all(user.id);
+    // Convertir active a boolean y agregar info de workspaces creados
+    const usersWithDetails = await Promise.all(users.map(async user => {
+      // Contar workspaces creados por este usuario (✅ PostgreSQL placeholder)
+      const workspaceCount = await db
+        .prepare(`SELECT COUNT(*) as count FROM tenants WHERE created_by = $1`)
+        .get(user.id);
 
       return {
         ...user,
-        active: user.active === 1, // Convertir 0/1 a boolean
-        workspaces
+        active: Boolean(user.active), // PostgreSQL devuelve booleano
+        workspaces_created: workspaceCount.count || 0
       };
-    });
+    }));
 
-    res.json({ users: usersWithWorkspaces });
+    res.json({ users: usersWithDetails });
   } catch (err) {
     console.error("Error getting users:", err);
     res.status(500).json({ error: "internal_error" });
@@ -80,28 +68,35 @@ router.get("/admin/users", requireRole(["admin", "owner"]), (req, res) => {
 
 /* ==================== POST /admin/users/:userId/toggle-active ==================== */
 // 🔒 Solo admin/owner pueden activar/desactivar usuarios
-router.post("/admin/users/:userId/toggle-active", requireRole(["admin", "owner"]), (req, res) => {
+router.post("/admin/users/:userId/toggle-active", requireRole(["admin", "owner"]), async (req, res) => {
   try {
     const { userId } = req.params;
     const requesterId = resolveUserId(req);
     
-    console.log(`� Toggle active request from ${requesterId} for user ${userId}`);
+    console.log(`🔄 Toggle active request from ${requesterId} for user ${userId}`);
 
     // No permitir que se desactive a sí mismo
     if (userId === requesterId) {
       return res.status(400).json({ error: "cannot_deactivate_yourself" });
     }
 
-    // Obtener el estado actual del usuario
-    const user = db.prepare("SELECT active FROM users WHERE id = ?").get(userId);
+    // Obtener el estado actual del usuario (✅ PostgreSQL placeholder)
+    const user = await db.prepare("SELECT active FROM users WHERE id = $1").get(userId);
     if (!user) {
+      console.log('❌ User not found:', userId);
       return res.status(404).json({ error: "user_not_found" });
     }
 
-    // Cambiar el estado
-    const newActive = user.active === 1 ? 0 : 1;
-    db.prepare("UPDATE users SET active = ?, updated_at = ? WHERE id = ?")
+    console.log(`📋 Current active status: ${user.active} (type: ${typeof user.active})`);
+
+    // Cambiar el estado (✅ PostgreSQL: manejo de booleanos)
+    const currentActive = Boolean(user.active);
+    const newActive = !currentActive;
+    
+    await db.prepare("UPDATE users SET active = $1, updated_at = $2 WHERE id = $3")
       .run(newActive, Date.now(), userId);
+
+    console.log(`✅ User ${userId} active status changed from ${currentActive} to ${newActive}`);
 
     // 📝 Audit: activar/desactivar usuario
     auditLog({ 
@@ -110,10 +105,10 @@ router.post("/admin/users/:userId/toggle-active", requireRole(["admin", "owner"]
       action: ACTIONS.TOGGLE_USER_ACTIVE,
       resourceType: "user",
       resourceId: userId,
-      details: { active: newActive === 1, modified_by: requesterId }
+      details: { active: newActive, modified_by: requesterId }
     }, req);
 
-    res.json({ success: true, active: newActive === 1 });
+    res.json({ success: true, active: newActive });
   } catch (err) {
     console.error("Error toggling user active status:", err);
     res.status(500).json({ error: "internal_error" });
@@ -121,31 +116,33 @@ router.post("/admin/users/:userId/toggle-active", requireRole(["admin", "owner"]
 });
 
 /* ==================== POST /admin/users/:userId/change-role ==================== */
-// 🔒 Solo admin/owner pueden cambiar roles
-router.post("/admin/users/:userId/change-role", requireRole(["admin", "owner"]), (req, res) => {
+// 🔒 Solo admin/owner GLOBALES pueden cambiar el ROL GLOBAL de usuarios
+router.post("/admin/users/:userId/change-role", requireRole(["admin", "owner"]), async (req, res) => {
   try {
     const { userId } = req.params;
-    const { tenantId, newRole } = req.body;
+    const { newRole } = req.body; // Ya no necesitamos tenantId
     const requesterId = resolveUserId(req);
+    const requesterRole = req.userRole;
     
-    console.log(`� Change role request from ${requesterId} for user ${userId} to ${newRole} in tenant ${tenantId}`);
+    console.log(`🔄 Change GLOBAL role: ${requesterId} (${requesterRole}) → user ${userId} to ${newRole}`);
 
     // Validar el rol
-    const validRoles = ["admin", "member", "owner"];
+    const validRoles = ["owner", "admin", "member"];
     if (!validRoles.includes(newRole)) {
       return res.status(400).json({ 
         error: "invalid_role",
-        valid_roles: validRoles 
+        valid_roles: validRoles,
+        message: "Rol inválido. Debe ser: owner, admin o member"
       });
     }
 
-    // Verificar que la membresía exista
-    const membership = db
-      .prepare("SELECT * FROM memberships WHERE user_id = ? AND tenant_id = ?")
-      .get(userId, tenantId);
+    // Verificar que el usuario existe (✅ PostgreSQL placeholder)
+    const user = await db
+      .prepare("SELECT id, email, role FROM users WHERE id = $1")
+      .get(userId);
     
-    if (!membership) {
-      return res.status(404).json({ error: "membership_not_found" });
+    if (!user) {
+      return res.status(404).json({ error: "user_not_found" });
     }
 
     // No permitir cambiar el rol de sí mismo
@@ -153,41 +150,73 @@ router.post("/admin/users/:userId/change-role", requireRole(["admin", "owner"]),
       return res.status(400).json({ error: "cannot_change_own_role" });
     }
 
-    // Solo owner puede otorgar rol "owner"
-    if (newRole === "owner" && req.userRole !== "owner") {
-      return res.status(403).json({ 
-        error: "only_owner_can_assign_owner",
-        message: "Solo un owner puede asignar el rol de owner" 
-      });
+    // Solo OWNER puede:
+    // 1. Otorgar rol "owner" a otros
+    // 2. Quitar rol "owner" a otros
+    if (requesterRole !== "owner") {
+      if (newRole === "owner") {
+        return res.status(403).json({ 
+          error: "only_owner_can_assign_owner",
+          message: "Solo el owner global puede asignar el rol de owner" 
+        });
+      }
+      if (user.role === "owner") {
+        return res.status(403).json({ 
+          error: "only_owner_can_modify_owner",
+          message: "Solo el owner global puede modificar a otro owner" 
+        });
+      }
     }
 
-    // Obtener rol anterior para el log
-    const previousRole = membership.role;
+    // Protección adicional: No permitir que haya 0 owners
+    if (user.role === "owner" && newRole !== "owner") {
+      const ownerCount = await db
+        .prepare("SELECT COUNT(*) as count FROM users WHERE role = 'owner'")
+        .get();
+      
+      if (ownerCount.count <= 1) {
+        return res.status(400).json({ 
+          error: "must_have_at_least_one_owner",
+          message: "Debe haber al menos 1 owner en el sistema"
+        });
+      }
+    }
 
-    // Actualizar el rol
-    db.prepare("UPDATE memberships SET role = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ?")
-      .run(newRole, Date.now(), userId, tenantId);
+    const previousRole = user.role;
 
-    console.log(`✅ Role changed: user ${userId} is now ${newRole} in tenant ${tenantId}`);
+    // Actualizar el ROL GLOBAL (✅ PostgreSQL placeholders)
+    await db.prepare("UPDATE users SET role = $1, updated_at = $2 WHERE id = $3")
+      .run(newRole, Date.now(), userId);
 
-    // 📝 Audit: cambio de rol
+    console.log(`✅ GLOBAL role changed: ${user.email} is now ${newRole} (was ${previousRole})`);
+
+    // 📝 Audit: cambio de rol global
     auditLog({ 
       userId: requesterId, 
-      tenantId: tenantId,
+      tenantId: req.tenantId,
       action: ACTIONS.CHANGE_ROLE,
       resourceType: "user",
       resourceId: userId,
       details: { 
+        user_email: user.email,
         previous_role: previousRole,
         new_role: newRole,
         modified_by: requesterId,
-        tenant_id: tenantId
+        scope: "global" // ⭐ Importante: es rol GLOBAL
       }
     }, req);
 
-    res.json({ success: true, role: newRole });
+    res.json({ 
+      success: true, 
+      user: {
+        id: user.id,
+        email: user.email,
+        role: newRole
+      },
+      message: `Usuario ${user.email} ahora es ${newRole}`
+    });
   } catch (err) {
-    console.error("Error changing user role:", err);
+    console.error("Error changing user global role:", err);
     res.status(500).json({ error: "internal_error" });
   }
 });

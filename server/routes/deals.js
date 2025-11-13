@@ -28,8 +28,8 @@ router.get(
   "/deals",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
-    const ownership = getOwnershipFilter(req);
-    const rows = db
+    const ownership = await getOwnershipFilter(req);
+    const rows = await db
       .prepare(
         `
         SELECT *
@@ -52,7 +52,7 @@ router.get(
   "/deals/:id",
   canRead("deals"),
   wrap(async (req, res) => {
-    const row = db
+    const row = await db
       .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
     if (!row) return res.status(404).json({ error: "not_found" });
@@ -93,20 +93,20 @@ router.post(
     }
 
     // ID único por tenant
-    const exists = db
+    const exists = await db
       .prepare(`SELECT 1 FROM deals WHERE id = ? AND tenant_id = ? LIMIT 1`)
       .get(id, req.tenantId);
     if (exists) return res.status(409).json({ error: "deal_exists" });
 
     // Validar FKs en el mismo tenant
     if (account_id) {
-      const acc = db
+      const acc = await db
         .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
         .get(account_id, req.tenantId);
       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
     }
     if (contact_id) {
-      const c = db
+      const c = await db
         .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
         .get(contact_id, req.tenantId);
       if (!c) return res.status(400).json({ error: "invalid_contact_id" });
@@ -114,7 +114,7 @@ router.post(
 
     const userId = resolveUserId(req);
     const now = Date.now();
-    db.prepare(
+    await db.prepare(
       `
       INSERT INTO deals
         (id, title, amount, stage, account_id, contact_id, close_date, tenant_id, created_by, created_at, updated_at)
@@ -134,7 +134,7 @@ router.post(
       now
     );
 
-    const created = db
+    const created = await db
       .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
       .get(id, req.tenantId);
 
@@ -151,7 +151,7 @@ router.patch(
   "/deals/:id",
   canWrite("deals"),
   wrap(async (req, res) => {
-    const found = db
+    const found = await db
       .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
     if (!found) return res.status(404).json({ error: "not_found" });
@@ -167,13 +167,13 @@ router.patch(
         : found.contact_id;
 
     if (account_id) {
-      const acc = db
+      const acc = await db
         .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
         .get(account_id, req.tenantId);
       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
     }
     if (contact_id) {
-      const c = db
+      const c = await db
         .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
         .get(contact_id, req.tenantId);
       if (!c) return res.status(400).json({ error: "invalid_contact_id" });
@@ -197,7 +197,7 @@ router.patch(
       updated_at: Date.now(),
     };
 
-    db.prepare(
+    await db.prepare(
       `
       UPDATE deals SET
         title = ?,
@@ -226,7 +226,7 @@ router.patch(
       const in24h = Date.now() + 24 * 60 * 60 * 1000;
       const aid = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-      db.prepare(
+      await db.prepare(
         `
         INSERT INTO activities
           (id, type, title, due_date, status, deal_id, tenant_id, created_at, updated_at)
@@ -245,7 +245,7 @@ router.patch(
       );
     }
 
-    const updated = db
+    const updated = await db
       .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
 
@@ -261,7 +261,7 @@ router.delete(
   "/deals/:id",
   canDelete("deals"),
   wrap(async (req, res) => {
-    const info = db
+    const info = await db
       .prepare(`DELETE FROM deals WHERE id = ? AND tenant_id = ?`)
       .run(req.params.id, req.tenantId);
 

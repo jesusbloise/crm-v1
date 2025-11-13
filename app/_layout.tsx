@@ -6,23 +6,23 @@ import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import {
-  AppState,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
+    AppState,
+    Platform,
+    Pressable,
+    StyleSheet,
+    Text,
+    View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
-  login as apiLogin,
-  me as apiMe,
-  clearActiveTenant,
-  clearToken,
-  getActiveTenantDetails,
-  isAuthenticated,
-  setActiveTenant
+    login as apiLogin,
+    me as apiMe,
+    clearActiveTenant,
+    clearToken,
+    getActiveTenantDetails,
+    isAuthenticated,
+    setActiveTenant
 } from "@/src/api/auth";
 import { ToastProvider } from "@/src/ui/Toast";
 
@@ -243,6 +243,13 @@ export default function RootLayout() {
   useEffect(() => {
     let ignore = false;
     (async () => {
+      // Solo obtener tenant si el usuario está autenticado
+      const has = await isAuthenticated();
+      if (!has) {
+        if (!ignore) setActiveTenantState(null);
+        return;
+      }
+      
       const t = await getActiveTenantDetails();
       if (!ignore) setActiveTenantState(t || null);
     })();

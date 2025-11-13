@@ -22,7 +22,7 @@ router.get(
     const { deal_id, contact_id, account_id, lead_id } = req.query || {};
     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-    const ownership = getOwnershipFilter(req);
+    const ownership = await getOwnershipFilter(req);
     const clauses = ["tenant_id = ?"];
     const params = [req.tenantId];
 
@@ -54,7 +54,7 @@ router.get(
       ORDER BY updated_at DESC, id ASC
       LIMIT ?
     `;
-    const rows = db.prepare(sql).all(...params, limit);
+    const rows = await db.prepare(sql).all(...params, limit);
     res.json(rows);
   })
 );
@@ -111,7 +111,7 @@ router.post(
 
     const userId = resolveUserId(req);
     const now = Date.now();
-    db.prepare(
+    await db.prepare(
       `
       INSERT INTO notes (
         id, body, account_id, contact_id, lead_id, deal_id,

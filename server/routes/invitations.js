@@ -33,7 +33,7 @@ router.use(requireAuth);
  * Body: { email, role = "member" }
  * Respuesta: { invite_token, expires_in: "3d" }
  */
-router.post("/tenants/:id/invitations", (req, res) => {
+router.post("/tenants/:id/invitations", async (req, res) => {
   const tenantId = String(req.params.id || "").trim();
   let { email, role = "member" } = req.body || {};
   email = trimStr(email);
@@ -48,14 +48,14 @@ router.post("/tenants/:id/invitations", (req, res) => {
   }
 
   // Verificar que el tenant exista
-  const tenant = db
+  const tenant = await db
     .prepare(`SELECT id, name FROM tenants WHERE id = ? LIMIT 1`)
     .get(tenantId);
   if (!tenant) return res.status(404).json({ error: "tenant_not_found" });
 
   // Verificar rol del emisor en ese tenant
   const userId = req.user?.id || req.auth?.sub;
-  const membership = db
+  const membership = await db
     .prepare(
       `SELECT role FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1`
     )
@@ -93,7 +93,7 @@ router.post("/tenants/:id/invitations", (req, res) => {
  * Si quieres que sea público, monta este router ANTES de requireAuth en app.js, o
  * separa este endpoint en otro router público.
  */
-router.post("/invitations/accept", (req, res) => {
+router.post("/invitations/accept", async (req, res) => {
   const { token, name, password } = req.body || {};
   if (!token) return res.status(400).json({ error: "invite_token_required" });
 
@@ -104,7 +104,7 @@ router.post("/invitations/accept", (req, res) => {
     }
 
     // Verificar que el tenant exista
-    const tenant = db
+    const tenant = await db
       .prepare(`SELECT id FROM tenants WHERE id = ? LIMIT 1`)
       .get(inv.tenantId);
     if (!tenant) return res.status(404).json({ error: "tenant_not_found" });
@@ -112,7 +112,7 @@ router.post("/invitations/accept", (req, res) => {
     const now = Date.now();
 
     // Upsert user por email
-    const existingUser = db
+    const existingUser = await db
       .prepare(`SELECT id, email, name FROM users WHERE email = ? LIMIT 1`)
       .get(inv.email);
 
@@ -121,14 +121,14 @@ router.post("/invitations/accept", (req, res) => {
       userId = existingUser.id;
       // Si mandan name y el user no lo tenía o distinto, puedes decidir actualizarlo
       if (name && name.trim() && name.trim() !== existingUser.name) {
-        db.prepare(
+        await db.prepare(
           `UPDATE users SET name = ?, updated_at = ? WHERE id = ?`
         ).run(name.trim(), now, userId);
       }
       // Si viene password y quieres actualizarlo:
       if (password && hash?.hashPassword) {
         const password_hash = hash.hashPassword(String(password));
-        db.prepare(
+        await db.prepare(
           `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`
         ).run(password_hash, now, userId);
       }
@@ -142,7 +142,7 @@ router.post("/invitations/accept", (req, res) => {
           ? hash.hashPassword(String(password))
           : null;
 
-      db.prepare(
+      await db.prepare(
         `
         INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -157,11 +157,12 @@ router.post("/invitations/accept", (req, res) => {
       );
     }
 
-    // Crear membresía idempotente
-    db.prepare(
+    // Crear membresía idempotente - PostgreSQL
+    await db.prepare(
       `
-      INSERT OR IGNORE INTO memberships (user_id, tenant_id, role, created_at)
+      INSERT INTO memberships (user_id, tenant_id, role, created_at)
       VALUES (?, ?, ?, ?)
+      ON CONFLICT (user_id, tenant_id) DO NOTHING
     `
     ).run(userId, inv.tenantId, inv.role || "member", now);
 

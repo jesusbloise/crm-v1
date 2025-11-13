@@ -2,43 +2,38 @@
 import { Stack, router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
+    ActivityIndicator,
+    Alert,
+    Modal,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
 } from "react-native";
 import { api } from "../../src/api/http";
 import { COLORS, RADIUS } from "../../src/theme";
-
-interface Workspace {
-  tenant_id: string;
-  tenant_name: string;
-  role: "owner" | "admin" | "member" | string;
-}
 
 interface User {
   id: string;
   email: string;
   name: string;
+  role: "owner" | "admin" | "member";  // ⭐ Rol GLOBAL
   active: boolean;
   created_at: number;
   updated_at: number;
-  workspaces: Workspace[];
+  workspaces_created: number;  // ⭐ Cantidad de workspaces creados
 }
 
 interface ConfirmDialog {
   visible: boolean;
   title: string;
   message: string;
-  type: "toggle-active" | "change-role" | null;
+  type: "toggle-active" | "change-global-role" | null;
   userId?: string;
   currentActive?: boolean;
-  tenantId?: string;
-  newRole?: "admin" | "member";
+  currentRole?: "owner" | "admin" | "member";
+  newRole?: "owner" | "admin" | "member";
 }
 
 type RoleNow = "owner" | "admin" | "member" | null;
@@ -159,36 +154,46 @@ export default function AdminUsers() {
     }
   };
 
-  const handleChangeRole = (userId: string, tenantId: string, currentRole: string) => {
-    // Desde UI, solo alternamos entre admin <-> member
-    if (currentRole === "owner") {
-      Alert.alert("Rol protegido", "El rol 'Owner' no puede modificarse desde esta pantalla.");
+  const handleChangeGlobalRole = (userId: string, currentRole: "owner" | "admin" | "member") => {
+    // Mostrar modal con opciones de rol
+    let newRole: "owner" | "admin" | "member";
+    let message: string;
+    
+    if (currentRole === "member") {
+      newRole = "admin";
+      message = "¿Promover este usuario a Admin? Podrá crear workspaces y ver todos los datos.";
+    } else if (currentRole === "admin") {
+      newRole = "member";
+      message = "¿Degradar este usuario a Member? Solo podrá ver sus propios datos.";
+    } else {
+      // owner - no debería llegar aquí
       return;
     }
-    const newRole: "admin" | "member" = currentRole === "admin" ? "member" : "admin";
+    
     setConfirmDialog({
       visible: true,
-      title: "Cambiar rol",
-      message: `¿Cambiar rol de ${currentRole === "admin" ? "Admin" : "Miembro"} a ${
-        newRole === "admin" ? "Admin" : "Miembro"
-      }?`,
-      type: "change-role",
+      title: "Cambiar Rol Global",
+      message,
+      type: "change-global-role",
       userId,
-      tenantId,
+      currentRole,
       newRole,
     });
   };
 
-  const executeChangeRole = async () => {
-    if (!confirmDialog.userId || !confirmDialog.tenantId || !confirmDialog.newRole) return;
+  const executeChangeGlobalRole = async () => {
+    if (!confirmDialog.userId || !confirmDialog.newRole) return;
     setConfirmDialog((d) => ({ ...d, visible: false }));
 
     try {
       setUpdatingUserId(confirmDialog.userId);
-      await api.post(`/admin/users/${confirmDialog.userId}/change-role`, {
-        tenantId: confirmDialog.tenantId,
-        newRole: confirmDialog.newRole,
+      await api.put(`/admin/users/${confirmDialog.userId}/role`, {
+        role: confirmDialog.newRole,
       });
+      Alert.alert(
+        "Éxito",
+        `Usuario actualizado a ${confirmDialog.newRole === "admin" ? "Admin 🔑" : "Member 👤"}`
+      );
       await loadUsers();
     } catch (err: any) {
       Alert.alert("Error", err?.message || "No se pudo cambiar el rol");
@@ -199,7 +204,7 @@ export default function AdminUsers() {
 
   const handleConfirm = () => {
     if (confirmDialog.type === "toggle-active") executeToggleActive();
-    if (confirmDialog.type === "change-role") executeChangeRole();
+    if (confirmDialog.type === "change-global-role") executeChangeGlobalRole();
   };
 
   const handleCancel = () => {
@@ -406,49 +411,51 @@ export default function AdminUsers() {
               </Pressable>
             </View>
 
-            {/* Roles por workspace */}
-            {user.workspaces.length > 0 ? (
-              <View style={styles.workspacesContainer}>
-                <Text style={styles.workspacesTitle}>Workspaces:</Text>
-                {user.workspaces.map((ws) => {
-                  const colors = getRoleBadgeColor(ws.role);
-                  const disableChange = ws.role === "owner" || updatingUserId === user.id;
-                  return (
-                    <View key={`${user.id}-${ws.tenant_id}`} style={styles.workspaceItem}>
-                      <Text style={styles.workspaceName} numberOfLines={1}>
-                        {ws.tenant_name}
-                      </Text>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                        <View style={[styles.roleBadge, { backgroundColor: colors.bg }]}>
-                          <Text style={[styles.roleText, { color: colors.text }]}>
-                            {ws.role === "owner"
-                              ? "Owner"
-                              : ws.role === "admin"
-                              ? "Admin"
-                              : "Miembro"}
-                          </Text>
-                        </View>
-                        <Pressable
-                          onPress={() =>
-                            handleChangeRole(user.id, ws.tenant_id, ws.role)
-                          }
-                          disabled={disableChange}
-                          style={({ pressed }) => [
-                            styles.changeRoleButton,
-                            pressed && styles.changeRoleButtonPressed,
-                            disableChange && styles.actionButtonDisabled,
-                          ]}
-                        >
-                          <Text style={styles.changeRoleButtonText}>Cambiar</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  );
-                })}
+            {/* Rol global del usuario */}
+            <View style={styles.roleContainer}>
+              <Text style={styles.roleLabel}>Rol Global:</Text>
+              <View
+                style={[
+                  styles.roleBadge,
+                  { backgroundColor: getRoleBadgeColor(user.role).bg },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.roleText,
+                    { color: getRoleBadgeColor(user.role).text },
+                  ]}
+                >
+                  {user.role === "owner"
+                    ? "👑 Owner"
+                    : user.role === "admin"
+                    ? "🔑 Admin"
+                    : "👤 Member"}
+                </Text>
               </View>
-            ) : (
-              <Text style={styles.noWorkspaces}>Sin workspaces asignados</Text>
-            )}
+              
+              {/* Botón para cambiar rol */}
+              {roleNow === "owner" && user.role !== "owner" && (
+                <Pressable
+                  onPress={() => handleChangeGlobalRole(user.id, user.role)}
+                  disabled={updatingUserId === user.id}
+                  style={({ pressed }) => [
+                    styles.changeRoleButton,
+                    pressed && styles.changeRoleButtonPressed,
+                    updatingUserId === user.id && styles.actionButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.changeRoleButtonText}>Cambiar Rol</Text>
+                </Pressable>
+              )}
+            </View>
+
+            {/* Info de workspaces creados */}
+            <View style={styles.statsContainer}>
+              <Text style={styles.statsText}>
+                📁 Workspaces creados: {user.workspaces_created}
+              </Text>
+            </View>
           </View>
         ))}
       </ScrollView>
@@ -601,6 +608,29 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
     paddingTop: 12,
+  },
+  roleContainer: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 8,
+  },
+  roleLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: COLORS.sub,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  statsContainer: {
+    paddingTop: 8,
+  },
+  statsText: {
+    fontSize: 13,
+    color: COLORS.sub,
   },
   workspacesTitle: {
     fontSize: 11,

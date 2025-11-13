@@ -24,9 +24,9 @@ router.get(
   "/contacts",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
-    const ownership = getOwnershipFilter(req);
+    const ownership = await getOwnershipFilter(req);
 
-    const rows = db
+    const rows = await db
       .prepare(
         `
         SELECT *
@@ -51,7 +51,7 @@ router.get(
   "/contacts/:id",
   canRead("contacts"),
   wrap(async (req, res) => {
-    const row = db
+    const row = await db
       .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
     if (!row) return res.status(404).json({ error: "not_found" });
@@ -87,7 +87,7 @@ router.post(
     }
 
     // ¿Existe ese id en este tenant?
-    const existing = db
+    const existing = await db
       .prepare(
         `SELECT 1 AS one FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`
       )
@@ -96,7 +96,7 @@ router.post(
 
     // Si viene account_id, validar que exista en este tenant
     if (account_id) {
-      const acc = db
+      const acc = await db
         .prepare(
           `SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`
         )
@@ -107,7 +107,7 @@ router.post(
     const userId = resolveUserId(req);
     const now = Date.now();
     
-    db.prepare(
+    await db.prepare(
       `
       INSERT INTO contacts
         (id, name, email, phone, company, position, account_id, tenant_id, created_by, created_at, updated_at)
@@ -127,7 +127,7 @@ router.post(
       now
     );
 
-    const created = db
+    const created = await db
       .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
       .get(id, req.tenantId);
 
@@ -151,7 +151,7 @@ router.patch(
   "/contacts/:id",
   canWrite("contacts"),
   wrap(async (req, res) => {
-    const found = db
+    const found = await db
       .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
     if (!found) return res.status(404).json({ error: "not_found" });
@@ -174,7 +174,7 @@ router.patch(
 
     // Si viene account_id, validar que exista en este tenant
     if (account_id) {
-      const acc = db
+      const acc = await db
         .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
         .get(account_id, req.tenantId);
       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
@@ -182,7 +182,7 @@ router.patch(
 
     const updated_at = Date.now();
 
-    db.prepare(
+    await db.prepare(
       `
       UPDATE contacts
       SET name = ?, email = ?, phone = ?, company = ?, position = ?, account_id = ?, updated_at = ?
@@ -200,7 +200,7 @@ router.patch(
       req.tenantId
     );
 
-    const updated = db
+    const updated = await db
       .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
 
@@ -218,7 +218,7 @@ router.delete(
   "/contacts/:id",
   canDelete("contacts"),
   wrap(async (req, res) => {
-    const info = db
+    const info = await db
       .prepare(`DELETE FROM contacts WHERE id = ? AND tenant_id = ?`)
       .run(req.params.id, req.tenantId);
 
@@ -319,7 +319,7 @@ module.exports = router;
 //     }
 
 //     const now = Date.now();
-//     db.prepare(
+//     await db.prepare(
 //       `
 //       INSERT INTO contacts
 //         (id, name, email, phone, company, position, account_id, tenant_id, created_at, updated_at)
@@ -385,7 +385,7 @@ module.exports = router;
 
 //     const updated_at = Date.now();
 
-//     db.prepare(
+//     await db.prepare(
 //       `
 //       UPDATE contacts
 //       SET name = ?, email = ?, phone = ?, company = ?, position = ?, account_id = ?, updated_at = ?

@@ -1,4 +1,4 @@
-// app/more/index.tsx
+﻿// app/more/index.tsx
 import {
   deleteTenant,
   fetchTenants,
@@ -7,6 +7,7 @@ import {
   switchTenant,
 } from "@/src/api/auth";
 import { api } from "@/src/api/http";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
 import { Stack, router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -115,6 +116,12 @@ export default function More() {
   const [pendingTenantId, setPendingTenantId] = useState<string | null>(null);
   const [joinIdInput, setJoinIdInput] = useState("");
 
+  // 🔒 Estado para verificación de workspace
+  const [verifyWorkspaceOpen, setVerifyWorkspaceOpen] = useState(false);
+  const [verifyWorkspaceId, setVerifyWorkspaceId] = useState("");
+  const [verifyInput, setVerifyInput] = useState("");
+  const [pendingWorkspaceName, setPendingWorkspaceName] = useState("");
+
   const appState = useRef<AppStateStatus>(AppState.currentState);
 
   /** ------------------------------------------
@@ -184,17 +191,31 @@ export default function More() {
    * ------------------------------------------ */
   const onSearch = async () => {
     const q = query.trim();
+    console.log('🔍 onSearch called with query:', q);
+    
     if (!q) {
+      console.log('⚠️ Query empty, clearing results');
       setDiscover([]);
       return;
     }
+    
     setBusySearch(true);
     try {
+      console.log('🌐 Fetching workspaces...');
       const data = await api.get<{
         items: Array<{ id: string; name: string; owner_name?: string; owner_email?: string }>;
       }>(`/tenants/discover?query=${encodeURIComponent(q)}&_=${Date.now()}`);
-      setDiscover(data.items || []);
+      
+      console.log('✅ Search results:', data);
+      console.log('📋 Items:', data?.items);
+      
+      setDiscover(data?.items || []);
+      
+      if (!data?.items || data.items.length === 0) {
+        Alert.alert("Sin resultados", `No se encontraron workspaces con "${q}"`);
+      }
     } catch (e: any) {
+      console.error('❌ Search error:', e);
       Alert.alert("Ups", e?.message || "No se pudo buscar");
     } finally {
       setBusySearch(false);
@@ -203,7 +224,8 @@ export default function More() {
 
   const joinAndEnter = async (tenantId: string) => {
     try {
-      await api.post("/tenants/join", { tenant_id: tenantId });
+      // 🔄 Sistema simplificado: Solo hacer switch al workspace
+      // Ya no hay memberships, cualquier usuario puede entrar a cualquier workspace
       const res = await switchTenant(tenantId);
       const confirmed = (res as any)?.active_tenant || tenantId;
       setTenant(confirmed);
@@ -214,15 +236,41 @@ export default function More() {
       setJoinIdInput("");
       router.replace("/");
     } catch (e: any) {
-      Alert.alert("No se pudo entrar", e?.message || "Verifica el ID o solicita invitación.");
+      Alert.alert("No se pudo entrar", e?.message || "Verifica el ID.");
     }
   };
 
   /** ------------------------------------------
    * Cambiar de workspace
    * ------------------------------------------ */
-  const choose = async (t: string) => {
+    const choose = async (t: string) => {
     if (t === tenant || busyChip) return;
+    
+    //  SEGURIDAD: Members deben verificar ID antes de entrar
+    // Admin/Owner pueden entrar directamente sin verificación
+    if (currentRole === 'member') {
+      // Buscar el workspace para obtener su nombre
+      const workspace = tenants.find(ws => ws.id === t);
+      const workspaceName = workspace?.name || t;
+      
+      console.log(' Member trying to switch to:', t, '- Showing verification modal');
+      
+      // Mostrar modal de verificación
+      setVerifyWorkspaceId(t);
+      setPendingWorkspaceName(workspaceName);
+      setVerifyInput('');
+      setVerifyWorkspaceOpen(true);
+    } else {
+      // Admin/Owner entran directamente
+      console.log(' Admin/Owner switching to:', t, '(no verification needed)');
+      await performSwitch(t);
+    }
+  };
+
+  /**
+   * Realizar el switch de workspace (después de verificación o si ya verificado)
+   */
+  const performSwitch = async (t: string) => {
     setBusyChip(t);
     const prev = tenant;
     try {
@@ -246,6 +294,25 @@ export default function More() {
     }
   };
 
+  /**
+   * Confirmar verificación de workspace
+   */
+  const confirmVerifyWorkspace = async () => {
+    if (verifyInput.trim() !== verifyWorkspaceId) {
+      Alert.alert("ID incorrecto", "El ID ingresado no coincide con el workspace");
+      return;
+    }
+    
+    // Guardar como verificado
+    const VERIFIED_KEY = `@workspace_verified_${verifyWorkspaceId}`;
+    await AsyncStorage.setItem(VERIFIED_KEY, "true");
+    
+    setVerifyWorkspaceOpen(false);
+    
+    // Proceder con el switch
+    await performSwitch(verifyWorkspaceId);
+  };
+
   /** ------------------------------------------
    * Logout
    * ------------------------------------------ */
@@ -261,21 +328,21 @@ export default function More() {
   };
 
   /**
-   * Eliminar workspace (solo admin/owner)
+   * Eliminar workspace (solo admin/owner GLOBALES)
    */
   const handleDeleteWorkspace = async (workspace: TenantItem) => {
     console.log("🗑️ handleDeleteWorkspace called for:", workspace.id, workspace.name);
     
-    // Verificar que sea admin o owner
-    if (workspace.role !== "admin" && workspace.role !== "owner") {
-      console.log("❌ Permisos insuficientes:", workspace.role);
+    // Verificar que sea admin o owner GLOBAL
+    if (!isAdminOrOwner) {
+      console.log("❌ Permisos insuficientes - Rol global:", currentRole);
       Alert.alert(
         "Permisos insuficientes",
-        "Solo admin u owner pueden eliminar workspaces"
+        "Solo usuarios con rol admin u owner pueden eliminar workspaces"
       );
       return;
     }
-    console.log("✅ Usuario tiene permisos, mostrando confirmación...");
+    console.log("✅ Usuario tiene permisos (rol global:", currentRole, "), mostrando confirmación...");
 
     // Confirmación (compatible web y móvil)
     const confirmDelete = () => new Promise<boolean>((resolve) => {
@@ -404,7 +471,8 @@ export default function More() {
   const Chip = ({ item }: { item: TenantItem }) => {
     const active = tenant === item.id;
     const isBusy = busyChip === item.id;
-    const canDelete = item.role === "admin" || item.role === "owner";
+    // 🔑 Usar rol GLOBAL para permisos de eliminación
+    const canDelete = isAdminOrOwner;
     
     return (
       <View style={{ position: "relative" }}>
@@ -427,11 +495,11 @@ export default function More() {
             )}
           </View>
           <Text style={[styles.role, active && styles.roleActive]}>
-            Tu rol: {item.role || "member"} • Creado por: {item.owner_name || item.owner_email || "Desconocido"}
+            Creado por: {item.owner_name || item.owner_email || "Desconocido"}
           </Text>
         </Pressable>
 
-        {/* Botón de eliminar (solo admin/owner) */}
+        {/* Botón de eliminar (solo admin/owner GLOBALES) */}
         {canDelete && item.id !== "demo" && (
           <Pressable
             onPress={(e) => {
@@ -538,14 +606,29 @@ export default function More() {
                     </Text>
                   </View>
                   <Pressable
-                    onPress={() => {
-                      setPendingTenantId(d.id);
-                      setJoinIdInput("");
-                      setJoinOpen(true);
+                    onPress={async () => {
+                      try {
+                        setBusyChip(d.id);
+                        const res = await switchTenant(d.id);
+                        const confirmed = (res as any)?.active_tenant || d.id;
+                        setTenant(confirmed);
+                        await fetchCurrentRole();
+                        await refreshTenantsAndRole();
+                        setDiscover([]); // Limpiar búsqueda
+                        setQuery(""); // Limpiar campo
+                        Alert.alert("Éxito", `Cambiado a workspace "${d.name || d.id}"`);
+                      } catch (e: any) {
+                        Alert.alert("Error", e?.message || "No se pudo cambiar de workspace");
+                      } finally {
+                        setBusyChip(null);
+                      }
                     }}
-                    style={styles.joinBtn}
+                    disabled={busyChip === d.id}
+                    style={[styles.joinBtn, busyChip === d.id && { opacity: 0.5 }]}
                   >
-                    <Text style={styles.joinTxt}>Entrar</Text>
+                    <Text style={styles.joinTxt}>
+                      {busyChip === d.id ? "..." : "Entrar"}
+                    </Text>
                   </Pressable>
                 </View>
               ))}
@@ -757,6 +840,61 @@ export default function More() {
           </View>
         </View>
       </Modal>
+
+      {/* 🔒 Modal: Verificar ID de workspace */}
+      <Modal visible={verifyWorkspaceOpen} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={[styles.title, { textAlign: "center", marginBottom: 8 }]}>
+              Verificar acceso al workspace
+            </Text>
+            <Text style={{ color: SUBTLE, marginBottom: 16, textAlign: "center" }}>
+              Para acceder a "{pendingWorkspaceName}" por primera vez, verifica el ID del workspace.
+              {"\n\n"}
+              Solicita este ID al administrador.
+            </Text>
+
+            <Text style={styles.label}>ID del workspace</Text>
+            <TextInput
+              value={verifyInput}
+              onChangeText={setVerifyInput}
+              placeholder="Ingresa el ID exacto"
+              placeholderTextColor={SUBTLE}
+              style={styles.input}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+            />
+
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
+              <Pressable
+                onPress={() => {
+                  setVerifyWorkspaceOpen(false);
+                  setVerifyInput("");
+                }}
+                style={[styles.modalBtn, { flex: 1, backgroundColor: "#1f2430" }]}
+              >
+                <Text style={[styles.modalTxt, { color: TEXT }]}>Cancelar</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={confirmVerifyWorkspace}
+                disabled={!verifyInput.trim()}
+                style={[
+                  styles.modalBtn,
+                  { 
+                    flex: 1, 
+                    backgroundColor: verifyInput.trim() ? ACCENT : "#5b21b6",
+                    opacity: verifyInput.trim() ? 1 : 0.6
+                  }
+                ]}
+              >
+                <Text style={styles.modalTxt}>Verificar y entrar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -899,3 +1037,4 @@ const styles = StyleSheet.create({
     pointerEvents: "none",
   },
 });
+

@@ -9,32 +9,11 @@ const crypto = require("crypto");
 
 /**
  * Crea la tabla audit_logs si no existe
+ * NOTA: Esta función ya no es necesaria porque migrate-pg.js crea la tabla con BIGINT
+ * La mantenemos comentada por compatibilidad pero no se ejecuta
  */
-function ensureAuditTable() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      id TEXT PRIMARY KEY,
-      user_id TEXT,
-      tenant_id TEXT,
-      action TEXT NOT NULL,
-      resource_type TEXT,
-      resource_id TEXT,
-      details TEXT,
-      ip_address TEXT,
-      user_agent TEXT,
-      created_at INTEGER NOT NULL
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
-    CREATE INDEX IF NOT EXISTS idx_audit_tenant ON audit_logs(tenant_id);
-    CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
-    CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_audit_user_tenant ON audit_logs(user_id, tenant_id, created_at DESC);
-  `);
-}
-
-// Inicializar tabla al cargar el módulo
-ensureAuditTable();
+// function ensureAuditTable() { ... }
+// Las migraciones ahora se manejan en db/migrate-pg.js con BIGINT para timestamps
 
 /**
  * Registra una acción en el log de auditoría
@@ -50,7 +29,7 @@ ensureAuditTable();
  * @param {string} [params.userAgent] - User agent del cliente
  * @param {Object} [req] - Request object (para extraer IP y user agent automáticamente)
  */
-function log(params, req = null) {
+async function log(params, req = null) {
   try {
     const id = crypto.randomUUID();
     const now = Date.now();
@@ -76,7 +55,7 @@ function log(params, req = null) {
       ? JSON.stringify(params.details)
       : null;
 
-    db.prepare(
+    await db.prepare(
       `INSERT INTO audit_logs 
        (id, user_id, tenant_id, action, resource_type, resource_id, details, ip_address, user_agent, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -116,7 +95,7 @@ function log(params, req = null) {
  * @param {number} [filters.limit=100] - Máximo de resultados
  * @returns {Array} Array de logs
  */
-function query(filters = {}) {
+async function query(filters = {}) {
   try {
     let sql = "SELECT * FROM audit_logs WHERE 1=1";
     const params = [];
@@ -149,7 +128,7 @@ function query(filters = {}) {
     sql += " ORDER BY created_at DESC LIMIT ?";
     params.push(filters.limit || 100);
 
-    const rows = db.prepare(sql).all(...params);
+    const rows = await db.prepare(sql).all(...params);
 
     // Parsear JSON de details
     return rows.map((row) => ({
@@ -204,5 +183,4 @@ module.exports = {
   log,
   query,
   ACTIONS,
-  ensureAuditTable,
 };

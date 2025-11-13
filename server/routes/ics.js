@@ -9,8 +9,8 @@ const r = Router();
 function asUserId(req) {
   return String(req.user?.id ?? "");
 }
-function getUserRow(userId) {
-  return db
+async function getUserRow(userId) {
+  return await db
     .prepare(
       `SELECT id, email, google_ics_url
        FROM users WHERE id = ?`
@@ -61,11 +61,11 @@ function toIsoDate(d) {
 }
 
 /** GET /integrations/ics/me  -> { connected, url? } */
-r.get("/integrations/ics/me", (req, res) => {
+r.get("/integrations/ics/me", async (req, res) => {
   try {
     const uid = asUserId(req);
     if (!uid) return res.status(401).json({ error: "unauthorized" });
-    const row = getUserRow(uid);
+    const row = await getUserRow(uid);
     const url = row?.google_ics_url || null;
     return res.json({ connected: !!url, url });
   } catch (e) {
@@ -94,7 +94,7 @@ r.post("/integrations/ics/save", async (req, res) => {
       return res.status(400).json({ error: "invalid_url" });
     }
 
-    db.prepare(`UPDATE users SET google_ics_url = ? WHERE id = ?`).run(url, uid);
+    await db.prepare(`UPDATE users SET google_ics_url = ? WHERE id = ?`).run(url, uid);
     return res.json({ ok: true });
   } catch (e) {
     console.error("ics/save error:", e);
@@ -111,7 +111,7 @@ r.get("/integrations/ics/events", async (req, res) => {
     const uid = asUserId(req);
     if (!uid) return res.status(401).json({ error: "unauthorized" });
 
-    const row = getUserRow(uid);
+    const row = await getUserRow(uid);
     const url = row?.google_ics_url;
     if (!url) return res.status(400).json({ error: "ics_not_configured" });
 

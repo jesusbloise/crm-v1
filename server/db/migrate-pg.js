@@ -191,6 +191,7 @@ async function runMigrations() {
         name TEXT,
         password_hash TEXT NOT NULL,
         active BOOLEAN DEFAULT true,
+        google_ics_url TEXT,
         created_at BIGINT NOT NULL,
         updated_at BIGINT NOT NULL
       );

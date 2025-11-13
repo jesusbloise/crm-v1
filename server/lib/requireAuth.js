@@ -49,7 +49,7 @@ function normalizeUserId(v) {
   return s;
 }
 
-module.exports = function requireAuth(req, res, next) {
+module.exports = async function requireAuth(req, res, next) {
   if (req.method === "OPTIONS") return next();
 
   const rawAuth = req.get("authorization") || "";
@@ -101,7 +101,7 @@ module.exports = function requireAuth(req, res, next) {
     }
 
     // ⚡ NUEVO: Verificar que el usuario esté activo
-    const user = db.prepare(`SELECT active FROM users WHERE id = ?`).get(uid);
+    const user = await db.prepare(`SELECT active FROM users WHERE id = ?`).get(uid);
     
     if (!user) {
       console.log('❌ [requireAuth] User not found in DB:', uid);

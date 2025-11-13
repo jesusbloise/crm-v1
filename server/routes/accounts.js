@@ -22,8 +22,8 @@ router.get(
   "/accounts",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
-    const ownership = getOwnershipFilter(req);
-    const rows = db
+    const ownership = await getOwnershipFilter(req);
+    const rows = await db
       .prepare(
         `
         SELECT *
@@ -79,7 +79,7 @@ router.post(
 
     const userId = resolveUserId(req);
     const now = Date.now();
-    db.prepare(
+    await db.prepare(
       `
       INSERT INTO accounts (id, name, website, phone, tenant_id, created_by, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?)
@@ -119,7 +119,7 @@ router.patch(
       updated_at: Date.now(),
     };
 
-    db.prepare(
+    await db.prepare(
       `
       UPDATE accounts
       SET name = ?, website = ?, phone = ?, updated_at = ?

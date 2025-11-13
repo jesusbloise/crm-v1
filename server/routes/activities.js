@@ -25,7 +25,7 @@ router.get(
     const { deal_id, contact_id, account_id, lead_id, status, remind_after } = req.query || {};
     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-    const ownership = getOwnershipFilter(req);
+    const ownership = await getOwnershipFilter(req);
     let sql = `SELECT * FROM activities WHERE tenant_id = ? ${ownership}`;
     const params = [req.tenantId];
 
@@ -38,7 +38,7 @@ router.get(
 
     sql += " ORDER BY updated_at DESC, id ASC LIMIT ?";
 
-    const rows = db.prepare(sql).all(...params, limit);
+    const rows = await db.prepare(sql).all(...params, limit);
     res.json(rows);
   })
 );
@@ -129,7 +129,7 @@ router.post(
 
     const userId = resolveUserId(req);
     const now = Date.now();
-    db.prepare(
+    await db.prepare(
       `
       INSERT INTO activities (
         id, type, title, due_date, remind_at_ms, status, notes,
@@ -227,7 +227,7 @@ router.patch(
 
     const updated_at = Date.now();
 
-    db.prepare(
+    await db.prepare(
       `
       UPDATE activities SET
         type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
@@ -318,7 +318,7 @@ module.exports = router;
 
 //     sql += " ORDER BY updated_at DESC, id ASC LIMIT ?";
 
-//     const rows = db.prepare(sql).all(...params, limit);
+//     const rows = await db.prepare(sql).all(...params, limit);
 //     res.json(rows);
 //   })
 // );
@@ -405,7 +405,7 @@ module.exports = router;
 //     }
 
 //     const now = Date.now();
-//     db.prepare(
+//     await db.prepare(
 //       `
 //       INSERT INTO activities (
 //         id, type, title, due_date, status, notes,
@@ -498,7 +498,7 @@ module.exports = router;
 
 //     const updated_at = Date.now();
 
-//     db.prepare(
+//     await db.prepare(
 //       `
 //       UPDATE activities SET
 //         type = ?, title = ?, due_date = ?, status = ?, notes = ?,

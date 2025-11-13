@@ -24,9 +24,9 @@ router.get(
   "/leads",
   wrap(async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
-    const ownership = getOwnershipFilter(req);
+    const ownership = await getOwnershipFilter(req);
 
-    const rows = db
+    const rows = await db
       .prepare(
         `
         SELECT *
@@ -51,7 +51,7 @@ router.get(
   "/leads/:id",
   canRead("leads"),
   wrap(async (req, res) => {
-    const row = db
+    const row = await db
       .prepare(`SELECT * FROM leads WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
     if (!row) return res.status(404).json({ error: "not_found" });
@@ -85,7 +85,7 @@ router.post(
     }
 
     // ¿existe ya ese id en este tenant?
-    const existing = db
+    const existing = await db
       .prepare(`SELECT 1 FROM leads WHERE id = ? AND tenant_id = ? LIMIT 1`)
       .get(id, req.tenantId);
     if (existing) return res.status(409).json({ error: "lead_exists" });
@@ -102,7 +102,7 @@ router.post(
       'req.auth.sub': req.auth?.sub
     });
     
-    db.prepare(
+    await db.prepare(
       `
       INSERT INTO leads
         (id, name, email, phone, company, status, tenant_id, created_by, created_at, updated_at)
@@ -123,7 +123,7 @@ router.post(
     
     console.log('✅ [POST /leads] Lead created successfully with created_by:', userId);
 
-    const created = db
+    const created = await db
       .prepare(`SELECT * FROM leads WHERE id = ? AND tenant_id = ?`)
       .get(id, req.tenantId);
 
@@ -141,7 +141,7 @@ router.patch(
   "/leads/:id",
   canWrite("leads"),
   wrap(async (req, res) => {
-    const found = db
+    const found = await db
       .prepare(`SELECT * FROM leads WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
     if (!found) return res.status(404).json({ error: "not_found" });
@@ -162,7 +162,7 @@ router.patch(
 
     const updated_at = Date.now();
 
-    db.prepare(
+    await db.prepare(
       `
       UPDATE leads
       SET name = ?, email = ?, phone = ?, company = ?, status = ?, updated_at = ?
@@ -179,7 +179,7 @@ router.patch(
       req.tenantId
     );
 
-    const updated = db
+    const updated = await db
       .prepare(`SELECT * FROM leads WHERE id = ? AND tenant_id = ?`)
       .get(req.params.id, req.tenantId);
 
@@ -197,7 +197,7 @@ router.delete(
   "/leads/:id",
   canDelete("leads"),
   wrap(async (req, res) => {
-    const info = db
+    const info = await db
       .prepare(`DELETE FROM leads WHERE id = ? AND tenant_id = ?`)
       .run(req.params.id, req.tenantId);
 

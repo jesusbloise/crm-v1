@@ -26,9 +26,10 @@ router.get("/check/db", async (req, res) => {
         ORDER BY u.email, t.name
       `).all();
     } else {
-      users = db.prepare("SELECT id, email, name FROM users ORDER BY email").all();
-      tenants = db.prepare("SELECT id, name, created_by FROM tenants ORDER BY id").all();
-      memberships = db.prepare(`
+      // Legacy SQLite (no debería ejecutarse)
+      users = await db.prepare("SELECT id, email, name FROM users ORDER BY email").all();
+      tenants = await db.prepare("SELECT id, name, created_by FROM tenants ORDER BY id").all();
+      memberships = await db.prepare(`
         SELECT m.user_id, u.email, m.tenant_id, t.name as workspace, m.role
         FROM memberships m
         JOIN users u ON u.id = m.user_id

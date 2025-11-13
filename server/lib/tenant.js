@@ -1,10 +1,10 @@
 // server/lib/tenant.js
-const db = require("../db/connection");
 
 /**
- * requireTenantRole(["owner","admin","member"])
- * - Exige que el usuario tenga alguno de los roles permitidos en el tenant actual.
- * - Usa req.tenantRole si ya viene de injectTenant; si no, consulta memberships.
+ * requireTenantRole(["owner","admin","member"]) - SIMPLIFICADO
+ * - Exige que el usuario tenga alguno de los roles GLOBALES permitidos
+ * - Usa req.tenantRole que ahora es el rol GLOBAL del usuario
+ * - Ya NO consulta memberships (sistema simplificado)
  */
 function requireTenantRole(allowed = []) {
   const ALLOWED = Array.isArray(allowed) ? allowed : [allowed];
@@ -12,28 +12,21 @@ function requireTenantRole(allowed = []) {
   return (req, res, next) => {
     const tenantId = req.tenantId;
     const userId = req.user?.id;
+    
     if (!tenantId || !userId) {
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    // Si injectTenant ya puso rol, úsalo
-    let role = req.tenantRole || null;
-
-    // Si no, consulta membership
-    if (!role) {
-      const row = db
-        .prepare(
-          `SELECT role FROM memberships WHERE user_id = ? AND tenant_id = ? LIMIT 1`
-        )
-        .get(userId, tenantId);
-      role = row?.role || null;
-    }
-
-    if (!role) return res.status(403).json({ error: "forbidden_tenant" });
+    // req.tenantRole ya viene de injectTenant (es el rol GLOBAL)
+    const role = req.tenantRole || 'member';
 
     // Elevación: owner >= admin >= member
     if (isAllowed(role, ALLOWED)) return next();
-    return res.status(403).json({ error: "forbidden_role" });
+    
+    return res.status(403).json({ 
+      error: "forbidden_role",
+      message: `Requiere rol: ${ALLOWED.join(' o ')}. Tu rol: ${role}`
+    });
   };
 }
 

@@ -65,79 +65,92 @@ r.use((req, _res, next) => {
 
 /**
  * GET /me/tenants
- * Lista los tenants del usuario + rol e indicador de activo según req.tenantId.
+ * Lista TODOS los workspaces disponibles (sistema simplificado sin memberships).
+ * - Todos los usuarios autenticados pueden ver y entrar a cualquier workspace
+ * - El filtro de permisos se aplica DENTRO del workspace, no al acceder
  */
-r.get("/me/tenants", (req, res) => {
+r.get("/me/tenants", async (req, res) => {
   const userId = resolveUserId(req);
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-  const rows = db
-    .prepare(
-      `
-      SELECT 
-        t.id, 
-        t.name, 
-        m.role,
-        u.name as owner_name,
-        u.email as owner_email
-      FROM memberships m
-      JOIN tenants t ON t.id = m.tenant_id
-      LEFT JOIN users u ON u.id = t.created_by
-      WHERE m.user_id = ?
-      ORDER BY t.name COLLATE NOCASE ASC
-    `
-    )
-    .all(userId);
+  // Obtener rol global del usuario (✅ PostgreSQL placeholder)
+  const user = await db
+    .prepare(`SELECT role FROM users WHERE id = $1 LIMIT 1`)
+    .get(userId);
+  
+  const userRole = user?.role || 'member';
+
+  // ✅ TODOS ven TODOS los workspaces (sin filtro por creator)
+  const query = `
+    SELECT 
+      t.id, 
+      t.name, 
+      t.created_by,
+      u.name as owner_name,
+      u.email as owner_email,
+      (t.created_by = $1) AS is_creator
+    FROM tenants t
+    LEFT JOIN users u ON u.id = t.created_by
+    ORDER BY LOWER(t.name) ASC
+  `;
+
+  const rows = await db.prepare(query).all(userId);
 
   console.log(
-    `📋 /me/tenants for user ${userId}:`,
-    rows.map((r) => ({ name: r.name, role: r.role }))
+    `📋 /me/tenants for user ${userId} (${userRole}):`,
+    rows.map((r) => ({ name: r.name, is_creator: r.is_creator }))
   );
 
   const activeId = req.tenantId || null;
   const items = rows.map((r) => ({
     id: r.id,
     name: r.name,
-    role: r.role,
     owner_name: r.owner_name,
     owner_email: r.owner_email,
     is_active: activeId === r.id,
+    is_creator: r.is_creator === 1
   }));
 
-  res.json({ items, active_tenant: activeId });
+  res.json({ items, active_tenant: activeId, user_role: userRole });
 });
 
 /**
  * POST /me/tenant/switch
- * Cambia el tenant "activo" y devuelve NUEVO JWT.
+ * Cambia el workspace "activo" y devuelve NUEVO JWT con rol global.
  * Body: { tenant_id }
- *
- * Nota: aunque devolvemos token con active_tenant,
- * el cliente igual debe enviar X-Tenant-Id en cada request.
  */
-r.post("/me/tenant/switch", (req, res) => {
+r.post("/me/tenant/switch", async (req, res) => {
   const userId = resolveUserId(req);
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
   const { tenant_id } = req.body || {};
   if (!tenant_id) return res.status(400).json({ error: "tenant_id_required" });
 
-  const membership = db
-    .prepare(
-      `SELECT m.role, t.name
-       FROM memberships m
-       JOIN tenants t ON t.id = m.tenant_id
-       WHERE m.user_id = ? AND m.tenant_id = ?
-       LIMIT 1`
-    )
-    .get(userId, tenant_id);
+  console.log('🔄 /me/tenant/switch:', { userId, tenant_id });
 
-  if (!membership) return res.status(403).json({ error: "not_member" });
+  // Verificar que el workspace existe (✅ PostgreSQL placeholder)
+  const tenant = await db
+    .prepare(`SELECT id, name FROM tenants WHERE id = $1 LIMIT 1`)
+    .get(tenant_id);
+
+  if (!tenant) {
+    console.log('❌ Tenant not found:', tenant_id);
+    return res.status(404).json({ error: "tenant_not_found" });
+  }
+
+  // Obtener rol global del usuario (✅ PostgreSQL placeholder)
+  const user = await db
+    .prepare(`SELECT role FROM users WHERE id = $1 LIMIT 1`)
+    .get(userId);
+
+  const userRole = user?.role || 'member';
+
+  console.log('✅ Switch successful:', { tenant: tenant_id, role: userRole });
 
   const basePayload = {
     sub: req.auth?.sub || req.user?.id || userId,
     email: req.auth?.email || req.user?.email || undefined,
-    roles: req.auth?.roles || req.user?.roles || {},
+    role: userRole, // Rol global
     active_tenant: tenant_id,
   };
 
@@ -146,35 +159,30 @@ r.post("/me/tenant/switch", (req, res) => {
   res.json({
     token,
     active_tenant: tenant_id,
-    tenant: { id: tenant_id, name: membership.name, role: membership.role },
+    tenant: { id: tenant_id, name: tenant.name, role: userRole },
   });
 });
 
 /**
  * GET /tenants/role
- * Devuelve el rol del usuario en el tenant activo.
+ * Devuelve el ROL GLOBAL del usuario (no depende del workspace activo).
  * Respuesta: { tenant_id: string|null, role: "owner"|"admin"|"member"|null }
  */
-r.get("/tenants/role", (req, res) => {
+r.get("/tenants/role", async (req, res) => {
   const userId = resolveUserId(req);
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-  const tenantId = req.tenantId;
-  if (!tenantId) {
-    // Sin tenant activo -> responde neutro para que el front haga fallback
-    return res.json({ tenant_id: null, role: null });
-  }
+  const tenantId = req.tenantId || null;
 
-  const row = db
-    .prepare(
-      `SELECT role 
-         FROM memberships 
-        WHERE user_id = ? AND tenant_id = ?
-        LIMIT 1`
-    )
-    .get(userId, tenantId);
+  // Obtener ROL GLOBAL del usuario (de tabla users) - ✅ PostgreSQL placeholder
+  const user = await db
+    .prepare(`SELECT role FROM users WHERE id = $1 LIMIT 1`)
+    .get(userId);
 
-  return res.json({ tenant_id: tenantId, role: row?.role || null });
+  return res.json({ 
+    tenant_id: tenantId, 
+    role: user?.role || "member" // Default a member si no tiene rol
+  });
 });
 
 /* =========================================================
@@ -193,7 +201,7 @@ r.get("/me/profile", (req, res) => {
     .prepare(
       `
       SELECT
-        id, name, email,
+        id, name, email, role,
         avatar_url, headline, bio,
         location, company, website,
         twitter, linkedin, github,
@@ -230,7 +238,7 @@ r.get("/me/profile", (req, res) => {
  *  name, avatar_url, headline, bio, location, company, website,
  *  twitter, linkedin, github, phone, timezone, email?
  */
-r.put("/me/profile", (req, res) => {
+r.put("/me/profile", async (req, res) => {
   const userId = resolveUserId(req);
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
@@ -265,7 +273,7 @@ r.put("/me/profile", (req, res) => {
   if (Object.prototype.hasOwnProperty.call(body, "email")) {
     const email = String(body.email || "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "invalid_email" });
-    const dup = db
+    const dup = await db
       .prepare(`SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1`)
       .get(email, userId);
     if (dup) return res.status(409).json({ error: "email_in_use" });
@@ -283,11 +291,11 @@ r.put("/me/profile", (req, res) => {
   params.push(userId);
 
   try {
-    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(
+    await db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(
       ...params
     );
 
-    const fresh = db
+    const fresh = await db
       .prepare(
         `
         SELECT id, name, email, avatar_url, headline, bio, location, company,
@@ -311,7 +319,7 @@ r.put("/me/profile", (req, res) => {
  * Body: { current_password, new_password }
  * - Si password_hash actual está vacío (seed/demo), NO exige current_password.
  */
-r.put("/me/password", (req, res) => {
+r.put("/me/password", async (req, res) => {
   const userId = resolveUserId(req);
   if (!userId) return res.status(401).json({ error: "unauthorized" });
 
@@ -320,7 +328,7 @@ r.put("/me/password", (req, res) => {
     return res.status(400).json({ error: "weak_password" });
   }
 
-  const user = db
+  const user = await db
     .prepare(`SELECT id, password_hash FROM users WHERE id = ? LIMIT 1`)
     .get(userId);
   if (!user) return res.status(404).json({ error: "user_not_found" });
@@ -340,7 +348,7 @@ r.put("/me/password", (req, res) => {
   const now = Date.now();
 
   try {
-    db.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`).run(
+    await db.prepare(`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`).run(
       nextHash,
       now,
       userId
@@ -358,7 +366,7 @@ r.put("/me/password", (req, res) => {
  * Sube archivo (multipart) y actualiza avatar_url.
  * Form field: "avatar"
  */
-r.put("/me/avatar", upload.single("avatar"), (req, res) => {
+r.put("/me/avatar", upload.single("avatar"), async (req, res) => {
   const userId = resolveUserId(req);
   if (!userId) return res.status(401).json({ error: "unauthorized" });
   if (!req.file) return res.status(400).json({ error: "no_file" });
@@ -367,7 +375,7 @@ r.put("/me/avatar", upload.single("avatar"), (req, res) => {
   const url = `${base}/uploads/avatars/${req.file.filename}`;
 
   try {
-    db.prepare(`UPDATE users SET avatar_url=?, updated_at=? WHERE id=?`).run(
+    await db.prepare(`UPDATE users SET avatar_url=?, updated_at=? WHERE id=?`).run(
       url,
       Date.now(),
       userId

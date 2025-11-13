@@ -12,8 +12,8 @@ const r = Router();
 function asUserId(req) {
   return String(req.user?.id ?? "");
 }
-function getUserGoogleRow(userId) {
-  return db
+async function getUserGoogleRow(userId) {
+  return await db
     .prepare(
       `SELECT id, email, google_email, google_refresh_token, google_calendar_id
        FROM users WHERE id = ?`
@@ -43,12 +43,12 @@ function capInt(v, def, min, max) {
 /* ========== Rutas ========== */
 
 /** GET /integrations/google/me */
-r.get("/integrations/google/me", (req, res) => {
+r.get("/integrations/google/me", async (req, res) => {
   try {
     const uid = asUserId(req);
     if (!uid) return res.status(401).json({ error: "unauthorized" });
 
-    const row = getUserGoogleRow(uid);
+    const row = await getUserGoogleRow(uid);
     if (!row || !row.google_refresh_token) {
       return res.json({ connected: false, hasRefresh: false });
     }
@@ -110,7 +110,7 @@ r.post("/integrations/google/exchange", async (req, res) => {
       return res.status(400).json({ error: "no_refresh_token_returned" });
     }
 
-    db.prepare(
+    await db.prepare(
       `UPDATE users
          SET google_refresh_token = ?,
              google_email = COALESCE(?, google_email)
@@ -177,7 +177,7 @@ r.get("/integrations/google/calendars", async (req, res) => {
  * POST /integrations/google/calendars/use
  * Body: { calendarId }
  */
-r.post("/integrations/google/calendars/use", (req, res) => {
+r.post("/integrations/google/calendars/use", async (req, res) => {
   try {
     const uid = asUserId(req);
     if (!uid) return res.status(401).json({ error: "unauthorized" });
@@ -187,7 +187,7 @@ r.post("/integrations/google/calendars/use", (req, res) => {
       return res.status(400).json({ error: "missing_calendarId" });
     }
 
-    db.prepare(
+    await db.prepare(
       `UPDATE users SET google_calendar_id = ? WHERE id = ?`
     ).run(String(calendarId).trim(), uid);
 
@@ -257,12 +257,12 @@ r.get("/integrations/google/events", async (req, res) => {
  * Oculto en producción.
  */
 if (process.env.NODE_ENV !== "production") {
-  r.get("/integrations/google/status", (req, res) => {
+  r.get("/integrations/google/status", async (req, res) => {
     try {
       const uid = asUserId(req);
       if (!uid) return res.status(401).json({ error: "unauthorized" });
 
-      const row = getUserGoogleRow(uid);
+      const row = await getUserGoogleRow(uid);
       if (!row) return res.json({ exists: false });
 
       const mask = (t) => (t ? t.slice(0, 6) + "…" + t.slice(-4) : null);

@@ -47,7 +47,8 @@ router.get(
       LIMIT ?
     `;
 
-    const rows = db.prepare(sql).all(...params, limit).map((r) => {
+    const rows = await db.prepare(sql).all(...params, limit);
+    const parsedRows = rows.map((r) => {
       let meta = null;
       if (r.meta) {
         try { meta = JSON.parse(r.meta); } catch { meta = null; }
@@ -55,7 +56,7 @@ router.get(
       return { ...r, meta };
     });
 
-    res.json(rows);
+    res.json(parsedRows);
   })
 );
 

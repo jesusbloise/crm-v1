@@ -32,20 +32,14 @@ export default function WorkspaceJoin() {
 
   const startJoin = (workspace: { id: string; name: string; is_creator: boolean }) => {
     setSelectedWorkspace(workspace);
-    if (workspace.is_creator) {
-      // Si es el creador, unirse directamente
-      void onJoin(workspace.id);
-    } else {
-      // Si no es el creador, mostrar diálogo de verificación
-      setVerifyId("");
-      setShowVerifyDialog(true);
-    }
+    // 🔓 Unirse directamente sin verificación (igual que SQLite)
+    void onJoin(workspace.id);
   };
 
   const onJoin = async (tenant_id: string) => {
     setBusy("join");
     try {
-      const res = await api.post<{ ok: boolean; joined?: boolean; tenant?: { id: string; name: string } }>(
+      const res = await api.post<{ ok: boolean; joined?: boolean; tenant?: { id: string; name: string }; role?: string }>(
         "/tenants/join", 
         { tenant_id }
       );
@@ -53,7 +47,7 @@ export default function WorkspaceJoin() {
       await switchTenant(tenant_id);
       router.replace("/");
     } catch (e: any) {
-      Alert.alert("No se pudo entrar", e?.message || "Verifica el ID o usa una invitación");
+      Alert.alert("No se pudo entrar", e?.message || "Verifica el ID");
     } finally {
       setBusy(null);
       setShowVerifyDialog(false);
@@ -95,9 +89,7 @@ export default function WorkspaceJoin() {
               disabled={busy==="join"} 
               style={[styles.joinBtn, busy==="join" && {opacity:0.6}]}
             >
-              <Text style={styles.joinTxt}>
-                {item.is_creator ? "Entrar" : "Verificar"}
-              </Text>
+              <Text style={styles.joinTxt}>Entrar</Text>
             </Pressable>
           </View>
         )}

@@ -20,57 +20,60 @@ function resolveUserId(req) {
 }
 
 /**
- * Obtiene el rol del usuario en el tenant actual
+ * Obtiene el rol GLOBAL del usuario (de tabla users, no memberships)
  * @param {string} userId - ID del usuario
- * @param {string} tenantId - ID del tenant
- * @returns {string|null} - Rol del usuario ('owner', 'admin', 'user', etc.) o null
+ * @returns {Promise<string|null>} - Rol global del usuario ('owner', 'admin', 'member') o null
  */
-function getUserRole(userId, tenantId) {
-  if (!userId || !tenantId) return null;
+async function getUserRole(userId) {
+  if (!userId) return null;
 
-  const membership = db
-    .prepare(
-      `SELECT role FROM memberships 
-       WHERE user_id = ? AND tenant_id = ? 
-       LIMIT 1`
-    )
-    .get(userId, tenantId);
+  const user = await db
+    .prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`)
+    .get(userId);
 
-  return membership?.role || null;
+  return user?.role || null;
 }
 
 /**
- * Verifica si el usuario es admin/owner en el tenant actual
+ * Verifica si el usuario es admin/owner GLOBAL
  * @param {string} userId - ID del usuario
- * @param {string} tenantId - ID del tenant
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-function isAdmin(userId, tenantId) {
-  const role = getUserRole(userId, tenantId);
+async function isAdmin(userId) {
+  const role = await getUserRole(userId);
   return role === "admin" || role === "owner";
+}
+
+/**
+ * Verifica si el usuario es owner GLOBAL (Dios del sistema)
+ * @param {string} userId - ID del usuario
+ * @returns {Promise<boolean>}
+ */
+async function isOwner(userId) {
+  const role = await getUserRole(userId);
+  return role === "owner";
 }
 
 /**
  * Verifica si el usuario es member (solo member, no admin ni owner)
  * @param {string} userId - ID del usuario
- * @param {string} tenantId - ID del tenant
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-function isMember(userId, tenantId) {
-  const role = getUserRole(userId, tenantId);
+async function isMember(userId) {
+  const role = await getUserRole(userId);
   return role === "member";
 }
 
 /**
  * Middleware: Verifica que el usuario pueda leer el recurso
- * - Admin/Owner pueden leer todo del workspace
+ * - Admin/Owner GLOBALES pueden leer todo
  * - Members solo pueden leer sus propios recursos
  * 
  * @param {string} table - Nombre de la tabla (leads, contacts, etc.)
  * @param {string} idField - Campo que identifica el recurso (por defecto 'id')
  */
 function canRead(table, idField = "id") {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const userId = resolveUserId(req);
     const tenantId = req.tenantId;
     const resourceId = req.params[idField];
@@ -79,15 +82,15 @@ function canRead(table, idField = "id") {
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    // Si es admin u owner, puede ver todo
-    if (isAdmin(userId, tenantId)) {
+    // Si es admin u owner GLOBAL, puede ver todo
+    if (await isAdmin(userId)) {
       req.isAdmin = true;
       return next();
     }
 
     // Si es member, verificar ownership
     if (resourceId) {
-      const resource = db
+      const resource = await db
         .prepare(
           `SELECT created_by FROM ${table} 
            WHERE id = ? AND tenant_id = ? 
@@ -111,14 +114,14 @@ function canRead(table, idField = "id") {
 
 /**
  * Middleware: Verifica que el usuario pueda escribir (crear/editar) el recurso
- * - Admin/Owner pueden escribir todo del workspace
+ * - Admin/Owner GLOBALES pueden escribir todo
  * - Members solo pueden escribir sus propios recursos
  * 
  * @param {string} table - Nombre de la tabla
  * @param {string} idField - Campo que identifica el recurso (por defecto 'id')
  */
 function canWrite(table, idField = "id") {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const userId = resolveUserId(req);
     const tenantId = req.tenantId;
     const resourceId = req.params[idField];
@@ -127,15 +130,15 @@ function canWrite(table, idField = "id") {
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    // Si es admin u owner, puede escribir todo
-    if (isAdmin(userId, tenantId)) {
+    // Si es admin u owner GLOBAL, puede escribir todo
+    if (await isAdmin(userId)) {
       req.isAdmin = true;
       return next();
     }
 
     // Si es un UPDATE/DELETE, verificar ownership
     if (resourceId && req.method !== "POST") {
-      const resource = db
+      const resource = await db
         .prepare(
           `SELECT created_by FROM ${table} 
            WHERE id = ? AND tenant_id = ? 
@@ -159,14 +162,14 @@ function canWrite(table, idField = "id") {
 
 /**
  * Middleware: Verifica que el usuario pueda eliminar el recurso
- * - Admin/Owner pueden eliminar todo del workspace
+ * - Admin/Owner GLOBALES pueden eliminar todo
  * - Members solo pueden eliminar sus propios recursos
  * 
  * @param {string} table - Nombre de la tabla
  * @param {string} idField - Campo que identifica el recurso
  */
 function canDelete(table, idField = "id") {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const userId = resolveUserId(req);
     const tenantId = req.tenantId;
     const resourceId = req.params[idField];
@@ -179,14 +182,14 @@ function canDelete(table, idField = "id") {
       return res.status(400).json({ error: "resource_id_required" });
     }
 
-    // Si es admin u owner, puede eliminar todo
-    if (isAdmin(userId, tenantId)) {
+    // Si es admin u owner GLOBAL, puede eliminar todo
+    if (await isAdmin(userId)) {
       req.isAdmin = true;
       return next();
     }
 
     // Verificar ownership
-    const resource = db
+    const resource = await db
       .prepare(
         `SELECT created_by FROM ${table} 
          WHERE id = ? AND tenant_id = ? 
@@ -208,23 +211,22 @@ function canDelete(table, idField = "id") {
 }
 
 /**
- * Agrega filtro WHERE para queries basado en rol
- * - Admin/Owner: sin filtro adicional (ven todo del workspace)
+ * Agrega filtro WHERE para queries basado en rol GLOBAL
+ * - Admin/Owner GLOBALES: sin filtro adicional (ven todo)
  * - Members: WHERE created_by = userId (solo ven lo que crearon)
  * 
  * @param {Object} req - Request object
- * @returns {string} - SQL string para agregar a WHERE clause (ej: "AND created_by = 'user123'")
+ * @returns {Promise<string>} - SQL string para agregar a WHERE clause (ej: "AND created_by = 'user123'")
  */
-function getOwnershipFilter(req) {
+async function getOwnershipFilter(req) {
   const userId = resolveUserId(req);
-  const tenantId = req.tenantId;
 
-  if (!userId || !tenantId) {
+  if (!userId) {
     return "AND 1=0"; // bloquea si no hay auth
   }
 
-  // Si es admin u owner, no filtra por created_by (ven todo del workspace)
-  if (isAdmin(userId, tenantId)) {
+  // Si es admin u owner GLOBAL, no filtra por created_by (ven todo)
+  if (await isAdmin(userId)) {
     return "";
   }
 
@@ -233,8 +235,7 @@ function getOwnershipFilter(req) {
 }
 
 /**
- * Middleware: Requiere que el usuario tenga uno de los roles especificados
- * en el workspace activo. Bloquea la request si no cumple.
+ * Middleware: Requiere que el usuario tenga uno de los roles GLOBALES especificados
  * 
  * @param {string[]} allowedRoles - Array de roles permitidos: ['owner', 'admin', 'member']
  * @returns {Function} - Express middleware
@@ -248,9 +249,8 @@ function requireRole(allowedRoles = []) {
     throw new Error("requireRole: allowedRoles debe ser un array no vacío de roles válidos");
   }
 
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const userId = resolveUserId(req);
-    const tenantId = req.tenantId;
 
     if (!userId) {
       return res.status(401).json({ 
@@ -259,19 +259,12 @@ function requireRole(allowedRoles = []) {
       });
     }
 
-    if (!tenantId) {
-      return res.status(400).json({ 
-        error: "no_tenant",
-        message: "No hay workspace activo" 
-      });
-    }
-
-    const role = getUserRole(userId, tenantId);
+    const role = await getUserRole(userId);
 
     if (!role) {
       return res.status(403).json({ 
-        error: "not_member",
-        message: "No eres miembro de este workspace" 
+        error: "no_role",
+        message: "Usuario sin rol asignado" 
       });
     }
 
@@ -288,81 +281,18 @@ function requireRole(allowedRoles = []) {
     // Agregar info de rol al request para uso posterior
     req.userRole = role;
     req.isAdmin = role === "owner" || role === "admin";
+    req.isOwner = role === "owner";
     req.isMember = role === "member";
 
     next();
   };
 }
 
-/**
- * Middleware: Requiere que el usuario tenga uno de los roles especificados
- * EN CUALQUIER WORKSPACE (no solo el activo).
- * 
- * Útil para acciones globales como crear nuevo workspace.
- * 
- * @param {string[]} allowedRoles - Array de roles permitidos: ['owner', 'admin']
- * @returns {Function} - Express middleware
- * 
- * @example
- * router.post('/tenants', requireRoleInAny(['owner', 'admin']), (req, res) => {...})
- */
+// ⚠️ DEPRECADO: requireRoleInAny ya no se usa (roles ahora son globales)
+// Se mantiene por compatibilidad temporal
 function requireRoleInAny(allowedRoles = []) {
-  if (!Array.isArray(allowedRoles) || allowedRoles.length === 0) {
-    throw new Error("requireRoleInAny: allowedRoles debe ser un array no vacío de roles válidos");
-  }
-
-  return (req, res, next) => {
-    const userId = resolveUserId(req);
-    
-    // 🔍 DEBUG: Log de entrada
-    console.log('🔍 [requireRoleInAny] Checking permissions:', {
-      userId,
-      allowedRoles,
-      tenantId: req.tenantId,
-      'req.user.id': req.user?.id,
-      'req.auth.sub': req.auth?.sub
-    });
-
-    if (!userId) {
-      console.log('❌ [requireRoleInAny] No userId, rejecting');
-      return res.status(401).json({ 
-        error: "unauthorized",
-        message: "Debes iniciar sesión" 
-      });
-    }
-
-    // Buscar si el usuario tiene alguno de los roles permitidos en CUALQUIER workspace
-    const placeholders = allowedRoles.map(() => '?').join(',');
-    const hasRole = db
-      .prepare(
-        `SELECT 1 FROM memberships 
-         WHERE user_id = ? AND role IN (${placeholders})
-         LIMIT 1`
-      )
-      .get(userId, ...allowedRoles);
-
-    // 🔍 DEBUG: Log del resultado de la query
-    console.log('🔍 [requireRoleInAny] Query result:', hasRole ? '✅ Found' : '❌ Not found');
-    
-    // 🔍 DEBUG: Mostrar todos los roles del usuario
-    const userRoles = db
-      .prepare('SELECT tenant_id, role FROM memberships WHERE user_id = ?')
-      .all(userId);
-    console.log('🔍 [requireRoleInAny] User roles in all workspaces:', userRoles);
-
-    if (!hasRole) {
-      console.log('❌ [requireRoleInAny] User does not have required role, blocking');
-      return res.status(403).json({ 
-        error: "insufficient_permissions",
-        message: `Requieres ser ${allowedRoles.join(" o ")} en al menos un workspace`,
-        required_roles: allowedRoles
-      });
-    }
-
-    console.log('✅ [requireRoleInAny] Permission granted');
-    // No seteamos req.userRole porque puede tener diferentes roles en diferentes workspaces
-    next();
-  };
+  console.warn('⚠️ requireRoleInAny está DEPRECADO - usar requireRole() en su lugar');
+  return requireRole(allowedRoles);
 }
 
 module.exports = {
@@ -372,8 +302,9 @@ module.exports = {
   getOwnershipFilter,
   getUserRole,
   isAdmin,
+  isOwner, // ⭐ NUEVO - verificar si es owner (Dios del sistema)
   isMember,
   resolveUserId,
-  requireRole, // ⭐ NUEVO
-  requireRoleInAny, // ⭐ NUEVO (para crear workspaces)
+  requireRole,
+  requireRoleInAny, // ⚠️ DEPRECADO (mantener por compatibilidad)
 };
