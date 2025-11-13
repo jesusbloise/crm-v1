@@ -12,10 +12,16 @@ const HOST = process.env.HOST || "0.0.0.0";
 (async () => {
   try {
     console.log("🐘 Ejecutando migraciones PostgreSQL...");
-    const { runMigrations } = require("./db/migrate-pg");
+    const { runMigrations, runSQLMigrations } = require("./db/migrate-pg");
     const { ensureGoogleColumns } = require("./db/connection");
     
+    // 1. Crear tablas base
     await runMigrations();
+    
+    // 2. Ejecutar migraciones SQL automáticas
+    await runSQLMigrations();
+    
+    // 3. Columnas adicionales
     await ensureGoogleColumns();
     
     console.log("✅ Migraciones completadas");

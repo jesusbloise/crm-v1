@@ -21,6 +21,7 @@
     "pg": "^8.16.3"
   },
   "devDependencies": {
+    "babel-plugin-module-resolver": "^5.0.2",
     "node-fetch": "^2.7.0",
     "nodemon": "^3.1.0"
   },

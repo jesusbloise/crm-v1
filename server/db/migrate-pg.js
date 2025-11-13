@@ -1,5 +1,7 @@
 // server/db/migrate-pg.js
 const { pool } = require("./connection");
+const fs = require("fs");
+const path = require("path");
 
 /**
  * 🐘 MIGRACIONES POSTGRESQL
@@ -235,6 +237,21 @@ async function runMigrations() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);`);
 
     // ========================================
+    // TABLA DE CONTROL DE MIGRACIONES
+    // ========================================
+    
+    // Tabla: migrations_log
+    // Registra qué archivos .sql se han ejecutado
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS migrations_log (
+        id SERIAL PRIMARY KEY,
+        filename TEXT NOT NULL UNIQUE,
+        applied_at BIGINT NOT NULL
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_migrations_filename ON migrations_log(filename);`);
+
+    // ========================================
     // DATOS INICIALES
     // ========================================
 
@@ -279,4 +296,76 @@ async function runMigrations() {
   }
 }
 
-module.exports = { runMigrations };
+/**
+ * 📦 EJECUTA MIGRACIONES SQL AUTOMÁTICAS
+ * - Lee archivos .sql de la carpeta migrations/
+ * - Ejecuta solo los que no están en migrations_log
+ * - Idempotente: puede ejecutarse múltiples veces sin problemas
+ */
+async function runSQLMigrations() {
+  const client = await pool.connect();
+  
+  try {
+    const migrationsDir = path.join(__dirname, 'migrations');
+    
+    // Verificar si existe la carpeta
+    if (!fs.existsSync(migrationsDir)) {
+      console.log('📁 No existe carpeta migrations/, saltando migraciones SQL');
+      return;
+    }
+    
+    // Leer archivos .sql y ordenarlos
+    const files = fs.readdirSync(migrationsDir)
+      .filter(f => f.endsWith('.sql'))
+      .sort(); // Los archivos deben tener formato: 001_name.sql, 002_name.sql, etc.
+    
+    if (files.length === 0) {
+      console.log('📦 No hay archivos .sql en migrations/');
+      return;
+    }
+    
+    console.log(`📦 Encontrados ${files.length} archivos de migración SQL`);
+    
+    for (const file of files) {
+      // Verificar si ya fue ejecutado
+      const exists = await client.query(
+        'SELECT 1 FROM migrations_log WHERE filename = $1 LIMIT 1',
+        [file]
+      );
+      
+      if (exists.rows.length > 0) {
+        console.log(`⏭️  Saltando ${file} (ya aplicada)`);
+        continue;
+      }
+      
+      // Ejecutar migración
+      console.log(`🔄 Ejecutando migración: ${file}`);
+      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+      
+      try {
+        await client.query('BEGIN');
+        await client.query(sql);
+        await client.query(
+          'INSERT INTO migrations_log (filename, applied_at) VALUES ($1, $2)',
+          [file, Date.now()]
+        );
+        await client.query('COMMIT');
+        console.log(`✅ Migración aplicada: ${file}`);
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(`❌ Error ejecutando ${file}:`, err.message);
+        throw err;
+      }
+    }
+    
+    console.log('✅ Todas las migraciones SQL completadas');
+    
+  } catch (err) {
+    console.error('❌ Error en runSQLMigrations:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { runMigrations, runSQLMigrations };
