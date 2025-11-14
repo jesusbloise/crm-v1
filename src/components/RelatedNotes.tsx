@@ -1,6 +1,7 @@
 import { createNote, deleteNote, listNotes, updateNote, type Note } from "@/src/api/notes";
+import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import React, { useState } from "react";
+import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 export type NoteFilters = {
@@ -26,7 +27,7 @@ export default function RelatedNotes({ title = "Notas", filters }: { title?: str
     mutationFn: async () => {
       const b = newBody.trim();
       if (!b) return;
-      await createNote({ id: uid(), body: b, ...filters } as Partial<Note>);
+      await createNote({ id: uid(), body: b, ...filters } as any);
     },
     onSuccess: async () => {
       setNewBody("");
@@ -138,10 +139,6 @@ export default function RelatedNotes({ title = "Notas", filters }: { title?: str
       )}
     </View>
   );
-}
-
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 const S = StyleSheet.create({

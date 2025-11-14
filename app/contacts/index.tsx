@@ -1,7 +1,7 @@
 import { listContacts } from "@/src/api/contacts";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Stack } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -116,6 +116,7 @@ export default function ContactsList() {
                 <Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>
                   {t.label}
                 </Text>
+                
                 <View style={[styles.badge, active && styles.badgeActive]}>
                   <Text style={[styles.badgeText, active && styles.badgeTextActive]}>{t.count}</Text>
                 </View>
@@ -157,7 +158,15 @@ export default function ContactsList() {
               <Link href={{ pathname: "/contacts/[id]", params: { id: item.id } }} asChild>
                 <Pressable style={({pressed})=>[styles.row, pressed && {opacity:0.96}]}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.name}>{item.name}</Text>
+                    {/* Nombre + Creador en la misma línea */}
+                    <View style={styles.nameRow}>
+                      <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
+                      {item.created_by_name && (
+                        <Text style={styles.creator} numberOfLines={1}>
+                          · {item.created_by_name}
+                        </Text>
+                      )}
+                    </View>
                     <Text style={styles.sub}>
                       {strip(item.position) || strip(item.company) || strip(item.email) || ""}
                     </Text>
@@ -255,8 +264,25 @@ const styles = StyleSheet.create({
     backgroundColor: CARD, borderWidth: 1, borderColor: BORDER, borderRadius: 12,
     padding: 12, flexDirection: "row", alignItems: "center", gap: 8,
   },
-  name: { fontSize: 16, fontWeight: "800", color: TEXT },
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "nowrap",
+  },
+  name: { 
+    fontSize: 16, 
+    fontWeight: "800", 
+    color: TEXT,
+    flexShrink: 1,
+  },
   sub: { color: SUBTLE },
+  creator: { 
+    color: ACCENT_2, 
+    fontSize: 11, 
+    fontWeight: "600",
+    flexShrink: 0,
+  },
   subtle: { color: SUBTLE, textAlign: "center", marginTop: 8 },
 
   loaderWrap: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 40 },

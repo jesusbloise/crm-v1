@@ -1,8 +1,9 @@
 // app/accounts/new.tsx
 import { createAccount } from "@/src/api/accounts";
+import { uid } from "@/src/utils/uid";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
-import React, { useState } from "react";
+import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 /* 🎨 Tema consistente (Home / Deals / Contacts) */
@@ -13,8 +14,6 @@ const BORDER  = "#272a33";
 const TEXT    = "#e8ecf1";
 const SUBTLE  = "#a9b0bd";
 const ACCENT  = "#7c3aed";   // morado principal
-
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 export default function NewAccount() {
   const qc = useQueryClient();

@@ -9,6 +9,9 @@ export type Contact = {
   company?: string | null;
   position?: string | null;
   account_id?: string | null;
+  created_by?: string;
+  created_by_name?: string;
+  created_by_email?: string;
   created_at: number;
   updated_at: number;
 };

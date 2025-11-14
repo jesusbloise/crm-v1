@@ -4,21 +4,22 @@ import { createActivity } from "@/src/api/activities";
 import { createContact } from "@/src/api/contacts";
 import { createNote } from "@/src/api/notes";
 import { initNotifications, scheduleActivityReminder } from "@/src/utils/notifications";
+import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  ToastAndroid,
-  View,
+    Alert,
+    KeyboardAvoidingView,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    Text,
+    TextInput,
+    ToastAndroid,
+    View,
 } from "react-native";
 
 /* 🎨 Paleta */
@@ -31,10 +32,6 @@ const BORDER  = "#2B3140";
 const TEXT    = "#F3F4F6";
 const SUBTLE  = "#A4ADBD";
 const DANGER  = "#EF4444";
-
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
 
 export default function NewContact() {
   const qc = useQueryClient();

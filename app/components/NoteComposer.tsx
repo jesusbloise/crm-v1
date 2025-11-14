@@ -1,6 +1,7 @@
 import { createNote } from "@/src/api/notes";
+import { uid } from "@/src/utils/uid";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import React, { useState } from "react";
+import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 /* 🎨 Paleta morado/cian */
@@ -33,14 +34,12 @@ export default function NoteComposer({
     mutationFn: async () => {
       if (!body.trim()) throw new Error("Escribe una nota");
       await createNote({
-        id: crypto.randomUUID(),
+        id: uid(),
         body,
         account_id: account_id ?? null,
         deal_id: deal_id ?? null,
         contact_id: contact_id ?? null,
         lead_id: lead_id ?? null,
-        created_at: Date.now(),
-        updated_at: Date.now(),
       } as any);
     },
     onSuccess: async () => {

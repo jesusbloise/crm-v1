@@ -4,15 +4,15 @@ import { deleteContact, getContact, updateContact } from "@/src/api/contacts";
 import { listDeals, type Deal } from "@/src/api/deals";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Stack, router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  FlatList,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+    FlatList,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 
 // 🔗 Relacionados (actividades y notas)
@@ -144,6 +144,18 @@ export default function ContactDetail() {
         ) : (
           <>
             <Text style={styles.title}>{q.data.name}</Text>
+            
+            {/* Información del creador */}
+            {q.data.created_by_name && (
+              <View style={styles.creatorBox}>
+                <Text style={styles.creatorLabel}>Creado por:</Text>
+                <Text style={styles.creatorName}>{q.data.created_by_name}</Text>
+                {q.data.created_by_email && (
+                  <Text style={styles.creatorEmail}>{q.data.created_by_email}</Text>
+                )}
+              </View>
+            )}
+
             {q.data.position ? (
               <Text style={styles.text}>
                 Cargo: <Text style={styles.bold}>{q.data.position}</Text>
@@ -287,6 +299,36 @@ function etiqueta(s?: Deal["stage"]): string {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 8 },
   title: { fontSize: 20, fontWeight: "900", color: TEXT },
+  
+  // Box del creador
+  creatorBox: {
+    backgroundColor: "rgba(34, 211, 238, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(34, 211, 238, 0.2)",
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  creatorLabel: {
+    color: "#22d3ee",
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  creatorName: {
+    color: TEXT,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  creatorEmail: {
+    color: SUBTLE,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  
   text: { color: TEXT, marginTop: 2 },
   bold: { fontWeight: "800" },
   link: { color: ACCENT, textDecorationLine: "underline" },

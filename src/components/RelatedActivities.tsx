@@ -1,13 +1,14 @@
 import {
-    createActivity,
-    deleteActivity,
-    listActivities,
-    updateActivity,
-    type Activity,
-    type ActivityStatus,
+  createActivity,
+  deleteActivity,
+  listActivities,
+  updateActivity,
+  type Activity,
+  type ActivityStatus,
 } from "@/src/api/activities";
+import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import React, { useState } from "react";
+import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 /** Filtro genérico por entidad relacionada */
@@ -45,7 +46,7 @@ export default function RelatedActivities(props: {
         status: "open",
         ...filters,
         ...(createDefaults ?? {}),
-      } as Partial<Activity>);
+      } as any);
     },
     onSuccess: async () => {
       setNewTitle("");
@@ -119,10 +120,6 @@ export default function RelatedActivities(props: {
       )}
     </View>
   );
-}
-
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 const S = StyleSheet.create({

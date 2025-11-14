@@ -1,11 +1,11 @@
 // app/tasks/[id].tsx  (ajusta la ruta si tu archivo se llama distinto)
 import { listAccounts } from "@/src/api/accounts";
 import {
-    deleteActivity,
-    getActivity,
-    updateActivity,
-    type Activity,
-    type ActivityStatus,
+  deleteActivity,
+  getActivity,
+  updateActivity,
+  type Activity,
+  type ActivityStatus,
 } from "@/src/api/activities";
 import { listContacts } from "@/src/api/contacts";
 import { listDeals } from "@/src/api/deals";
@@ -13,7 +13,7 @@ import { listLeads } from "@/src/api/leads";
 import Confirm from "@/src/ui/Confirm";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, router, Stack, useLocalSearchParams } from "expo-router";
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 /* 🎨 Paleta pro morado/cian (consistente) */
@@ -165,7 +165,7 @@ export default function TaskDetail() {
                   <Text style={[styles.itemLabel, { marginBottom: 2 }]}>Relacionado con</Text>
                   <View style={styles.chipsRow}>
                     {contextChips.map((c) => (
-                      <Link key={c.href} href={c.href} asChild>
+                      <Link key={c.href} href={c.href as any} asChild>
                         <Pressable style={styles.chip} accessibilityRole="link" hitSlop={8}>
                           <Text style={styles.chipText}>{c.label}</Text>
                         </Pressable>
@@ -217,14 +217,16 @@ export default function TaskDetail() {
 }
 
 /* ——— Helpers UI ——— */
-function iconByType(t: "task" | "call" | "meeting") {
+function iconByType(t: "task" | "call" | "meeting" | "note") {
   if (t === "call") return "📞";
   if (t === "meeting") return "📅";
+  if (t === "note") return "📝";
   return "✅";
 }
-function labelByType(t: "task" | "call" | "meeting") {
+function labelByType(t: "task" | "call" | "meeting" | "note") {
   if (t === "call") return "Llamada";
   if (t === "meeting") return "Reunión";
+  if (t === "note") return "Nota";
   return "Tarea";
 }
 function labelByStatus(s: ActivityStatus) {
@@ -232,10 +234,11 @@ function labelByStatus(s: ActivityStatus) {
   if (s === "done") return "Completada";
   return "Cancelada";
 }
-function badgeByType(t: "task" | "call" | "meeting") {
+function badgeByType(t: "task" | "call" | "meeting" | "note") {
   const base = { borderColor: "#2d3340", backgroundColor: "rgba(255,255,255,0.04)", color: TEXT };
   if (t === "call")    return { ...base, borderColor: ACCENT,  backgroundColor: "rgba(34,211,238,0.10)" };
   if (t === "meeting") return { ...base, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,0.12)" };
+  if (t === "note")    return { ...base, borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,0.10)" };
   return { ...base, borderColor: PRIMARY, backgroundColor: "rgba(124,58,237,0.10)" };
 }
 function badgeByStatus(s: ActivityStatus) {

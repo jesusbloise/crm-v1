@@ -4,6 +4,7 @@ import { listContacts } from "@/src/api/contacts";
 import { listDeals } from "@/src/api/deals";
 import { listLeads } from "@/src/api/leads";
 import { initNotifications, scheduleActivityReminder } from "@/src/utils/notifications"; // 🔔
+import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
@@ -154,11 +155,11 @@ export default function NewActivity() {
         when.setHours(t.h, t.m, 0, 0);
 
         await scheduleActivityReminder({
-  activityId: "act_123",
-  title: "Llamar al cliente",
-  body: "No olvides la reunión de seguimiento",
-  when: new Date(Date.now() + 5 * 60 * 1000), // en 5 minutos
-});
+          activityId: payload.id,
+          title: payload.title,
+          body: payload.notes || `Recordatorio: ${payload.title}`,
+          when: when,
+        });
       }
     },
     onSuccess: async () => {
@@ -331,11 +332,6 @@ export default function NewActivity() {
       </ScrollView>
     </KeyboardAvoidingView>
   );
-}
-
-// util id
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 /* ——— Estilos ——— */

@@ -95,11 +95,25 @@ router.post(
     }
     if (!VALID_STATUS.has(status)) status = "open";
 
-    // ID único por tenant
-    const exists = db
-      .prepare(`SELECT 1 FROM activities WHERE id = ? AND tenant_id = ? LIMIT 1`)
-      .get(id, req.tenantId);
-    if (exists) return res.status(409).json({ error: "activity_exists" });
+    // Si el ID ya existe, generar uno nuevo automáticamente
+    let finalId = id;
+    let attempts = 0;
+    while (attempts < 10) {
+      const exists = db
+        .prepare(`SELECT 1 FROM activities WHERE id = ? AND tenant_id = ? LIMIT 1`)
+        .get(finalId, req.tenantId);
+      
+      if (!exists) break;
+      
+      // Generar nuevo ID: agregar sufijo con timestamp + random
+      attempts++;
+      const suffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      finalId = id.slice(0, 10) + suffix;
+    }
+    
+    if (attempts >= 10) {
+      return res.status(409).json({ error: "activity_id_conflict_max_retries" });
+    }
 
     // Validar FKs en el mismo tenant (si vienen)
     if (account_id) {
@@ -138,7 +152,7 @@ router.post(
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `
     ).run(
-      id,
+      finalId,
       type,
       title,
       due_date ?? null,
@@ -157,7 +171,7 @@ router.post(
 
     const created = db
       .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
-      .get(id, req.tenantId);
+      .get(finalId, req.tenantId);
 
     res.status(201).json(created);
   })

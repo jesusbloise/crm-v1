@@ -2,21 +2,21 @@
 import { listAccounts } from "@/src/api/accounts";
 import { listContacts } from "@/src/api/contacts";
 import { createDeal, type DealStage } from "@/src/api/deals";
+import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 
 /* Etapas */
 const STAGES: DealStage[] = ["nuevo","calificado","propuesta","negociacion","ganado","perdido"];
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 /* 🎨 Tema (consistente con Home y Board) */
 const BG       = "#0b0c10";
