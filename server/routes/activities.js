@@ -25,11 +25,6 @@ router.get(
       req.query || {};
     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-    // Importante: aquí solo filtramos por tenant (y por los filtros de la entidad),
-    // ya NO usamos getOwnershipFilter. Eso significa que:
-    // - Todos los usuarios del mismo tenant/workspace ven las mismas actividades.
-    // - El "quién la creó" se muestra con created_by_name / created_by_email.
-
     const clauses = ["a.tenant_id = ?"];
     const params = [req.tenantId];
 
@@ -59,18 +54,33 @@ router.get(
     }
 
     const sql = `
-      SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+      SELECT 
+        a.*,
+        cu.name AS created_by_name,
+        cu.email AS created_by_email,
+        au.name AS assigned_to_name,
+        au.email AS assigned_to_email
       FROM activities a
-      LEFT JOIN users u
-        ON u.id = a.created_by
+      LEFT JOIN users cu ON cu.id = a.created_by
+      LEFT JOIN users au ON au.id = a.assigned_to
       WHERE ${clauses.join(" AND ")}
       ORDER BY a.updated_at DESC, a.id ASC
       LIMIT ?
     `;
     const rows = await db.prepare(sql).all(...params, limit);
+     console.log(
+      "📤 GET /activities ->",
+      rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        assigned_to: r.assigned_to,
+        assigned_to_name: r.assigned_to_name,
+      }))
+    );
     res.json(rows);
   })
 );
+
 
 /** GET /activities/:id */
 router.get(
@@ -80,10 +90,15 @@ router.get(
     const row = db
       .prepare(
         `
-        SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+        SELECT 
+          a.*,
+          cu.name AS created_by_name,
+          cu.email AS created_by_email,
+          au.name AS assigned_to_name,
+          au.email AS assigned_to_email
         FROM activities a
-        LEFT JOIN users u
-          ON u.id = a.created_by
+        LEFT JOIN users cu ON cu.id = a.created_by
+        LEFT JOIN users au ON au.id = a.assigned_to
         WHERE a.id = ? AND a.tenant_id = ?
       `
       )
@@ -94,10 +109,12 @@ router.get(
   })
 );
 
+
 /** POST /activities (id en servidor) */
 router.post(
   "/activities",
   wrap(async (req, res) => {
+    console.log("▶ POST /activities body:", req.body, "tenant:", req.tenantId);
     let {
       type,
       title,
@@ -109,6 +126,7 @@ router.post(
       contact_id,
       lead_id,
       deal_id,
+      assigned_to, // 👈 NUEVO: viene del front
     } = req.body || {};
 
     type = coerceStr(type) || "";
@@ -119,6 +137,7 @@ router.post(
     contact_id = coerceStr(contact_id);
     lead_id = coerceStr(lead_id);
     deal_id = coerceStr(deal_id);
+    assigned_to = coerceStr(assigned_to); // 👈 normalizamos
     due_date = coerceNum(due_date);
     remind_at_ms = coerceNum(remind_at_ms);
 
@@ -144,6 +163,7 @@ router.post(
       checkFk("contacts", contact_id, "contact_id");
       checkFk("leads", lead_id, "lead_id");
       checkFk("deals", deal_id, "deal_id");
+      // si quisieras, aquí se podría validar assigned_to contra users/memberships
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -157,8 +177,8 @@ router.post(
       INSERT INTO activities (
         id, type, title, due_date, remind_at_ms, status, notes,
         account_id, contact_id, lead_id, deal_id,
-        tenant_id, created_by, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        tenant_id, created_by, created_at, updated_at, assigned_to
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `
       )
       .run(
@@ -176,24 +196,38 @@ router.post(
         req.tenantId,
         userId,
         now,
-        now
+        now,
+        assigned_to ?? null // 👈 se guarda el asignado
       );
 
     const created = db
       .prepare(
         `
-        SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+        SELECT 
+          a.*,
+          cu.name AS created_by_name,
+          cu.email AS created_by_email,
+          au.name AS assigned_to_name,
+          au.email AS assigned_to_email
         FROM activities a
-        LEFT JOIN users u
-          ON u.id = a.created_by
+        LEFT JOIN users cu ON cu.id = a.created_by
+        LEFT JOIN users au ON au.id = a.assigned_to
         WHERE a.id = ? AND a.tenant_id = ?
       `
       )
       .get(id, req.tenantId);
+       console.log("✅ Nueva activity creada:", {
+      id: created.id,
+      title: created.title,
+      assigned_to: created.assigned_to,
+      assigned_to_name: created.assigned_to_name,
+      tenant: created.tenant_id,
+    });
 
     res.status(201).json(created);
   })
 );
+
 
 /** PATCH /activities/:id */
 router.patch(
@@ -216,6 +250,7 @@ router.patch(
       contact_id = found.contact_id,
       lead_id = found.lead_id,
       deal_id = found.deal_id,
+      assigned_to = found.assigned_to,
     } = req.body || {};
 
     type = coerceStr(type) || found.type || "task";
@@ -226,11 +261,10 @@ router.patch(
     contact_id = coerceStr(contact_id) ?? found.contact_id;
     lead_id = coerceStr(lead_id) ?? found.lead_id;
     deal_id = coerceStr(deal_id) ?? found.deal_id;
+    assigned_to = coerceStr(assigned_to) ?? found.assigned_to;
     due_date = due_date === undefined ? found.due_date : coerceNum(due_date);
     remind_at_ms =
-      remind_at_ms === undefined
-        ? found.remind_at_ms
-        : coerceNum(remind_at_ms);
+      remind_at_ms === undefined ? found.remind_at_ms : coerceNum(remind_at_ms);
 
     if (!VALID_STATUS.has(status)) status = found.status;
 
@@ -249,6 +283,7 @@ router.patch(
       checkFk("contacts", contact_id, "contact_id");
       checkFk("leads", lead_id, "lead_id");
       checkFk("deals", deal_id, "deal_id");
+      // TODO: podríamos validar assigned_to contra memberships/users
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -260,7 +295,7 @@ router.patch(
         `
       UPDATE activities SET
         type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
-        account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?, updated_at = ?
+        account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?, assigned_to = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ?
     `
       )
@@ -275,6 +310,7 @@ router.patch(
         contact_id ?? null,
         lead_id ?? null,
         deal_id ?? null,
+        assigned_to ?? null,
         updated_at,
         req.params.id,
         req.tenantId
@@ -283,10 +319,15 @@ router.patch(
     const updated = db
       .prepare(
         `
-        SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+        SELECT 
+          a.*,
+          cu.name AS created_by_name,
+          cu.email AS created_by_email,
+          au.name AS assigned_to_name,
+          au.email AS assigned_to_email
         FROM activities a
-        LEFT JOIN users u
-          ON u.id = a.created_by
+        LEFT JOIN users cu ON cu.id = a.created_by
+        LEFT JOIN users au ON au.id = a.assigned_to
         WHERE a.id = ? AND a.tenant_id = ?
       `
       )
@@ -295,6 +336,7 @@ router.patch(
     res.json(updated);
   })
 );
+
 
 /** DELETE /activities/:id */
 router.delete(
@@ -322,48 +364,62 @@ module.exports = router;
 //   canRead,
 //   canWrite,
 //   canDelete,
-//   getOwnershipFilter,
 // } = require("../lib/authorize");
 // const crypto = require("crypto");
 
 // const router = Router();
 
 // const coerceStr = (v) => (typeof v === "string" ? v.trim() : null);
-// const coerceNum = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
+// const coerceNum = (v) =>
+//   v === null || v === undefined || v === "" ? null : Number(v);
 // const VALID_STATUS = new Set(["open", "done", "canceled"]);
 
 // /** GET /activities (filtros opcionales) */
 // router.get(
 //   "/activities",
 //   wrap(async (req, res) => {
-//     const { deal_id, contact_id, account_id, lead_id, status, remind_after } = req.query || {};
+//     const { deal_id, contact_id, account_id, lead_id, status, remind_after } =
+//       req.query || {};
 //     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-//     // Traemos la cláusula de ownership y la saneamos para usar alias "a."
-//     let ownership = await getOwnershipFilter(req);
-//     if (ownership && ownership.trim()) {
-//       // normalizamos: quitamos "AND " inicial y forzamos alias a "a."
-//       ownership = ownership.replace(/^AND\s+/i, "");
-//       ownership = ownership.replaceAll(/\btenant_id\b/g, "a.tenant_id");
-//       ownership = ownership.replaceAll(/\bcreated_by\b/g, "a.created_by");
-//     }
+//     // Importante: aquí solo filtramos por tenant (y por los filtros de la entidad),
+//     // ya NO usamos getOwnershipFilter. Eso significa que:
+//     // - Todos los usuarios del mismo tenant/workspace ven las mismas actividades.
+//     // - El "quién la creó" se muestra con created_by_name / created_by_email.
 
 //     const clauses = ["a.tenant_id = ?"];
 //     const params = [req.tenantId];
 
-//     if (ownership) clauses.push(ownership);
-//     if (deal_id)       { clauses.push("a.deal_id = ?");       params.push(String(deal_id)); }
-//     if (contact_id)    { clauses.push("a.contact_id = ?");    params.push(String(contact_id)); }
-//     if (account_id)    { clauses.push("a.account_id = ?");    params.push(String(account_id)); }
-//     if (lead_id)       { clauses.push("a.lead_id = ?");       params.push(String(lead_id)); }
-//     if (status)        { clauses.push("a.status = ?");        params.push(String(status)); }
-//     if (remind_after)  { clauses.push("a.remind_at_ms > ?");  params.push(Number(remind_after)); }
+//     if (deal_id) {
+//       clauses.push("a.deal_id = ?");
+//       params.push(String(deal_id));
+//     }
+//     if (contact_id) {
+//       clauses.push("a.contact_id = ?");
+//       params.push(String(contact_id));
+//     }
+//     if (account_id) {
+//       clauses.push("a.account_id = ?");
+//       params.push(String(account_id));
+//     }
+//     if (lead_id) {
+//       clauses.push("a.lead_id = ?");
+//       params.push(String(lead_id));
+//     }
+//     if (status) {
+//       clauses.push("a.status = ?");
+//       params.push(String(status));
+//     }
+//     if (remind_after) {
+//       clauses.push("a.remind_at_ms > ?");
+//       params.push(Number(remind_after));
+//     }
 
 //     const sql = `
 //       SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
 //       FROM activities a
 //       LEFT JOIN users u
-//         ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//         ON u.id = a.created_by
 //       WHERE ${clauses.join(" AND ")}
 //       ORDER BY a.updated_at DESC, a.id ASC
 //       LIMIT ?
@@ -379,13 +435,15 @@ module.exports = router;
 //   canRead("activities"),
 //   wrap(async (req, res) => {
 //     const row = db
-//       .prepare(`
+//       .prepare(
+//         `
 //         SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
 //         FROM activities a
 //         LEFT JOIN users u
-//           ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//           ON u.id = a.created_by
 //         WHERE a.id = ? AND a.tenant_id = ?
-//       `)
+//       `
+//       )
 //       .get(req.params.id, req.tenantId);
 
 //     if (!row) return res.status(404).json({ error: "not_found" });
@@ -431,7 +489,9 @@ module.exports = router;
 //     const checkFk = (table, value, field) => {
 //       if (!value) return;
 //       const exists = db
-//         .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+//         .prepare(
+//           `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
+//         )
 //         .get(value, req.tenantId);
 //       if (!exists) throw new Error(`invalid_${field}`);
 //     };
@@ -477,13 +537,15 @@ module.exports = router;
 //       );
 
 //     const created = db
-//       .prepare(`
+//       .prepare(
+//         `
 //         SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
 //         FROM activities a
 //         LEFT JOIN users u
-//           ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//           ON u.id = a.created_by
 //         WHERE a.id = ? AND a.tenant_id = ?
-//       `)
+//       `
+//       )
 //       .get(id, req.tenantId);
 
 //     res.status(201).json(created);
@@ -522,14 +584,19 @@ module.exports = router;
 //     lead_id = coerceStr(lead_id) ?? found.lead_id;
 //     deal_id = coerceStr(deal_id) ?? found.deal_id;
 //     due_date = due_date === undefined ? found.due_date : coerceNum(due_date);
-//     remind_at_ms = remind_at_ms === undefined ? found.remind_at_ms : coerceNum(remind_at_ms);
+//     remind_at_ms =
+//       remind_at_ms === undefined
+//         ? found.remind_at_ms
+//         : coerceNum(remind_at_ms);
 
 //     if (!VALID_STATUS.has(status)) status = found.status;
 
 //     const checkFk = (table, value, field) => {
 //       if (!value) return;
 //       const exists = db
-//         .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+//         .prepare(
+//           `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
+//         )
 //         .get(value, req.tenantId);
 //       if (!exists) throw new Error(`invalid_${field}`);
 //     };
@@ -571,13 +638,15 @@ module.exports = router;
 //       );
 
 //     const updated = db
-//       .prepare(`
+//       .prepare(
+//         `
 //         SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
 //         FROM activities a
 //         LEFT JOIN users u
-//           ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//           ON u.id = a.created_by
 //         WHERE a.id = ? AND a.tenant_id = ?
-//       `)
+//       `
+//       )
 //       .get(req.params.id, req.tenantId);
 
 //     res.json(updated);
@@ -592,7 +661,8 @@ module.exports = router;
 //     const info = db
 //       .prepare(`DELETE FROM activities WHERE id = ? AND tenant_id = ?`)
 //       .run(req.params.id, req.tenantId);
-//     if (info.changes === 0) return res.status(404).json({ error: "not_found" });
+//     if (info.changes === 0)
+//       return res.status(404).json({ error: "not_found" });
 //     res.json({ ok: true });
 //   })
 // );

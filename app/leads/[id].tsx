@@ -8,7 +8,6 @@ import {
 } from "@/src/api/leads";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useLocalSearchParams } from "expo-router";
-import React from "react";
 import {
   FlatList,
   Pressable,
@@ -68,6 +67,15 @@ export default function LeadDetail() {
       router.back();
     },
   });
+
+  // 👇 Por ahora: miembros del workspace "de ejemplo".
+  // Luego los podemos traer de una API / contexto.
+  const members = [
+    { id: "demo-admin", name: "Demo Admin", email: "admin@demo.local" },
+    // agrega aquí más miembros reales cuando los tengas
+    // { id: "user-jesus", name: "Jesús", email: "jesus@example.com" },
+    // { id: "user-cata",  name: "Cata",  email: "cata@example.com" },
+  ];
 
   const Header = (
     <View style={styles.container}>
@@ -133,7 +141,11 @@ export default function LeadDetail() {
           {/* Actividades relacionadas */}
           <Text style={[styles.section, { marginTop: 12 }]}>Actividades</Text>
           <View style={{ marginBottom: 8 }}>
-            <RelatedActivities filters={{ lead_id: id }} />
+            <RelatedActivities
+              filters={{ lead_id: id }}
+              // 👇 ahora sí le pasamos los miembros para poder asignar
+              members={members}
+            />
           </View>
 
           {/* Notas relacionadas */}
@@ -232,6 +244,7 @@ const styles = StyleSheet.create({
 });
 
 
+
 // // app/leads/[id].tsx
 // import {
 //   deleteLead,
@@ -243,7 +256,18 @@ const styles = StyleSheet.create({
 // import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 // import { router, Stack, useLocalSearchParams } from "expo-router";
 // import React from "react";
-// import { Pressable, StyleSheet, Text, View } from "react-native";
+// import {
+//   FlatList,
+//   Pressable,
+//   StyleSheet,
+//   Text,
+//   View,
+// } from "react-native";
+// import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
+// // Secciones reutilizables
+// import RelatedActivities from "@/src/components/RelatedActivities";
+// import RelatedNotes from "@/src/components/RelatedNotes";
 
 // /* 🎨 Paleta */
 // const PRIMARY = "#7C3AED";
@@ -264,6 +288,7 @@ const styles = StyleSheet.create({
 // export default function LeadDetail() {
 //   const { id } = useLocalSearchParams<{ id: string }>();
 //   const qc = useQueryClient();
+//   const insets = useSafeAreaInsets();
 
 //   const q = useQuery({
 //     queryKey: ["lead", id],
@@ -273,7 +298,6 @@ const styles = StyleSheet.create({
 
 //   const mStatus = useMutation({
 //     mutationFn: async () => {
-//       // ⚠️ Aseguramos tipo válido aunque aún no haya dato
 //       const curr = (q.data?.status ?? "nuevo") as LeadStatus;
 //       const nxt  = nextStatus(curr);
 //       return updateLead(id!, { status: nxt });
@@ -292,8 +316,83 @@ const styles = StyleSheet.create({
 //     },
 //   });
 
+//   const Header = (
+//     <View style={styles.container}>
+//       {q.isLoading ? (
+//         <Text style={styles.subtle}>Cargando…</Text>
+//       ) : q.isError ? (
+//         <Text style={styles.error}>
+//           Error: {String((q.error as any)?.message || q.error)}
+//         </Text>
+//       ) : !q.data ? (
+//         <Text style={styles.subtle}>No encontrado</Text>
+//       ) : (
+//         <>
+//           {/* Tarjeta del lead */}
+//           <View style={styles.card}>
+//             <Text style={styles.title}>{q.data.name}</Text>
+
+//             {!!q.data.company && (
+//               <Text style={styles.itemText}>
+//                 Empresa: <Text style={styles.itemStrong}>{q.data.company}</Text>
+//               </Text>
+//             )}
+//             {!!q.data.email && (
+//               <Text style={styles.itemText}>
+//                 Email: <Text style={[styles.itemStrong, styles.link]}>{q.data.email}</Text>
+//               </Text>
+//             )}
+//             {!!q.data.phone && (
+//               <Text style={styles.itemText}>
+//                 Tel: <Text style={styles.itemStrong}>{q.data.phone}</Text>
+//               </Text>
+//             )}
+
+//             <View style={styles.statusRow}>
+//               <Text style={styles.itemText}>Estado:</Text>
+//               <Text style={[styles.badge, badgeByStatus(q.data?.status)]}>
+//                 {(q.data?.status ?? "nuevo") as string}
+//               </Text>
+//             </View>
+//           </View>
+
+//           {/* Acciones lead */}
+//           <Pressable
+//             style={[styles.btn, styles.btnPrimary, mStatus.isPending && { opacity: 0.9 }]}
+//             onPress={() => mStatus.mutate()}
+//             disabled={mStatus.isPending}
+//           >
+//             <Text style={styles.btnText}>
+//               {mStatus.isPending ? "Actualizando…" : "Cambiar estado"}
+//             </Text>
+//           </Pressable>
+
+//           <Pressable
+//             style={[styles.btn, styles.btnDanger, mDelete.isPending && { opacity: 0.9 }]}
+//             onPress={() => mDelete.mutate()}
+//             disabled={mDelete.isPending}
+//           >
+//             <Text style={styles.btnText}>
+//               {mDelete.isPending ? "Eliminando…" : "Eliminar"}
+//             </Text>
+//           </Pressable>
+
+//           {/* Actividades relacionadas */}
+//           <Text style={[styles.section, { marginTop: 12 }]}>Actividades</Text>
+//           <View style={{ marginBottom: 8 }}>
+//             <RelatedActivities filters={{ lead_id: id }} />
+//           </View>
+
+//           {/* Notas relacionadas */}
+//           <Text style={[styles.section, { marginTop: 8 }]}>Notas</Text>
+//           <RelatedNotes filters={{ lead_id: id }} />
+//         </>
+//       )}
+//     </View>
+//   );
+
 //   return (
-//     <View style={{ flex: 1, backgroundColor: BG }}>
+//     <>
 //       <Stack.Screen
 //         options={{
 //           title: "Detalle Lead",
@@ -302,67 +401,24 @@ const styles = StyleSheet.create({
 //           headerTitleStyle: { color: TEXT, fontWeight: "800" },
 //         }}
 //       />
-//       <View style={styles.container}>
-//         {q.isLoading ? (
-//           <Text style={styles.subtle}>Cargando…</Text>
-//         ) : q.isError ? (
-//           <Text style={styles.error}>
-//             Error: {String((q.error as any)?.message || q.error)}
-//           </Text>
-//         ) : !q.data ? (
-//           <Text style={styles.subtle}>No encontrado</Text>
-//         ) : (
-//           <>
-//             <View style={styles.card}>
-//               <Text style={styles.title}>{q.data.name}</Text>
-
-//               {!!q.data.company && (
-//                 <Text style={styles.itemText}>
-//                   Empresa: <Text style={styles.itemStrong}>{q.data.company}</Text>
-//                 </Text>
-//               )}
-//               {!!q.data.email && (
-//                 <Text style={styles.itemText}>
-//                   Email: <Text style={[styles.itemStrong, styles.link]}>{q.data.email}</Text>
-//                 </Text>
-//               )}
-//               {!!q.data.phone && (
-//                 <Text style={styles.itemText}>
-//                   Tel: <Text style={styles.itemStrong}>{q.data.phone}</Text>
-//                 </Text>
-//               )}
-
-//               <View style={styles.statusRow}>
-//                 <Text style={styles.itemText}>Estado:</Text>
-//                 <Text style={[styles.badge, badgeByStatus(q.data?.status)]}>
-//                   {(q.data?.status ?? "nuevo") as string}
-//                 </Text>
-//               </View>
-//             </View>
-
-//             <Pressable
-//               style={[styles.btn, styles.btnPrimary, mStatus.isPending && { opacity: 0.9 }]}
-//               onPress={() => mStatus.mutate()}
-//               disabled={mStatus.isPending}
-//             >
-//               <Text style={styles.btnText}>
-//                 {mStatus.isPending ? "Actualizando…" : "Cambiar estado"}
-//               </Text>
-//             </Pressable>
-
-//             <Pressable
-//               style={[styles.btn, styles.btnDanger, mDelete.isPending && { opacity: 0.9 }]}
-//               onPress={() => mDelete.mutate()}
-//               disabled={mDelete.isPending}
-//             >
-//               <Text style={styles.btnText}>
-//                 {mDelete.isPending ? "Eliminando…" : "Eliminar"}
-//               </Text>
-//             </Pressable>
-//           </>
-//         )}
-//       </View>
-//     </View>
+//       <SafeAreaView style={{ flex: 1, backgroundColor: BG }} edges={["bottom"]}>
+//         <FlatList
+//           data={[]}
+//           renderItem={null as any}
+//           ListHeaderComponent={Header}
+//           keyExtractor={() => "x"}
+//           contentContainerStyle={{
+//             paddingTop: 16,
+//             paddingHorizontal: 16,
+//             paddingBottom: insets.bottom + 200,
+//             backgroundColor: BG,
+//           }}
+//           keyboardShouldPersistTaps="handled"
+//           keyboardDismissMode="on-drag"
+//           showsVerticalScrollIndicator
+//         />
+//       </SafeAreaView>
+//     </>
 //   );
 // }
 
@@ -378,13 +434,12 @@ const styles = StyleSheet.create({
 //   if (s === "contactado") return { ...base, borderColor: ACCENT,  backgroundColor: "rgba(34,211,238,0.10)" };
 //   if (s === "calificado") return { ...base, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,0.12)" };
 //   if (s === "perdido")    return { ...base, borderColor: DANGER,   backgroundColor: "rgba(239,68,68,0.10)" };
-//   // por si tienes otro estado en el flujo
 //   return base;
 // }
 
 // /* ——— Estilos ——— */
 // const styles = StyleSheet.create({
-//   container: { flex: 1, padding: 16, gap: 12 },
+//   container: { gap: 12 },
 //   card: {
 //     backgroundColor: CARD,
 //     borderWidth: 1,
@@ -418,8 +473,8 @@ const styles = StyleSheet.create({
 //   btnDanger: { backgroundColor: DANGER },
 //   btnText: { color: "#fff", fontWeight: "900" },
 
+//   section: { color: TEXT, fontWeight: "900", fontSize: 16 },
 //   subtle: { color: SUBTLE },
 //   error: { color: "#fecaca" },
 // });
-
 
