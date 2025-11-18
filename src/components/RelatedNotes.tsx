@@ -1,8 +1,14 @@
+// src/components/RelatedNotes.tsx
 import { createNote, deleteNote, listNotes, updateNote, type Note } from "@/src/api/notes";
-import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+
+/** Extiende Note con los campos enriquecidos del backend */
+type NoteWithCreator = Note & {
+  created_by_name?: string | null;
+  created_by_email?: string | null;
+};
 
 export type NoteFilters = {
   deal_id?: string;
@@ -11,15 +17,21 @@ export type NoteFilters = {
   lead_id?: string;
 };
 
-export default function RelatedNotes({ title = "Notas", filters }: { title?: string; filters: NoteFilters }) {
+export default function RelatedNotes({
+  title = "Notas",
+  filters,
+}: {
+  title?: string;
+  filters: NoteFilters;
+}) {
   const qc = useQueryClient();
   const [newBody, setNewBody] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingBody, setEditingBody] = useState("");
 
-  const q = useQuery<Note[]>({
+  const q = useQuery<NoteWithCreator[]>({
     queryKey: ["notes", filters],
-    queryFn: () => listNotes(filters),
+    queryFn: () => listNotes(filters) as Promise<NoteWithCreator[]>,
     enabled: Object.keys(filters).length > 0,
   });
 
@@ -27,7 +39,7 @@ export default function RelatedNotes({ title = "Notas", filters }: { title?: str
     mutationFn: async () => {
       const b = newBody.trim();
       if (!b) return;
-      await createNote({ id: uid(), body: b, ...filters } as any);
+      await createNote({ body: b, ...filters } as any);
     },
     onSuccess: async () => {
       setNewBody("");
@@ -92,7 +104,12 @@ export default function RelatedNotes({ title = "Notas", filters }: { title?: str
                     placeholderTextColor="#475569"
                   />
                 ) : (
-                  <Text style={S.note}>{n.body}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={S.note}>{n.body}</Text>
+                    {n.created_by_name && (
+                      <Text style={S.noteMeta}>👤 {n.created_by_name}</Text>
+                    )}
+                  </View>
                 )}
 
                 {isEditing ? (
@@ -125,7 +142,10 @@ export default function RelatedNotes({ title = "Notas", filters }: { title?: str
                     >
                       <Text style={S.btnText}>Editar</Text>
                     </Pressable>
-                    <Pressable style={[S.btn, S.btnDanger]} onPress={() => mDelete.mutate(n.id)}>
+                    <Pressable
+                      style={[S.btn, S.btnDanger]}
+                      onPress={() => mDelete.mutate(n.id)}
+                    >
                       <Text style={S.btnText}>Borrar</Text>
                     </Pressable>
                   </>
@@ -134,7 +154,9 @@ export default function RelatedNotes({ title = "Notas", filters }: { title?: str
             );
           })}
 
-          {(q.data ?? []).length === 0 && <Text style={{ color: "#475569", padding: 12 }}>No hay notas.</Text>}
+          {(q.data ?? []).length === 0 && (
+            <Text style={{ color: "#475569", padding: 12 }}>No hay notas.</Text>
+          )}
         </>
       )}
     </View>
@@ -142,15 +164,42 @@ export default function RelatedNotes({ title = "Notas", filters }: { title?: str
 }
 
 const S = StyleSheet.create({
-  box: { borderWidth: 1, borderColor: "#CBD5E1", backgroundColor: "#ECEFF4", borderRadius: 12, overflow: "hidden" },
+  box: {
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#ECEFF4",
+    borderRadius: 12,
+    overflow: "hidden",
+  },
   title: { color: "#0F172A", fontWeight: "900", fontSize: 16, padding: 12 },
-  row: { padding: 12, borderTopWidth: 1, borderTopColor: "#CBD5E1", flexDirection: "row", alignItems: "center", gap: 8 },
-  note: { color: "#0F172A", flex: 1 },
-  input: { flex: 1, borderWidth: 1, borderColor: "#CBD5E1", backgroundColor: "#fff", color: "#0F172A", borderRadius: 10, padding: 10 },
-  btn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  row: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#CBD5E1",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  note: { color: "#0F172A", flex: 1, fontWeight: "600" },
+  noteMeta: { color: "#7C3AED", fontSize: 11, fontWeight: "700", marginTop: 4 },
+  input: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#fff",
+    color: "#0F172A",
+    borderRadius: 10,
+    padding: 10,
+  },
+  btn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   btnText: { color: "#fff", fontWeight: "800" },
   btnPrimary: { backgroundColor: "#7C3AED" },
   btnMuted: { backgroundColor: "#334155" },
   btnDanger: { backgroundColor: "#EF4444" },
 });
-

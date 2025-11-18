@@ -2,54 +2,91 @@
 const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
-const { requireTenantRole } = require("../lib/tenant");
 const {
   resolveUserId,
   canRead,
   canWrite,
   canDelete,
-  getOwnershipFilter,
 } = require("../lib/authorize");
+const crypto = require("crypto");
 
 const router = Router();
 
-/** Utils */
 const coerceStr = (v) => (typeof v === "string" ? v.trim() : null);
-const coerceNum = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
+const coerceNum = (v) =>
+  v === null || v === undefined || v === "" ? null : Number(v);
 const VALID_STATUS = new Set(["open", "done", "canceled"]);
 
-/** Lista con filtros opcionales ?deal_id=&contact_id=&account_id=&lead_id=&status=&limit=&remind_after= */
+/** GET /activities (filtros opcionales) */
 router.get(
   "/activities",
   wrap(async (req, res) => {
-    const { deal_id, contact_id, account_id, lead_id, status, remind_after } = req.query || {};
+    const { deal_id, contact_id, account_id, lead_id, status, remind_after } =
+      req.query || {};
     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-    const ownership = await getOwnershipFilter(req);
-    let sql = `SELECT * FROM activities WHERE tenant_id = ? ${ownership}`;
+    // Importante: aquí solo filtramos por tenant (y por los filtros de la entidad),
+    // ya NO usamos getOwnershipFilter. Eso significa que:
+    // - Todos los usuarios del mismo tenant/workspace ven las mismas actividades.
+    // - El "quién la creó" se muestra con created_by_name / created_by_email.
+
+    const clauses = ["a.tenant_id = ?"];
     const params = [req.tenantId];
 
-    if (deal_id)      { sql += " AND deal_id = ?";      params.push(String(deal_id)); }
-    if (contact_id)   { sql += " AND contact_id = ?";   params.push(String(contact_id)); }
-    if (account_id)   { sql += " AND account_id = ?";   params.push(String(account_id)); }
-    if (lead_id)      { sql += " AND lead_id = ?";      params.push(String(lead_id)); }
-    if (status)       { sql += " AND status = ?";       params.push(String(status)); }
-    if (remind_after) { sql += " AND remind_at_ms > ?"; params.push(Number(remind_after)); }
+    if (deal_id) {
+      clauses.push("a.deal_id = ?");
+      params.push(String(deal_id));
+    }
+    if (contact_id) {
+      clauses.push("a.contact_id = ?");
+      params.push(String(contact_id));
+    }
+    if (account_id) {
+      clauses.push("a.account_id = ?");
+      params.push(String(account_id));
+    }
+    if (lead_id) {
+      clauses.push("a.lead_id = ?");
+      params.push(String(lead_id));
+    }
+    if (status) {
+      clauses.push("a.status = ?");
+      params.push(String(status));
+    }
+    if (remind_after) {
+      clauses.push("a.remind_at_ms > ?");
+      params.push(Number(remind_after));
+    }
 
-    sql += " ORDER BY updated_at DESC, id ASC LIMIT ?";
-
+    const sql = `
+      SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+      FROM activities a
+      LEFT JOIN users u
+        ON u.id = a.created_by
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY a.updated_at DESC, a.id ASC
+      LIMIT ?
+    `;
     const rows = await db.prepare(sql).all(...params, limit);
     res.json(rows);
   })
 );
 
-/** Detalle */
+/** GET /activities/:id */
 router.get(
   "/activities/:id",
   canRead("activities"),
   wrap(async (req, res) => {
     const row = db
-      .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
+      .prepare(
+        `
+        SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+        FROM activities a
+        LEFT JOIN users u
+          ON u.id = a.created_by
+        WHERE a.id = ? AND a.tenant_id = ?
+      `
+      )
       .get(req.params.id, req.tenantId);
 
     if (!row) return res.status(404).json({ error: "not_found" });
@@ -57,16 +94,15 @@ router.get(
   })
 );
 
-/** Crear */
+/** POST /activities (id en servidor) */
 router.post(
   "/activities",
   wrap(async (req, res) => {
     let {
-      id,
       type,
       title,
       due_date,
-      remind_at_ms,            // 👈 nuevo
+      remind_at_ms,
       status,
       notes,
       account_id,
@@ -75,7 +111,6 @@ router.post(
       deal_id,
     } = req.body || {};
 
-    id = coerceStr(id) || "";
     type = coerceStr(type) || "";
     title = coerceStr(title) || "";
     status = coerceStr(status) || "open";
@@ -87,97 +122,80 @@ router.post(
     due_date = coerceNum(due_date);
     remind_at_ms = coerceNum(remind_at_ms);
 
-    if (!id || !type || !title) {
-      return res.status(400).json({ error: "id_type_title_required" });
-    }
-    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-      return res.status(400).json({ error: "invalid_activity_id" });
+    if (!type || !title) {
+      return res.status(400).json({ error: "type_title_required" });
     }
     if (!VALID_STATUS.has(status)) status = "open";
 
-    // Si el ID ya existe, generar uno nuevo automáticamente
-    let finalId = id;
-    let attempts = 0;
-    while (attempts < 10) {
-      const exists = db
-        .prepare(`SELECT 1 FROM activities WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(finalId, req.tenantId);
-      
-      if (!exists) break;
-      
-      // Generar nuevo ID: agregar sufijo con timestamp + random
-      attempts++;
-      const suffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      finalId = id.slice(0, 10) + suffix;
-    }
-    
-    if (attempts >= 10) {
-      return res.status(409).json({ error: "activity_id_conflict_max_retries" });
-    }
+    const id = crypto.randomUUID();
 
-    // Validar FKs en el mismo tenant (si vienen)
-    if (account_id) {
-      const acc = db
-        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(account_id, req.tenantId);
-      if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-    }
-    if (contact_id) {
-      const c = db
-        .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(contact_id, req.tenantId);
-      if (!c) return res.status(400).json({ error: "invalid_contact_id" });
-    }
-    if (lead_id) {
-      const l = db
-        .prepare(`SELECT 1 FROM leads WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(lead_id, req.tenantId);
-      if (!l) return res.status(400).json({ error: "invalid_lead_id" });
-    }
-    if (deal_id) {
-      const d = db
-        .prepare(`SELECT 1 FROM deals WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(deal_id, req.tenantId);
-      if (!d) return res.status(400).json({ error: "invalid_deal_id" });
+    const checkFk = (table, value, field) => {
+      if (!value) return;
+      const exists = db
+        .prepare(
+          `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
+        )
+        .get(value, req.tenantId);
+      if (!exists) throw new Error(`invalid_${field}`);
+    };
+
+    try {
+      checkFk("accounts", account_id, "account_id");
+      checkFk("contacts", contact_id, "contact_id");
+      checkFk("leads", lead_id, "lead_id");
+      checkFk("deals", deal_id, "deal_id");
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
     }
 
     const userId = resolveUserId(req);
     const now = Date.now();
-    await db.prepare(
-      `
+
+    await db
+      .prepare(
+        `
       INSERT INTO activities (
         id, type, title, due_date, remind_at_ms, status, notes,
         account_id, contact_id, lead_id, deal_id,
         tenant_id, created_by, created_at, updated_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `
-    ).run(
-      finalId,
-      type,
-      title,
-      due_date ?? null,
-      remind_at_ms ?? null,
-      status,
-      notes ?? null,
-      account_id ?? null,
-      contact_id ?? null,
-      lead_id ?? null,
-      deal_id ?? null,
-      req.tenantId,
-      userId,
-      now,
-      now
-    );
+      )
+      .run(
+        id,
+        type,
+        title,
+        due_date ?? null,
+        remind_at_ms ?? null,
+        status,
+        notes ?? null,
+        account_id ?? null,
+        contact_id ?? null,
+        lead_id ?? null,
+        deal_id ?? null,
+        req.tenantId,
+        userId,
+        now,
+        now
+      );
 
     const created = db
-      .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
-      .get(finalId, req.tenantId);
+      .prepare(
+        `
+        SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+        FROM activities a
+        LEFT JOIN users u
+          ON u.id = a.created_by
+        WHERE a.id = ? AND a.tenant_id = ?
+      `
+      )
+      .get(id, req.tenantId);
 
     res.status(201).json(created);
   })
 );
 
-/** Actualizar (parcial) */
+/** PATCH /activities/:id */
 router.patch(
   "/activities/:id",
   canWrite("activities"),
@@ -191,7 +209,7 @@ router.patch(
       type = found.type,
       title = found.title,
       due_date = found.due_date,
-      remind_at_ms = found.remind_at_ms,  // 👈 nuevo
+      remind_at_ms = found.remind_at_ms,
       status = found.status,
       notes = found.notes,
       account_id = found.account_id,
@@ -200,79 +218,85 @@ router.patch(
       deal_id = found.deal_id,
     } = req.body || {};
 
-    type = coerceStr(type) || found.type;
-    title = coerceStr(title) || found.title;
+    type = coerceStr(type) || found.type || "task";
+    title = coerceStr(title) || found.title || "Sin título";
     status = coerceStr(status) || found.status;
     notes = coerceStr(notes) ?? found.notes;
     account_id = coerceStr(account_id) ?? found.account_id;
     contact_id = coerceStr(contact_id) ?? found.contact_id;
     lead_id = coerceStr(lead_id) ?? found.lead_id;
     deal_id = coerceStr(deal_id) ?? found.deal_id;
-    due_date = coerceNum(due_date);
-    remind_at_ms = coerceNum(remind_at_ms);
+    due_date = due_date === undefined ? found.due_date : coerceNum(due_date);
+    remind_at_ms =
+      remind_at_ms === undefined
+        ? found.remind_at_ms
+        : coerceNum(remind_at_ms);
 
     if (!VALID_STATUS.has(status)) status = found.status;
 
-    // Validar FKs si cambian
-    if (account_id) {
-      const acc = db
-        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(account_id, req.tenantId);
-      if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-    }
-    if (contact_id) {
-      const c = db
-        .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(contact_id, req.tenantId);
-      if (!c) return res.status(400).json({ error: "invalid_contact_id" });
-    }
-    if (lead_id) {
-      const l = db
-        .prepare(`SELECT 1 FROM leads WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(lead_id, req.tenantId);
-      if (!l) return res.status(400).json({ error: "invalid_lead_id" });
-    }
-    if (deal_id) {
-      const d = db
-        .prepare(`SELECT 1 FROM deals WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(deal_id, req.tenantId);
-      if (!d) return res.status(400).json({ error: "invalid_deal_id" });
+    const checkFk = (table, value, field) => {
+      if (!value) return;
+      const exists = db
+        .prepare(
+          `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
+        )
+        .get(value, req.tenantId);
+      if (!exists) throw new Error(`invalid_${field}`);
+    };
+
+    try {
+      checkFk("accounts", account_id, "account_id");
+      checkFk("contacts", contact_id, "contact_id");
+      checkFk("leads", lead_id, "lead_id");
+      checkFk("deals", deal_id, "deal_id");
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
     }
 
     const updated_at = Date.now();
 
-    await db.prepare(
-      `
+    await db
+      .prepare(
+        `
       UPDATE activities SET
         type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
         account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ?
     `
-    ).run(
-      type,
-      title,
-      due_date ?? null,
-      remind_at_ms ?? null,
-      status,
-      notes ?? null,
-      account_id ?? null,
-      contact_id ?? null,
-      lead_id ?? null,
-      deal_id ?? null,
-      updated_at,
-      req.params.id,
-      req.tenantId
-    );
+      )
+      .run(
+        type,
+        title,
+        due_date ?? null,
+        remind_at_ms ?? null,
+        status,
+        notes ?? null,
+        account_id ?? null,
+        contact_id ?? null,
+        lead_id ?? null,
+        deal_id ?? null,
+        updated_at,
+        req.params.id,
+        req.tenantId
+      );
 
     const updated = db
-      .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
+      .prepare(
+        `
+        SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+        FROM activities a
+        LEFT JOIN users u
+          ON u.id = a.created_by
+        WHERE a.id = ? AND a.tenant_id = ?
+      `
+      )
       .get(req.params.id, req.tenantId);
 
     res.json(updated);
   })
 );
 
-/** Borrar */
+/** DELETE /activities/:id */
 router.delete(
   "/activities/:id",
   canDelete("activities"),
@@ -280,69 +304,88 @@ router.delete(
     const info = db
       .prepare(`DELETE FROM activities WHERE id = ? AND tenant_id = ?`)
       .run(req.params.id, req.tenantId);
-    if (info.changes === 0) return res.status(404).json({ error: "not_found" });
+    if (info.changes === 0)
+      return res.status(404).json({ error: "not_found" });
     res.json({ ok: true });
   })
 );
 
 module.exports = router;
 
+
 // // server/routes/activities.js
 // const { Router } = require("express");
 // const db = require("../db/connection");
 // const wrap = require("../lib/wrap");
-// const { requireTenantRole } = require("../lib/tenant");
+// const {
+//   resolveUserId,
+//   canRead,
+//   canWrite,
+//   canDelete,
+//   getOwnershipFilter,
+// } = require("../lib/authorize");
+// const crypto = require("crypto");
 
 // const router = Router();
 
-// /** Utils */
 // const coerceStr = (v) => (typeof v === "string" ? v.trim() : null);
+// const coerceNum = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
 // const VALID_STATUS = new Set(["open", "done", "canceled"]);
 
-// /** Lista con filtros opcionales ?deal_id=&contact_id=&account_id=&lead_id=&status=&limit= */
+// /** GET /activities (filtros opcionales) */
 // router.get(
 //   "/activities",
 //   wrap(async (req, res) => {
-//     const { deal_id, contact_id, account_id, lead_id, status } = req.query || {};
+//     const { deal_id, contact_id, account_id, lead_id, status, remind_after } = req.query || {};
 //     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-//     let sql = `SELECT * FROM activities WHERE tenant_id = ?`;
+//     // Traemos la cláusula de ownership y la saneamos para usar alias "a."
+//     let ownership = await getOwnershipFilter(req);
+//     if (ownership && ownership.trim()) {
+//       // normalizamos: quitamos "AND " inicial y forzamos alias a "a."
+//       ownership = ownership.replace(/^AND\s+/i, "");
+//       ownership = ownership.replaceAll(/\btenant_id\b/g, "a.tenant_id");
+//       ownership = ownership.replaceAll(/\bcreated_by\b/g, "a.created_by");
+//     }
+
+//     const clauses = ["a.tenant_id = ?"];
 //     const params = [req.tenantId];
 
-//     if (deal_id) {
-//       sql += " AND deal_id = ?";
-//       params.push(String(deal_id));
-//     }
-//     if (contact_id) {
-//       sql += " AND contact_id = ?";
-//       params.push(String(contact_id));
-//     }
-//     if (account_id) {
-//       sql += " AND account_id = ?";
-//       params.push(String(account_id));
-//     }
-//     if (lead_id) {
-//       sql += " AND lead_id = ?";
-//       params.push(String(lead_id));
-//     }
-//     if (status) {
-//       sql += " AND status = ?";
-//       params.push(String(status));
-//     }
+//     if (ownership) clauses.push(ownership);
+//     if (deal_id)       { clauses.push("a.deal_id = ?");       params.push(String(deal_id)); }
+//     if (contact_id)    { clauses.push("a.contact_id = ?");    params.push(String(contact_id)); }
+//     if (account_id)    { clauses.push("a.account_id = ?");    params.push(String(account_id)); }
+//     if (lead_id)       { clauses.push("a.lead_id = ?");       params.push(String(lead_id)); }
+//     if (status)        { clauses.push("a.status = ?");        params.push(String(status)); }
+//     if (remind_after)  { clauses.push("a.remind_at_ms > ?");  params.push(Number(remind_after)); }
 
-//     sql += " ORDER BY updated_at DESC, id ASC LIMIT ?";
-
+//     const sql = `
+//       SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+//       FROM activities a
+//       LEFT JOIN users u
+//         ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//       WHERE ${clauses.join(" AND ")}
+//       ORDER BY a.updated_at DESC, a.id ASC
+//       LIMIT ?
+//     `;
 //     const rows = await db.prepare(sql).all(...params, limit);
 //     res.json(rows);
 //   })
 // );
 
-// /** Detalle */
+// /** GET /activities/:id */
 // router.get(
 //   "/activities/:id",
+//   canRead("activities"),
 //   wrap(async (req, res) => {
 //     const row = db
-//       .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
+//       .prepare(`
+//         SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+//         FROM activities a
+//         LEFT JOIN users u
+//           ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//         WHERE a.id = ? AND a.tenant_id = ?
+//       `)
 //       .get(req.params.id, req.tenantId);
 
 //     if (!row) return res.status(404).json({ error: "not_found" });
@@ -350,16 +393,15 @@ module.exports = router;
 //   })
 // );
 
-// /** Crear */
+// /** POST /activities (id en servidor) */
 // router.post(
 //   "/activities",
-//   requireTenantRole(["owner", "admin"]),
 //   wrap(async (req, res) => {
 //     let {
-//       id,
 //       type,
 //       title,
 //       due_date,
+//       remind_at_ms,
 //       status,
 //       notes,
 //       account_id,
@@ -368,7 +410,6 @@ module.exports = router;
 //       deal_id,
 //     } = req.body || {};
 
-//     id = coerceStr(id) || "";
 //     type = coerceStr(type) || "";
 //     title = coerceStr(title) || "";
 //     status = coerceStr(status) || "open";
@@ -377,84 +418,82 @@ module.exports = router;
 //     contact_id = coerceStr(contact_id);
 //     lead_id = coerceStr(lead_id);
 //     deal_id = coerceStr(deal_id);
+//     due_date = coerceNum(due_date);
+//     remind_at_ms = coerceNum(remind_at_ms);
 
-//     if (!id || !type || !title) {
-//       return res.status(400).json({ error: "id_type_title_required" });
-//     }
-//     if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-//       return res.status(400).json({ error: "invalid_activity_id" });
+//     if (!type || !title) {
+//       return res.status(400).json({ error: "type_title_required" });
 //     }
 //     if (!VALID_STATUS.has(status)) status = "open";
 
-//     // ID único por tenant
-//     const exists = db
-//       .prepare(`SELECT 1 FROM activities WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//       .get(id, req.tenantId);
-//     if (exists) return res.status(409).json({ error: "activity_exists" });
+//     const id = crypto.randomUUID();
 
-//     // Validar FKs en el mismo tenant (si vienen)
-//     if (account_id) {
-//       const acc = db
-//         .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(account_id, req.tenantId);
-//       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-//     }
-//     if (contact_id) {
-//       const c = db
-//         .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(contact_id, req.tenantId);
-//       if (!c) return res.status(400).json({ error: "invalid_contact_id" });
-//     }
-//     if (lead_id) {
-//       const l = db
-//         .prepare(`SELECT 1 FROM leads WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(lead_id, req.tenantId);
-//       if (!l) return res.status(400).json({ error: "invalid_lead_id" });
-//     }
-//     if (deal_id) {
-//       const d = db
-//         .prepare(`SELECT 1 FROM deals WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(deal_id, req.tenantId);
-//       if (!d) return res.status(400).json({ error: "invalid_deal_id" });
+//     const checkFk = (table, value, field) => {
+//       if (!value) return;
+//       const exists = db
+//         .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+//         .get(value, req.tenantId);
+//       if (!exists) throw new Error(`invalid_${field}`);
+//     };
+
+//     try {
+//       checkFk("accounts", account_id, "account_id");
+//       checkFk("contacts", contact_id, "contact_id");
+//       checkFk("leads", lead_id, "lead_id");
+//       checkFk("deals", deal_id, "deal_id");
+//     } catch (e) {
+//       return res.status(400).json({ error: e.message });
 //     }
 
+//     const userId = resolveUserId(req);
 //     const now = Date.now();
-//     await db.prepare(
-//       `
+
+//     await db
+//       .prepare(
+//         `
 //       INSERT INTO activities (
-//         id, type, title, due_date, status, notes,
+//         id, type, title, due_date, remind_at_ms, status, notes,
 //         account_id, contact_id, lead_id, deal_id,
-//         tenant_id, created_at, updated_at
-//       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+//         tenant_id, created_by, created_at, updated_at
+//       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 //     `
-//     ).run(
-//       id,
-//       type,
-//       title,
-//       due_date ?? null,
-//       status,
-//       notes ?? null,
-//       account_id ?? null,
-//       contact_id ?? null,
-//       lead_id ?? null,
-//       deal_id ?? null,
-//       req.tenantId,
-//       now,
-//       now
-//     );
+//       )
+//       .run(
+//         id,
+//         type,
+//         title,
+//         due_date ?? null,
+//         remind_at_ms ?? null,
+//         status,
+//         notes ?? null,
+//         account_id ?? null,
+//         contact_id ?? null,
+//         lead_id ?? null,
+//         deal_id ?? null,
+//         req.tenantId,
+//         userId,
+//         now,
+//         now
+//       );
 
 //     const created = db
-//       .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
+//       .prepare(`
+//         SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+//         FROM activities a
+//         LEFT JOIN users u
+//           ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//         WHERE a.id = ? AND a.tenant_id = ?
+//       `)
 //       .get(id, req.tenantId);
 
 //     res.status(201).json(created);
 //   })
 // );
 
-// /** Actualizar (parcial) */
+// /** PATCH /activities/:id */
 // router.patch(
 //   "/activities/:id",
-//   requireTenantRole(["owner", "admin"]),
+//   canWrite("activities"),
 //   wrap(async (req, res) => {
 //     const found = db
 //       .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
@@ -465,6 +504,7 @@ module.exports = router;
 //       type = found.type,
 //       title = found.title,
 //       due_date = found.due_date,
+//       remind_at_ms = found.remind_at_ms,
 //       status = found.status,
 //       notes = found.notes,
 //       account_id = found.account_id,
@@ -473,79 +513,81 @@ module.exports = router;
 //       deal_id = found.deal_id,
 //     } = req.body || {};
 
-//     type = coerceStr(type) || found.type;
-//     title = coerceStr(title) || found.title;
+//     type = coerceStr(type) || found.type || "task";
+//     title = coerceStr(title) || found.title || "Sin título";
 //     status = coerceStr(status) || found.status;
 //     notes = coerceStr(notes) ?? found.notes;
 //     account_id = coerceStr(account_id) ?? found.account_id;
 //     contact_id = coerceStr(contact_id) ?? found.contact_id;
 //     lead_id = coerceStr(lead_id) ?? found.lead_id;
 //     deal_id = coerceStr(deal_id) ?? found.deal_id;
+//     due_date = due_date === undefined ? found.due_date : coerceNum(due_date);
+//     remind_at_ms = remind_at_ms === undefined ? found.remind_at_ms : coerceNum(remind_at_ms);
 
 //     if (!VALID_STATUS.has(status)) status = found.status;
 
-//     // Validar FKs si cambian
-//     if (account_id) {
-//       const acc = db
-//         .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(account_id, req.tenantId);
-//       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-//     }
-//     if (contact_id) {
-//       const c = db
-//         .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(contact_id, req.tenantId);
-//       if (!c) return res.status(400).json({ error: "invalid_contact_id" });
-//     }
-//     if (lead_id) {
-//       const l = db
-//         .prepare(`SELECT 1 FROM leads WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(lead_id, req.tenantId);
-//       if (!l) return res.status(400).json({ error: "invalid_lead_id" });
-//     }
-//     if (deal_id) {
-//       const d = db
-//         .prepare(`SELECT 1 FROM deals WHERE id = ? AND tenant_id = ? LIMIT 1`)
-//         .get(deal_id, req.tenantId);
-//       if (!d) return res.status(400).json({ error: "invalid_deal_id" });
+//     const checkFk = (table, value, field) => {
+//       if (!value) return;
+//       const exists = db
+//         .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+//         .get(value, req.tenantId);
+//       if (!exists) throw new Error(`invalid_${field}`);
+//     };
+
+//     try {
+//       checkFk("accounts", account_id, "account_id");
+//       checkFk("contacts", contact_id, "contact_id");
+//       checkFk("leads", lead_id, "lead_id");
+//       checkFk("deals", deal_id, "deal_id");
+//     } catch (e) {
+//       return res.status(400).json({ error: e.message });
 //     }
 
 //     const updated_at = Date.now();
 
-//     await db.prepare(
-//       `
+//     await db
+//       .prepare(
+//         `
 //       UPDATE activities SET
-//         type = ?, title = ?, due_date = ?, status = ?, notes = ?,
+//         type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
 //         account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?, updated_at = ?
 //       WHERE id = ? AND tenant_id = ?
 //     `
-//     ).run(
-//       type,
-//       title,
-//       due_date ?? null,
-//       status,
-//       notes ?? null,
-//       account_id ?? null,
-//       contact_id ?? null,
-//       lead_id ?? null,
-//       deal_id ?? null,
-//       updated_at,
-//       req.params.id,
-//       req.tenantId
-//     );
+//       )
+//       .run(
+//         type,
+//         title,
+//         due_date ?? null,
+//         remind_at_ms ?? null,
+//         status,
+//         notes ?? null,
+//         account_id ?? null,
+//         contact_id ?? null,
+//         lead_id ?? null,
+//         deal_id ?? null,
+//         updated_at,
+//         req.params.id,
+//         req.tenantId
+//       );
 
 //     const updated = db
-//       .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
+//       .prepare(`
+//         SELECT a.*, u.name AS created_by_name, u.email AS created_by_email
+//         FROM activities a
+//         LEFT JOIN users u
+//           ON u.id = a.created_by   -- 👈 quitado u.tenant_id
+//         WHERE a.id = ? AND a.tenant_id = ?
+//       `)
 //       .get(req.params.id, req.tenantId);
 
 //     res.json(updated);
 //   })
 // );
 
-// /** Borrar */
+// /** DELETE /activities/:id */
 // router.delete(
 //   "/activities/:id",
-//   requireTenantRole(["owner", "admin"]),
+//   canDelete("activities"),
 //   wrap(async (req, res) => {
 //     const info = db
 //       .prepare(`DELETE FROM activities WHERE id = ? AND tenant_id = ?`)
