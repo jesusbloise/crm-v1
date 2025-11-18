@@ -1,0 +1,88 @@
+name: 🚀 Auto-Deploy DB Schema on Push
+
+# Se ejecuta en cada push a main
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'server/db/**'
+      - 'server/scripts/sync-db-to-production.js'
+      - '.github/workflows/sync-db.yml'
+
+  # También permite ejecución manual
+  workflow_dispatch:
+
+jobs:
+  sync-database:
+    name: Sincronizar DB a Producción
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+
+      - name: 🟢 Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: 📦 Instalar dependencias del servidor
+        working-directory: ./server
+        run: npm ci
+
+      - name: 🔍 Verificar conexión a base de datos local
+        working-directory: ./server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "Verificando DATABASE_URL..."
+          if [ -z "$DATABASE_URL" ]; then
+            echo "❌ DATABASE_URL no está configurada"
+            exit 1
+          fi
+          echo "✅ DATABASE_URL configurada"
+
+      - name: 🔍 Verificar conexión a producción
+        working-directory: ./server
+        env:
+          DATABASE_URL_PRODUCTION: ${{ secrets.DATABASE_URL_PRODUCTION }}
+        run: |
+          echo "Verificando DATABASE_URL_PRODUCTION..."
+          if [ -z "$DATABASE_URL_PRODUCTION" ]; then
+            echo "❌ DATABASE_URL_PRODUCTION no está configurada"
+            exit 1
+          fi
+          echo "✅ DATABASE_URL_PRODUCTION configurada"
+
+      - name: 🔄 Sincronizar estructura de DB (dry-run)
+        working-directory: ./server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL_PRODUCTION: ${{ secrets.DATABASE_URL_PRODUCTION }}
+        run: |
+          echo "🔍 Ejecutando dry-run para preview..."
+          node scripts/sync-db-to-production.js --dry-run
+
+      - name: 🚀 Sincronizar estructura de DB (producción)
+        working-directory: ./server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL_PRODUCTION: ${{ secrets.DATABASE_URL_PRODUCTION }}
+        run: |
+          echo "🚀 Sincronizando a producción..."
+          node scripts/sync-db-to-production.js --force
+
+      - name: ✅ Notificar éxito
+        if: success()
+        run: |
+          echo "✅ Base de datos sincronizada exitosamente"
+          echo "📊 Estructura actualizada en producción"
+
+      - name: ❌ Notificar error
+        if: failure()
+        run: |
+          echo "❌ Error sincronizando base de datos"
+          echo "🔍 Revisa los logs arriba para más detalles"

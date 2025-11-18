@@ -6,7 +6,13 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "seed:prod": "node scripts/seedProduction.js"
+    "seed:prod": "node scripts/seedProduction.js",
+    "db:check": "node scripts/check-sync-setup.js",
+    "db:export": "node scripts/export-db-structure.js",
+    "db:export:data": "node scripts/export-db-structure.js --with-data",
+    "db:sync:preview": "node scripts/sync-db-to-production.js --dry-run",
+    "db:sync": "node scripts/sync-db-to-production.js",
+    "db:sync:force": "node scripts/sync-db-to-production.js --force"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
