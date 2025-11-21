@@ -1,8 +1,13 @@
+
 // app/contacts/[id].tsx
 import { listAccounts } from "@/src/api/accounts";
 import { deleteContact, getContact, updateContact } from "@/src/api/contacts";
 import { listDeals, type Deal } from "@/src/api/deals";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { Link, Stack, router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -19,15 +24,21 @@ import {
 import RelatedActivities from "@/src/components/RelatedActivities";
 import RelatedNotes from "@/src/components/RelatedNotes";
 
+// 🔹 Miembros reales del workspace
+import {
+  listWorkspaceMembers,
+  type WorkspaceMember,
+} from "@/src/api/workspaceMembers";
+
 /* 🎨 Tema consistente */
-const BG       = "#0b0c10";
-const CARD     = "#14151a";
-const FIELD    = "#121318";
-const BORDER   = "#272a33";
-const TEXT     = "#e8ecf1";
-const SUBTLE   = "#a9b0bd";
-const ACCENT   = "#7c3aed";   // primario (morado)
-const DANGER   = "#ef4444";   // eliminar / errores
+const BG = "#0b0c10";
+const CARD = "#14151a";
+const FIELD = "#121318";
+const BORDER = "#272a33";
+const TEXT = "#e8ecf1";
+const SUBTLE = "#a9b0bd";
+const ACCENT = "#7c3aed"; // primario (morado)
+const DANGER = "#ef4444"; // eliminar / errores
 
 export default function ContactDetail() {
   const { id } = useLocalSearchParams<{ id?: string | string[] }>();
@@ -69,6 +80,13 @@ export default function ContactDetail() {
     [qDeals.data, contactId]
   );
 
+  // 🔹 Miembros reales del workspace (misma lógica que en app/tasks/new.tsx)
+  const qMembers = useQuery({
+    queryKey: ["workspaceMembers"],
+    queryFn: listWorkspaceMembers,
+  });
+  const members: WorkspaceMember[] = qMembers.data ?? [];
+
   // Estado local de edición
   const [companyText, setCompanyText] = useState("");
   const [accountId, setAccountId] = useState<string | undefined>(undefined);
@@ -103,13 +121,6 @@ export default function ContactDetail() {
 
   // ✅ para filtros de componentes relacionados (TypeScript happy)
   const cid = contactId as string;
-
-  // 👇 Miembros del workspace (por ahora hardcodeado para probar la asignación)
-  const members = [
-    { id: "demo-admin",   name: "Demo Admin",   email: "admin@demo.local" },
-    { id: "jesus-bloise", name: "Jesus Bloise", email: "jesus@example.com" },
-    { id: "cata-user",    name: "cata",         email: "cata@example.com" },
-  ];
 
   return (
     <>
@@ -151,14 +162,16 @@ export default function ContactDetail() {
         ) : (
           <>
             <Text style={styles.title}>{q.data.name}</Text>
-            
+
             {/* Información del creador */}
             {q.data.created_by_name && (
               <View style={styles.creatorBox}>
                 <Text style={styles.creatorLabel}>Creado por:</Text>
                 <Text style={styles.creatorName}>{q.data.created_by_name}</Text>
                 {q.data.created_by_email && (
-                  <Text style={styles.creatorEmail}>{q.data.created_by_email}</Text>
+                  <Text style={styles.creatorEmail}>
+                    {q.data.created_by_email}
+                  </Text>
                 )}
               </View>
             )}
@@ -170,7 +183,8 @@ export default function ContactDetail() {
             ) : null}
             {q.data.email ? (
               <Text style={styles.text}>
-                Email: <Text style={[styles.bold, styles.link]}>{q.data.email}</Text>
+                Email:{" "}
+                <Text style={[styles.bold, styles.link]}>{q.data.email}</Text>
               </Text>
             ) : null}
             {q.data.phone ? (
@@ -180,7 +194,9 @@ export default function ContactDetail() {
             ) : null}
 
             {/* Empresa (texto libre, opcional) */}
-            <Text style={[styles.label, { marginTop: 12 }]}>Empresa (texto)</Text>
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              Empresa (texto)
+            </Text>
             <TextInput
               placeholder="Empresa"
               value={companyText}
@@ -190,14 +206,15 @@ export default function ContactDetail() {
             />
 
             {/* Cuenta (relación) — chips compactas */}
-            <Text style={[styles.label, { marginTop: 12 }]}>Cuenta (opcional)</Text>
+            <Text style={[styles.label, { marginTop: 12 }]}>
+              Cuenta (opcional)
+            </Text>
             {qAcc.isLoading ? (
               <Text style={{ color: SUBTLE }}>Cargando cuentas…</Text>
             ) : qAcc.isError ? (
               <Text style={{ color: "#fecaca" }}>
-                Error cargando cuentas: {String(
-                  (qAcc.error as any)?.message || qAcc.error
-                )}
+                Error cargando cuentas:{" "}
+                {String((qAcc.error as any)?.message || qAcc.error)}
               </Text>
             ) : (
               <FlatList
@@ -211,12 +228,17 @@ export default function ContactDetail() {
                   const selected = accountId === item.id;
                   return (
                     <Pressable
-                      onPress={() => setAccountId(selected ? undefined : item.id)}
+                      onPress={() =>
+                        setAccountId(selected ? undefined : item.id)
+                      }
                       style={[styles.chip, selected && styles.chipActive]}
                       accessibilityRole="button"
                     >
                       <Text
-                        style={[styles.chipText, selected && styles.chipTextActive]}
+                        style={[
+                          styles.chipText,
+                          selected && styles.chipTextActive,
+                        ]}
                         numberOfLines={1}
                       >
                         {item.name}
@@ -269,7 +291,7 @@ export default function ContactDetail() {
             <Text style={styles.section}>Actividades</Text>
             <RelatedActivities
               filters={{ contact_id: cid }}
-              // 👇 ahora sí pasamos los miembros para que aparezca "Asignar"
+              // 👇 ahora vienen de tenant_memberships (igual que en NewActivity)
               members={members}
             />
 
@@ -429,7 +451,6 @@ const styles = StyleSheet.create({
   },
 });
 
-
 // // app/contacts/[id].tsx
 // import { listAccounts } from "@/src/api/accounts";
 // import { deleteContact, getContact, updateContact } from "@/src/api/contacts";
@@ -438,13 +459,13 @@ const styles = StyleSheet.create({
 // import { Link, Stack, router, useLocalSearchParams } from "expo-router";
 // import { useEffect, useMemo, useState } from "react";
 // import {
-//     FlatList,
-//     Pressable,
-//     ScrollView,
-//     StyleSheet,
-//     Text,
-//     TextInput,
-//     View,
+//   FlatList,
+//   Pressable,
+//   ScrollView,
+//   StyleSheet,
+//   Text,
+//   TextInput,
+//   View,
 // } from "react-native";
 
 // // 🔗 Relacionados (actividades y notas)
@@ -536,6 +557,13 @@ const styles = StyleSheet.create({
 //   // ✅ para filtros de componentes relacionados (TypeScript happy)
 //   const cid = contactId as string;
 
+//   // 👇 Miembros del workspace (por ahora hardcodeado para probar la asignación)
+//   const members = [
+//     { id: "demo-admin",   name: "Demo Admin",   email: "admin@demo.local" },
+//     { id: "jesus-bloise", name: "Jesus Bloise", email: "jesus@example.com" },
+//     { id: "cata-user",    name: "cata",         email: "cata@example.com" },
+//   ];
+
 //   return (
 //     <>
 //       <Stack.Screen
@@ -620,7 +648,9 @@ const styles = StyleSheet.create({
 //               <Text style={{ color: SUBTLE }}>Cargando cuentas…</Text>
 //             ) : qAcc.isError ? (
 //               <Text style={{ color: "#fecaca" }}>
-//                 Error cargando cuentas: {String((qAcc.error as any)?.message || qAcc.error)}
+//                 Error cargando cuentas: {String(
+//                   (qAcc.error as any)?.message || qAcc.error
+//                 )}
 //               </Text>
 //             ) : (
 //               <FlatList
@@ -657,11 +687,14 @@ const styles = StyleSheet.create({
 
 //             {/* Oportunidades asociadas */}
 //             <Text style={styles.section}>
-//               Oportunidades asociadas {dealsByContact.length ? `(${dealsByContact.length})` : ""}
+//               Oportunidades asociadas{" "}
+//               {dealsByContact.length ? `(${dealsByContact.length})` : ""}
 //             </Text>
 //             <View style={styles.box}>
 //               {qDeals.isLoading ? (
-//                 <Text style={{ color: SUBTLE, padding: 12 }}>Cargando oportunidades…</Text>
+//                 <Text style={{ color: SUBTLE, padding: 12 }}>
+//                   Cargando oportunidades…
+//                 </Text>
 //               ) : dealsByContact.length === 0 ? (
 //                 <Text style={{ color: SUBTLE, padding: 12 }}>
 //                   Sin oportunidades para este contacto.
@@ -673,7 +706,10 @@ const styles = StyleSheet.create({
 //                       <View style={{ flex: 1 }}>
 //                         <Text style={styles.rowTitle}>{d.title}</Text>
 //                         <Text style={styles.rowSub}>
-//                           {etiqueta(d.stage)} {d.amount ? `· $${Intl.NumberFormat().format(d.amount)}` : ""}
+//                           {etiqueta(d.stage)}{" "}
+//                           {d.amount
+//                             ? `· $${Intl.NumberFormat().format(d.amount)}`
+//                             : ""}
 //                         </Text>
 //                       </View>
 //                     </Pressable>
@@ -684,14 +720,22 @@ const styles = StyleSheet.create({
 
 //             {/* ——— Relacionados (Actividades & Notas) ——— */}
 //             <Text style={styles.section}>Actividades</Text>
-//             <RelatedActivities filters={{ contact_id: cid }} />
+//             <RelatedActivities
+//               filters={{ contact_id: cid }}
+//               // 👇 ahora sí pasamos los miembros para que aparezca "Asignar"
+//               members={members}
+//             />
 
 //             <Text style={styles.section}>Notas</Text>
 //             <RelatedNotes filters={{ contact_id: cid }} />
 
 //             {/* Acciones */}
 //             <Pressable
-//               style={[styles.btn, styles.btnPrimary, mUpd.isPending && { opacity: 0.9 }]}
+//               style={[
+//                 styles.btn,
+//                 styles.btnPrimary,
+//                 mUpd.isPending && { opacity: 0.9 },
+//               ]}
 //               onPress={() => mUpd.mutate()}
 //               disabled={mUpd.isPending}
 //             >
@@ -701,7 +745,11 @@ const styles = StyleSheet.create({
 //             </Pressable>
 
 //             <Pressable
-//               style={[styles.btn, styles.btnDanger, mDel.isPending && { opacity: 0.9 }]}
+//               style={[
+//                 styles.btn,
+//                 styles.btnDanger,
+//                 mDel.isPending && { opacity: 0.9 },
+//               ]}
 //               onPress={() => mDel.mutate()}
 //               disabled={mDel.isPending}
 //             >
@@ -718,20 +766,27 @@ const styles = StyleSheet.create({
 
 // function etiqueta(s?: Deal["stage"]): string {
 //   switch (s) {
-//     case "nuevo": return "Nuevo";
-//     case "calificado": return "Calificado";
-//     case "propuesta": return "Propuesta";
-//     case "negociacion": return "Negociación";
-//     case "ganado": return "Ganado";
-//     case "perdido": return "Perdido";
-//     default: return "—";
+//     case "nuevo":
+//       return "Nuevo";
+//     case "calificado":
+//       return "Calificado";
+//     case "propuesta":
+//       return "Propuesta";
+//     case "negociacion":
+//       return "Negociación";
+//     case "ganado":
+//       return "Ganado";
+//     case "perdido":
+//       return "Perdido";
+//     default:
+//       return "—";
 //   }
 // }
 
 // const styles = StyleSheet.create({
 //   screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 8 },
 //   title: { fontSize: 20, fontWeight: "900", color: TEXT },
-  
+
 //   // Box del creador
 //   creatorBox: {
 //     backgroundColor: "rgba(34, 211, 238, 0.08)",
@@ -760,7 +815,7 @@ const styles = StyleSheet.create({
 //     fontSize: 12,
 //     marginTop: 2,
 //   },
-  
+
 //   text: { color: TEXT, marginTop: 2 },
 //   bold: { fontWeight: "800" },
 //   link: { color: ACCENT, textDecorationLine: "underline" },
@@ -814,7 +869,11 @@ const styles = StyleSheet.create({
 
 //   btn: { marginTop: 12, padding: 12, borderRadius: 12, alignItems: "center" },
 //   btnText: { color: "#fff", fontWeight: "900" },
-//   btnPrimary: { backgroundColor: ACCENT, borderWidth: 1, borderColor: "rgba(255,255,255,0.16)" },
+//   btnPrimary: {
+//     backgroundColor: ACCENT,
+//     borderWidth: 1,
+//     borderColor: "rgba(255,255,255,0.16)",
+//   },
 //   btnDanger: { backgroundColor: DANGER },
 //   btnGhost: {
 //     backgroundColor: "rgba(255,255,255,0.06)",
