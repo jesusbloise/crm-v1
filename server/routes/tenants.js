@@ -131,15 +131,26 @@ r.post("/tenants", requireRole(['admin', 'owner']), async (req, res) => {
       .get(id);
     if (exists) return res.status(409).json({ error: "tenant_exists" });
 
-    const now = Date.now();
+      const now = Date.now();
 
-    // Crear workspace (sin memberships)
     await db.prepare(
       `INSERT INTO tenants (id, name, created_by, created_at, updated_at)
        VALUES (?,?,?,?,?)`
     ).run(id, name, requesterId, now, now);
 
-    console.log(`✅ Workspace '${name}' (${id}) creado por ${requesterId}`);
+    // 👇 NUEVO: el creador queda como owner del workspace
+  // 👇 El creador queda como owner del workspace en tenant_memberships
+await db
+  .prepare(
+    `
+    INSERT INTO tenant_memberships (tenant_id, user_id, role, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (tenant_id, user_id) DO NOTHING
+    `
+  )
+  .run(id, requesterId, "owner", now, now);
+
+
     
     // 📝 Audit: workspace creado
     auditLog({ 
@@ -167,34 +178,66 @@ r.post("/tenants", requireRole(['admin', 'owner']), async (req, res) => {
 
 /* =========================================================
    POST /tenants/switch → cambiar workspace activo
-   - Cualquier usuario puede cambiar a cualquier workspace (sin memberships)
+   💡 Aquí también garantizamos que el usuario SEA miembro
 ========================================================= */
 r.post("/tenants/switch", async (req, res) => {
   const { tenant_id } = req.body || {};
-  if (!tenant_id)
+  const userId = resolveUserId(req);
+
+  if (!tenant_id) {
     return res.status(400).json({ error: "tenant_id_required" });
+  }
+  if (!userId) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
 
   try {
-    // ✅ Placeholder PostgreSQL ($1)
     const tenant = await db
       .prepare("SELECT id, name FROM tenants WHERE id = $1")
       .get(tenant_id);
 
-    if (!tenant) return res.status(404).json({ error: "tenant_not_found" });
+    if (!tenant) {
+      return res.status(404).json({ error: "tenant_not_found" });
+    }
 
-    console.log('🔄 Switch tenant:', { from: req.tenantId, to: tenant_id, user: req.user?.id });
-    
-    return res.json({ 
-      ok: true, 
+    const now = Date.now();
+
+    // 👇 aquí se crea el membership si no existe
+    await db
+      .prepare(
+        `
+        INSERT INTO memberships (tenant_id, user_id, role, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, user_id) DO NOTHING
+      `
+      )
+      .run(tenant_id, userId, "member", now, now);
+
+    console.log("👥 [SWITCH] membership asegurada:", {
+      tenant_id,
+      userId,
+    });
+
+    console.log("🔄 Switch tenant:", {
+      from: req.tenantId,
+      to: tenant_id,
+      user: req.user?.id,
+    });
+
+    return res.json({
+      ok: true,
       active_tenant: tenant_id,
-      tenant_id, 
-      tenant_name: tenant.name 
+      tenant_id,
+      tenant_name: tenant.name,
     });
   } catch (e) {
     console.error("POST /tenants/switch error:", e);
-    return res.status(500).json({ error: "internal_error" });
+    return res.status(500).json({ error: "internal_error", message: e.message });
   }
 });
+
+
+
 
 /* =========================================================
    GET /tenants/discover → búsqueda de workspaces
@@ -234,6 +277,122 @@ r.get("/tenants/discover", async (req, res) => {
     return res.status(500).json({ error: "internal_error", message: e.message });
   }
 });
+/* =========================================================
+   GET /tenants/members → miembros del workspace activo
+========================================================= */
+r.get("/tenants/members", async (req, res) => {
+  try {
+    const tenantId = req.tenantId;
+    const userId = resolveUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    if (!tenantId) {
+      return res.status(400).json({ error: "tenant_required" });
+    }
+
+    const rows = await db
+      .prepare(
+        `
+        SELECT
+          tm.user_id AS id,
+          u.name,
+          u.email,
+          tm.role,
+          tm.created_at,
+          tm.updated_at
+        FROM tenant_memberships tm
+        JOIN users u ON u.id = tm.user_id
+        WHERE tm.tenant_id = $1
+        ORDER BY LOWER(u.name) ASC
+      `
+      )
+      .all(tenantId);
+
+    return res.json({
+      tenant: { id: tenantId },
+      items: rows.map((r) => ({
+        id: r.id,
+        name: r.name || r.email || r.id,
+        email: r.email,
+        role: r.role,
+        member_since: r.created_at,
+        member_updated_at: r.updated_at,
+      })),
+    });
+  } catch (e) {
+    console.error("GET /tenants/members error:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+
+/* =========================================================
+   POST /tenants/join → unirse a un workspace por ID
+   - Registra al usuario en tenant_memberships (solo una vez)
+   - Devuelve info del workspace y rol asignado
+========================================================= */
+r.post("/tenants/join", async (req, res) => {
+  try {
+    const userId = resolveUserId(req);
+    const { tenant_id } = req.body || {};
+
+    if (!userId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    if (!tenant_id || typeof tenant_id !== "string") {
+      return res.status(400).json({ error: "tenant_id_required" });
+    }
+
+    const trimmedTenant = tenant_id.trim();
+
+    // 1) Verificar que el workspace existe
+    const tenant = await db
+      .prepare(
+        "SELECT id, name, created_by FROM tenants WHERE id = $1 LIMIT 1"
+      )
+      .get(trimmedTenant);
+
+    if (!tenant) {
+      return res.status(404).json({ error: "tenant_not_found" });
+    }
+
+    // 2) Insertar membership en tenant_memberships (si no existe)
+    const now = Date.now();
+
+    await db
+      .prepare(
+        `
+        INSERT INTO tenant_memberships (tenant_id, user_id, role, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, user_id) DO NOTHING
+      `
+      )
+      .run(trimmedTenant, userId, "member", now, now);
+
+    console.log("👥 tenant_memberships asegurado en /tenants/join:", {
+      tenant_id: trimmedTenant,
+      userId,
+      role: "member",
+    });
+
+    // 3) Responder al frontend
+    return res.json({
+      ok: true,
+      joined: true,
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+      },
+      role: "member",
+    });
+  } catch (e) {
+    console.error("POST /tenants/join error:", e);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
 
 /* =========================================================
    DELETE /tenants/:id → eliminar workspace

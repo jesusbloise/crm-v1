@@ -174,6 +174,24 @@ export async function fetchTenants() {
     active_tenant?: string;
   }>("/me/tenants", { method: "GET" });
 }
+export type WorkspaceMember = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  role: string | null;
+};
+
+/** 
+ * Lista los miembros del workspace ACTIVO usando GET /tenants/members
+ */
+export async function fetchWorkspaceMembers(): Promise<WorkspaceMember[]> {
+  const res = await authFetch<{
+    ok?: boolean;
+    items: WorkspaceMember[];
+  }>("/tenants/members", { method: "GET" });
+
+  return res?.items ?? [];
+}
 
 /** Cambia de workspace (valida membresía y devuelve nuevo JWT). */
 export async function switchTenant(tenant_id: string) {

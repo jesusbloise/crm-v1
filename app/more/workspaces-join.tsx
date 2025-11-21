@@ -36,24 +36,29 @@ export default function WorkspaceJoin() {
     void onJoin(workspace.id);
   };
 
-  const onJoin = async (tenant_id: string) => {
-    setBusy("join");
-    try {
-      const res = await api.post<{ ok: boolean; joined?: boolean; tenant?: { id: string; name: string }; role?: string }>(
-        "/tenants/join", 
-        { tenant_id }
-      );
-      if (!res?.ok) throw new Error("join_failed");
-      await switchTenant(tenant_id);
-      router.replace("/");
-    } catch (e: any) {
-      Alert.alert("No se pudo entrar", e?.message || "Verifica el ID");
-    } finally {
-      setBusy(null);
-      setShowVerifyDialog(false);
-      setSelectedWorkspace(null);
-    }
-  };
+const onJoin = async (tenant_id: string) => {
+  setBusy("join");
+  try {
+    const res = await api.post<{
+      ok: boolean;
+      joined?: boolean;
+      tenant?: { id: string; name: string };
+      role?: string;
+    }>("/tenants/join", { tenant_id });
+
+    if (!res?.ok) throw new Error("join_failed");
+
+    await switchTenant(tenant_id);
+    router.replace("/");
+  } catch (e: any) {
+    Alert.alert("No se pudo entrar", e?.message || "Verifica el ID");
+  } finally {
+    setBusy(null);
+    setShowVerifyDialog(false);
+    setSelectedWorkspace(null);
+  }
+};
+
 
   return (
     <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === "ios" ? "padding" : undefined}>

@@ -215,33 +215,124 @@ r.post("/tenants", async (req, res) => {
   }
 });
 
-/* =========================================================
-   (Opcional) POST /tenants/switch → valida y cambia workspace activo
-   *Tu front usa /me/tenant/switch, pero dejamos este por compat*
-========================================================= */
 r.post("/tenants/switch", async (req, res) => {
   const { tenant_id } = req.body || {};
-  if (!tenant_id)
+  const userId = resolveUserId(req);
+
+  if (!tenant_id) {
     return res.status(400).json({ error: "tenant_id_required" });
+  }
+  if (!userId) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
 
   try {
-    const membership = await db
+    const tenant = await db
+      .prepare("SELECT id, name FROM tenants WHERE id = $1")
+      .get(tenant_id);
+
+    if (!tenant) {
+      return res.status(404).json({ error: "tenant_not_found" });
+    }
+
+    const now = Date.now();
+
+    // 👇 aquí se crea el membership si no existe
+    await db
       .prepare(
-        `SELECT role
-         FROM memberships
-         WHERE user_id = ? AND tenant_id = ?
-         LIMIT 1`
+        `
+        INSERT INTO memberships (tenant_id, user_id, role, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, user_id) DO NOTHING
+      `
       )
-      .get(resolveUserId(req), tenant_id);
+      .run(tenant_id, userId, "member", now, now);
 
-    if (!membership) return res.status(403).json({ error: "forbidden_tenant" });
+    console.log("👥 [SWITCH] membership asegurada:", {
+      tenant_id,
+      userId,
+    });
 
-    return res.json({ ok: true, tenant_id, role: membership.role });
+    console.log("🔄 Switch tenant:", {
+      from: req.tenantId,
+      to: tenant_id,
+      user: req.user?.id,
+    });
+
+    return res.json({
+      ok: true,
+      active_tenant: tenant_id,
+      tenant_id,
+      tenant_name: tenant.name,
+    });
   } catch (e) {
     console.error("POST /tenants/switch error:", e);
-    return res.status(500).json({ error: "internal_error" });
+    return res.status(500).json({ error: "internal_error", message: e.message });
   }
 });
+
+
+/* =========================================================
+   POST /tenants/join → unirse a un workspace por ID
+   - Crea membership (tenant_id, user_id, role) si no existe
+========================================================= */
+r.post("/tenants/join", async (req, res) => {
+  try {
+    const { tenant_id } = req.body || {};
+    const userId = resolveUserId(req);
+
+    if (!tenant_id) {
+      return res.status(400).json({ error: "tenant_id_required" });
+    }
+    if (!userId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    console.log("👥 [JOIN] intento de join:", { userId, tenant_id });
+
+    // 1) Verificar que el workspace exista
+    const tenant = await db
+      .prepare("SELECT id, name FROM tenants WHERE id = $1")
+      .get(tenant_id);
+
+    if (!tenant) {
+      console.log("👥 [JOIN] workspace no encontrado:", tenant_id);
+      return res.status(404).json({ error: "tenant_not_found" });
+    }
+
+    const now = Date.now();
+
+    // 2) Crear membership si no existe
+    await db
+      .prepare(
+        `
+        INSERT INTO memberships (tenant_id, user_id, role, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, user_id) DO NOTHING
+      `
+      )
+      .run(tenant_id, userId, "member", now, now);
+
+    console.log("👥 [JOIN] membership creada (o ya existía):", {
+      userId,
+      tenant_id,
+    });
+
+    return res.json({
+      ok: true,
+      joined: true,
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+      },
+      role: "member",
+    });
+  } catch (e) {
+    console.error("POST /tenants/join error:", e);
+    return res.status(500).json({ error: "internal_error", message: e.message });
+  }
+});
+
 
 /* =========================================================
    GET /tenants/discover → búsqueda de workspaces

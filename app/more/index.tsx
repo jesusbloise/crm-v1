@@ -175,6 +175,41 @@ export default function More() {
     }
   };
 
+  const joinWorkspace = async (tenantId: string) => {
+  try {
+    // 1) Crear membership en el backend
+    const res = await api.post<{
+      ok: boolean;
+      joined?: boolean;
+      tenant?: { id: string; name: string };
+      role?: string;
+    }>("/tenants/join", { tenant_id: tenantId });
+
+    if (!res?.ok) throw new Error("join_failed");
+
+    // 2) Cambiar al tenant
+    const sw = await switchTenant(tenantId);
+    const confirmed = (sw as any)?.active_tenant || tenantId;
+    setTenant(confirmed);
+
+    // 3) Refrescar rol y workspaces
+    await fetchCurrentRole();
+    await refreshTenantsAndRole();
+
+    // 4) Cerrar modales/inputs
+    setJoinOpen(false);
+    setPendingTenantId(null);
+    setJoinIdInput("");
+    setDiscover([]);
+    setQuery("");
+  } catch (e: any) {
+    Alert.alert("No se pudo entrar", e?.message || "Verifica el ID del workspace.");
+  } finally {
+    setBusyChip(null);
+  }
+};
+
+
   const joinAndEnter = async (tenantId: string) => {
     try {
       // 🔄 Sistema simplificado: Solo hacer switch al workspace
@@ -543,23 +578,11 @@ export default function More() {
                     </Text>
                   </View>
                   <Pressable
-                    onPress={async () => {
-                      try {
-                        setBusyChip(d.id);
-                        const res = await switchTenant(d.id);
-                        const confirmed = (res as any)?.active_tenant || d.id;
-                        setTenant(confirmed);
-                        await fetchCurrentRole();
-                        await refreshTenantsAndRole();
-                        setDiscover([]); // Limpiar búsqueda
-                        setQuery(""); // Limpiar campo
-                        Alert.alert("Éxito", `Cambiado a workspace "${d.name || d.id}"`);
-                      } catch (e: any) {
-                        Alert.alert("Error", e?.message || "No se pudo cambiar de workspace");
-                      } finally {
-                        setBusyChip(null);
-                      }
-                    }}
+                   onPress={async () => {
+  setBusyChip(d.id);
+  await joinWorkspace(d.id);
+}}
+
                     disabled={busyChip === d.id}
                     style={[styles.joinBtn, busyChip === d.id && { opacity: 0.5 }]}
                   >
@@ -732,7 +755,8 @@ export default function More() {
                 <Text style={styles.modalTxt}>Cancelar</Text>
               </Pressable>
               <Pressable
-                onPress={() => pendingTenantId && joinAndEnter(pendingTenantId)}
+                onPress={() => pendingTenantId && joinWorkspace(pendingTenantId)}
+
                 disabled={!canConfirmJoin}
                 style={[
                   styles.modalBtn,
