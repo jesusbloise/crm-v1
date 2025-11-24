@@ -6,21 +6,29 @@
     "build:web": "NODE_ENV=production expo export -p web --clear --output-dir dist",
     "build:web:vercel": "expo export -p web --clear --output-dir dist",
     "preview:web": "npx serve dist -l 5174",
-    "start": "expo start",
-    "start:production": "EXPO_PUBLIC_ENV=production expo start",
-    "start:development": "EXPO_PUBLIC_ENV=development expo start",
+
+    
+    "start": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start",
+    "start:development": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start",
+    "android": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start --android",
+    "ios": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start --ios",
+    "web": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start --web",
+
+    "start:production": "cross-env EXPO_PUBLIC_ENV=production expo start",
+
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web",
-    "lint": "expo lint",
-    "update:preview": "eas update --branch preview -m \"pequeños fixes\"",
-    "update:production": "eas update --branch production -m \"Update producción\"",
+
+  
+    "update:preview": "cross-env EXPO_PUBLIC_API_URL=https://crm-v1-b5rg.onrender.com EXPO_PUBLIC_ENV=production eas update --branch preview -m \"pequeños fixes\"",
+    "update:production": "cross-env EXPO_PUBLIC_API_URL=https://crm-v1-b5rg.onrender.com EXPO_PUBLIC_ENV=production eas update --branch production -m \"Update producción\"",
+
     "build:apk:preview": "eas build -p android --profile preview",
     "build:apk:production": "eas build -p android --profile production",
     "build:ios:production": "eas build -p ios --profile production",
+
     "deploy:web": "echo \"push a main y Vercel auto-deploy; si cambias env → Redeploy en Vercel\"",
-    "sync:check": "echo \"✅ Backend URL: $EXPO_PUBLIC_API_URL\" && echo \"Todas las plataformas deben usar la misma URL para sincronizar datos\""
+    "sync:check": "echo \"✅ Backend URL: $EXPO_PUBLIC_API_URL\" && echo \"Todas las plataformas deben usar la misma URL para sincronizar datos\"",
+    "lint": "expo lint"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
@@ -68,6 +76,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "cross-env": "^10.1.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
     "typescript": "~5.9.2"
