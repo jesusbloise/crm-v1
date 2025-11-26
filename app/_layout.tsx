@@ -6,23 +6,23 @@ import { Stack, router, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import {
-    AppState,
-    Platform,
-    Pressable,
-    StyleSheet,
-    Text,
-    View,
+  AppState,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
-    login as apiLogin,
-    me as apiMe,
-    clearActiveTenant,
-    clearToken,
-    getActiveTenantDetails,
-    isAuthenticated,
-    setActiveTenant
+  login as apiLogin,
+  me as apiMe,
+  clearActiveTenant,
+  clearToken,
+  getActiveTenantDetails,
+  isAuthenticated,
+  setActiveTenant
 } from "@/src/api/auth";
 import { ToastProvider } from "@/src/ui/Toast";
 
@@ -309,7 +309,7 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
   const items = [
     { href: "/",                 label: "Resumen",   icon: "home" as const },
     { href: "/contacts",         label: "Contactos", icon: "users" as const },
-    { href: "/deals",            label: "Oportun.",  icon: "briefcase" as const },
+    // { href: "/deals",            label: "Oportun.",  icon: "briefcase" as const },
     { href: "/tasks",            label: "Activ.",    icon: "check-square" as const },
     { href: "/calendar",         label: "Calend.",   icon: "calendar" as const }, // 👈 añadido
     { href: "/more",             label: "Más",       icon: "grid" as const },

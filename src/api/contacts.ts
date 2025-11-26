@@ -10,14 +10,8 @@ export type Contact = {
   phone?: string | null;
   company?: string | null;
   position?: string | null;
-
-  // 👇 Nuevo campo para el tipo de cliente
   client_type?: ClientType;
-
-  // (opcional) si todavía usas cuentas en otros lados,
-  // lo dejamos para no romper nada
   account_id?: string | null;
-
   created_by?: string;
   created_by_name?: string;
   created_by_email?: string;
@@ -26,14 +20,19 @@ export type Contact = {
 };
 
 export async function listContacts(): Promise<Contact[]> {
+  // vista “normal” (la que usas en index.tsx)
   return api.get("/contacts");
+}
+
+// 👇 ESTA es la que usa all.tsx para traer TODOS
+export async function listAllContacts(): Promise<Contact[]> {
+  return api.get("/contacts-all");
 }
 
 export async function getContact(id: string): Promise<Contact> {
   return api.get(`/contacts/${id}`);
 }
 
-// createContact ya puede recibir client_type porque está en Contact
 export async function createContact(
   input: Omit<Contact, "created_at" | "updated_at">
 ): Promise<void> {
@@ -51,8 +50,13 @@ export async function deleteContact(id: string): Promise<void> {
   await api.delete(`/contacts/${id}`);
 }
 
-// // src/api/contacts.ts
+
+
+
+ // src/api/contacts.ts
 // import { api } from "@/src/api/http";
+
+// export type ClientType = "productora" | "agencia" | null;
 
 // export type Contact = {
 //   id: string;
@@ -61,7 +65,14 @@ export async function deleteContact(id: string): Promise<void> {
 //   phone?: string | null;
 //   company?: string | null;
 //   position?: string | null;
+
+//   // 👇 Nuevo campo para el tipo de cliente
+//   client_type?: ClientType;
+
+//   // (opcional) si todavía usas cuentas en otros lados,
+//   // lo dejamos para no romper nada
 //   account_id?: string | null;
+
 //   created_by?: string;
 //   created_by_name?: string;
 //   created_by_email?: string;
@@ -77,6 +88,7 @@ export async function deleteContact(id: string): Promise<void> {
 //   return api.get(`/contacts/${id}`);
 // }
 
+// // createContact ya puede recibir client_type porque está en Contact
 // export async function createContact(
 //   input: Omit<Contact, "created_at" | "updated_at">
 // ): Promise<void> {
