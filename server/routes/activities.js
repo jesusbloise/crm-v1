@@ -10,6 +10,9 @@ const {
 } = require("../lib/authorize");
 const crypto = require("crypto");
 
+// 👉 import simple para enviar correos
+const { notifyActivityCreated } = require("../lib/activityNotifications");
+
 const router = Router();
 
 const coerceStr = (v) => (typeof v === "string" ? v.trim() : null);
@@ -56,31 +59,35 @@ router.get(
     const sql = `
       SELECT 
         a.*,
-        cu.name AS created_by_name,
+        cu.name  AS created_by_name,
         cu.email AS created_by_email,
-        au.name AS assigned_to_name,
-        au.email AS assigned_to_email
+        au.name  AS assigned_to_name,
+        au.email AS assigned_to_email,
+        au2.name  AS assigned_to_2_name,
+        au2.email AS assigned_to_2_email
       FROM activities a
-      LEFT JOIN users cu ON cu.id = a.created_by
-      LEFT JOIN users au ON au.id = a.assigned_to
+      LEFT JOIN users cu  ON cu.id  = a.created_by
+      LEFT JOIN users au  ON au.id  = a.assigned_to
+      LEFT JOIN users au2 ON au2.id = a.assigned_to_2
       WHERE ${clauses.join(" AND ")}
       ORDER BY a.updated_at DESC, a.id ASC
       LIMIT ?
     `;
     const rows = await db.prepare(sql).all(...params, limit);
-     console.log(
+    console.log(
       "📤 GET /activities ->",
       rows.map((r) => ({
         id: r.id,
         title: r.title,
         assigned_to: r.assigned_to,
         assigned_to_name: r.assigned_to_name,
+        assigned_to_2: r.assigned_to_2,
+        assigned_to_2_name: r.assigned_to_2_name,
       }))
     );
     res.json(rows);
   })
 );
-
 
 /** GET /activities/:id */
 router.get(
@@ -92,13 +99,16 @@ router.get(
         `
         SELECT 
           a.*,
-          cu.name AS created_by_name,
+          cu.name  AS created_by_name,
           cu.email AS created_by_email,
-          au.name AS assigned_to_name,
-          au.email AS assigned_to_email
+          au.name  AS assigned_to_name,
+          au.email AS assigned_to_email,
+          au2.name  AS assigned_to_2_name,
+          au2.email AS assigned_to_2_email
         FROM activities a
-        LEFT JOIN users cu ON cu.id = a.created_by
-        LEFT JOIN users au ON au.id = a.assigned_to
+        LEFT JOIN users cu  ON cu.id  = a.created_by
+        LEFT JOIN users au  ON au.id  = a.assigned_to
+        LEFT JOIN users au2 ON au2.id = a.assigned_to_2
         WHERE a.id = ? AND a.tenant_id = ?
       `
       )
@@ -109,12 +119,11 @@ router.get(
   })
 );
 
-
 /** POST /activities (id en servidor) */
 router.post(
   "/activities",
   wrap(async (req, res) => {
-    console.log("▶ POST /activities body:", req.body, "tenant:", req.tenantId);
+    console.log("POST /activities body:", req.body, "tenant:", req.tenantId);
     let {
       type,
       title,
@@ -126,7 +135,8 @@ router.post(
       contact_id,
       lead_id,
       deal_id,
-      assigned_to, // 👈 NUEVO: viene del front
+      assigned_to,
+      assigned_to_2, // segundo responsable
     } = req.body || {};
 
     type = coerceStr(type) || "";
@@ -137,7 +147,8 @@ router.post(
     contact_id = coerceStr(contact_id);
     lead_id = coerceStr(lead_id);
     deal_id = coerceStr(deal_id);
-    assigned_to = coerceStr(assigned_to); // 👈 normalizamos
+    assigned_to = coerceStr(assigned_to);
+    assigned_to_2 = coerceStr(assigned_to_2);
     due_date = coerceNum(due_date);
     remind_at_ms = coerceNum(remind_at_ms);
 
@@ -163,7 +174,6 @@ router.post(
       checkFk("contacts", contact_id, "contact_id");
       checkFk("leads", lead_id, "lead_id");
       checkFk("deals", deal_id, "deal_id");
-      // si quisieras, aquí se podría validar assigned_to contra users/memberships
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -171,15 +181,17 @@ router.post(
     const userId = resolveUserId(req);
     const now = Date.now();
 
+    // 1) Insert
     await db
       .prepare(
         `
-      INSERT INTO activities (
-        id, type, title, due_date, remind_at_ms, status, notes,
-        account_id, contact_id, lead_id, deal_id,
-        tenant_id, created_by, created_at, updated_at, assigned_to
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `
+        INSERT INTO activities (
+          id, type, title, due_date, remind_at_ms, status, notes,
+          account_id, contact_id, lead_id, deal_id,
+          tenant_id, created_by, created_at, updated_at,
+          assigned_to, assigned_to_2
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `
       )
       .run(
         id,
@@ -197,37 +209,45 @@ router.post(
         userId,
         now,
         now,
-        assigned_to ?? null // 👈 se guarda el asignado
+        assigned_to ?? null,
+        assigned_to_2 ?? null
       );
 
-    const created = db
-      .prepare(
-        `
-        SELECT 
-          a.*,
-          cu.name AS created_by_name,
-          cu.email AS created_by_email,
-          au.name AS assigned_to_name,
-          au.email AS assigned_to_email
-        FROM activities a
-        LEFT JOIN users cu ON cu.id = a.created_by
-        LEFT JOIN users au ON au.id = a.assigned_to
-        WHERE a.id = ? AND a.tenant_id = ?
-      `
-      )
-      .get(id, req.tenantId);
-       console.log("✅ Nueva activity creada:", {
+    // 2) Objeto que le devolvemos al front y usamos para el correo
+    const created = {
+      id,
+      type,
+      title,
+      status,
+      notes,
+      account_id,
+      contact_id,
+      lead_id,
+      deal_id,
+      tenant_id: req.tenantId,
+      assigned_to,
+      assigned_to_2,
+      created_by: userId,
+      created_at: now,
+      updated_at: now,
+    };
+
+    console.log("Nueva activity creada:", {
       id: created.id,
       title: created.title,
       assigned_to: created.assigned_to,
-      assigned_to_name: created.assigned_to_name,
+      assigned_to_2: created.assigned_to_2,
       tenant: created.tenant_id,
+    });
+
+    // 3) Enviar correos (NO bloquea la respuesta)
+    notifyActivityCreated(created).catch((err) => {
+      console.error("❌ Error enviando emails de actividad:", err);
     });
 
     res.status(201).json(created);
   })
 );
-
 
 /** PATCH /activities/:id */
 router.patch(
@@ -255,6 +275,7 @@ router.patch(
       lead_id: found.lead_id ?? null,
       deal_id: found.deal_id ?? null,
       assigned_to: found.assigned_to ?? null,
+      assigned_to_2: found.assigned_to_2 ?? null,
       due_date: found.due_date ?? null,
       remind_at_ms: found.remind_at_ms ?? null,
     };
@@ -265,16 +286,15 @@ router.patch(
       if (t) final.type = t;
     }
 
-    // TITLE  👉 si mandas algo vacío, mantenemos el que ya tenía
+    // TITLE
     if (hasProp("title")) {
       const t = coerceStr(body.title);
       if (t && t.length > 0) {
         final.title = t;
       }
-      // si viene vacío o null, NO tocamos final.title
     }
 
-    // STATUS 👉 solo si es válido; si no, dejamos el actual
+    // STATUS
     if (hasProp("status")) {
       const s = coerceStr(body.status);
       if (s && VALID_STATUS.has(s)) {
@@ -287,7 +307,7 @@ router.patch(
       final.notes = coerceStr(body.notes);
     }
 
-    // account/contact/lead/deal → solo se tocan si vienen en el body
+    // account/contact/lead/deal
     if (hasProp("account_id")) {
       final.account_id = coerceStr(body.account_id);
     }
@@ -306,7 +326,12 @@ router.patch(
       final.assigned_to = coerceStr(body.assigned_to);
     }
 
-    // fechas numéricas
+    // ASSIGNED_TO_2
+    if (hasProp("assigned_to_2")) {
+      final.assigned_to_2 = coerceStr(body.assigned_to_2);
+    }
+
+    // fechas
     if (hasProp("due_date")) {
       final.due_date = coerceNum(body.due_date);
     }
@@ -341,7 +366,8 @@ router.patch(
         `
       UPDATE activities SET
         type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
-        account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?, assigned_to = ?, updated_at = ?
+        account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?,
+        assigned_to = ?, assigned_to_2 = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ?
     `
       )
@@ -357,6 +383,7 @@ router.patch(
         final.lead_id ?? null,
         final.deal_id ?? null,
         final.assigned_to ?? null,
+        final.assigned_to_2 ?? null,
         updated_at,
         req.params.id,
         req.tenantId
@@ -367,13 +394,16 @@ router.patch(
         `
         SELECT 
           a.*,
-          cu.name AS created_by_name,
+          cu.name  AS created_by_name,
           cu.email AS created_by_email,
-          au.name AS assigned_to_name,
-          au.email AS assigned_to_email
+          au.name  AS assigned_to_name,
+          au.email AS assigned_to_email,
+          au2.name  AS assigned_to_2_name,
+          au2.email AS assigned_to_2_email
         FROM activities a
-        LEFT JOIN users cu ON cu.id = a.created_by
-        LEFT JOIN users au ON au.id = a.assigned_to
+        LEFT JOIN users cu  ON cu.id  = a.created_by
+        LEFT JOIN users au  ON au.id  = a.assigned_to
+        LEFT JOIN users au2 ON au2.id = a.assigned_to_2
         WHERE a.id = ? AND a.tenant_id = ?
       `
       )
@@ -382,9 +412,6 @@ router.patch(
     res.json(updated);
   })
 );
-
-
-
 
 /** DELETE /activities/:id */
 router.delete(

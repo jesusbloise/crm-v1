@@ -123,17 +123,22 @@ export default function RelatedActivities(props: {
   const qc = useQueryClient();
   const [newTitle, setNewTitle] = useState("");
 
-  // Asignación de NUEVA actividad (solo al crear)
-  const [assignedTo, setAssignedTo] = useState<string | null>(null);
-  const [assignPickerOpen, setAssignPickerOpen] = useState(false);
+  // Asignación de NUEVA actividad (1 o 2 personas máximo)
+  const [selectedAssignees, setSelectedAssignees] = useState<string[]>([]);
+  const [assignDropdownOpen, setAssignDropdownOpen] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   // Estado local para "realizada" (persistido)
   const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
   // Estado local para "en proceso" (también persistido)
   const [inProgressIds, setInProgressIds] = useState<Set<string>>(new Set());
-   // maestros globales (para sync con /tasks y /tasks/[id])
-  const [masterCompletedIds, setMasterCompletedIds] = useState<Set<string>>(new Set());
-  const [masterInProgressIds, setMasterInProgressIds] = useState<Set<string>>(new Set());
+  // maestros globales (para sync con /tasks y /tasks/[id])
+  const [masterCompletedIds, setMasterCompletedIds] = useState<Set<string>>(
+    new Set()
+  );
+  const [masterInProgressIds, setMasterInProgressIds] = useState<Set<string>>(
+    new Set()
+  );
 
   const storageKeyCompleted = useMemo(() => completedKey(filters), [filters]);
   const storageKeyInProgress = useMemo(() => inProgressKey(filters), [filters]);
@@ -198,7 +203,7 @@ export default function RelatedActivities(props: {
     })();
   }, [storageKeyInProgress]);
 
-    // Cargar los MASTER (globales) para reflejar cambios hechos en /tasks y /tasks/[id]
+  // Cargar los MASTER (globales) para reflejar cambios hechos en /tasks y /tasks/[id]
   useEffect(() => {
     (async () => {
       try {
@@ -219,7 +224,6 @@ export default function RelatedActivities(props: {
       }
     })();
   }, []);
-
 
   // Si cambia la lista del servidor, depuramos ids huérfanos en ambos
   useEffect(() => {
@@ -284,18 +288,39 @@ export default function RelatedActivities(props: {
     mutationFn: async () => {
       const t = newTitle.trim();
       if (!t) return;
+
+      // Validar que haya al menos una persona seleccionada
+      if (selectedAssignees.length === 0) {
+        const err = new Error(
+          "Debes asignar esta actividad al menos a una persona."
+        );
+        (err as any).code = "NO_ASSIGNEE";
+        throw err;
+      }
+
+      const [a1, a2] = selectedAssignees;
+
       await createActivity({
         type: "task",
         title: t,
         status: "open",
-        assigned_to: assignedTo ?? undefined,
+        assigned_to: a1 ?? undefined,
+        assigned_to_2: a2 ?? undefined, // segundo responsable opcional
         ...baseFilters,
         ...(createDefaults ?? {}),
       } as any);
     },
     onSuccess: async () => {
       setNewTitle("");
+      setAssignError(null);
       await invalidate();
+    },
+    onError: (error: any) => {
+      if (error?.code === "NO_ASSIGNEE") {
+        setAssignError(error.message || "Debes asignar la actividad.");
+      } else {
+        setAssignError("No se pudo crear la actividad. Intenta de nuevo.");
+      }
     },
   });
 
@@ -322,7 +347,7 @@ export default function RelatedActivities(props: {
     },
   });
 
-  // Acción local: marcar visualmente como REALIZADA (igual que antes, pero limpiando "en proceso")
+  // Acción local: marcar visualmente como REALIZADA
   const markAsCompleted = (id: string) => {
     // quitar de en proceso
     setInProgressIds((prev) => {
@@ -379,7 +404,7 @@ export default function RelatedActivities(props: {
 
     // agregar a en proceso
     setInProgressIds((prev) => {
-      if (prev.has(id)) return prev;
+      if (!prev.has(id)) return prev;
       const next = new Set(prev);
       next.add(id);
       persistInProgress(next);
@@ -388,14 +413,47 @@ export default function RelatedActivities(props: {
     });
   };
 
-  const selectedMember =
-    members && members.length > 0
-      ? members.find((m) => m.id === assignedTo) ?? null
-      : null;
+  // Helpers para labels
+  const getMemberLabel = (id: string): string => {
+    if (!members || members.length === 0) return id;
+    const m = members.find((mm) => mm.id === id);
+    return m?.name || m?.email || id;
+  };
 
-  const assignedLabel = selectedMember
-    ? `Asignar: ${selectedMember.name}`
-    : "Asignar: sin asignar";
+  const assignedSummary = (() => {
+    if (selectedAssignees.length === 0) return "Asignar";
+    if (selectedAssignees.length === 1)
+      return `Asignado: ${getMemberLabel(selectedAssignees[0])}`;
+    if (selectedAssignees.length === 2)
+      return `Asignados: ${getMemberLabel(
+        selectedAssignees[0]
+      )} y ${getMemberLabel(selectedAssignees[1])}`;
+    return "Asignar";
+  })();
+
+  const toggleAssignee = (id: string) => {
+    setSelectedAssignees((prev) => {
+      // si ya está, lo quitamos
+      if (prev.includes(id)) {
+        const next = prev.filter((x) => x !== id);
+        if (next.length === 0) {
+          setAssignError(
+            "Debes asignar la actividad al menos a una persona antes de crearla."
+          );
+        }
+        return next;
+      }
+
+      // si no está y ya hay 2, no añadimos más (máximo 2)
+      if (prev.length >= 2) {
+        return prev;
+      }
+
+      const next = [...prev, id];
+      if (next.length > 0) setAssignError(null);
+      return next;
+    });
+  };
 
   return (
     <View style={S.box}>
@@ -412,41 +470,56 @@ export default function RelatedActivities(props: {
         />
 
         {members && members.length > 0 && (
-          <View style={{ flexDirection: "column" }}>
+          <View
+            style={{
+              flexDirection: "column",
+              flexShrink: 0,
+              maxWidth: 140,
+            }}
+          >
+            {/* Botón principal tipo dropdown */}
             <Pressable
-              style={S.assignChip}
-              onPress={() => setAssignPickerOpen((v) => !v)}
+              style={S.assignDropdownTrigger}
+              onPress={() => setAssignDropdownOpen((v) => !v)}
             >
-              <Text style={S.assignChipText}>{assignedLabel}</Text>
+              <Text style={S.assignDropdownText}>{assignedSummary}</Text>
             </Pressable>
 
-            {assignPickerOpen && (
-              <View style={S.assignList}>
-                <Pressable
-                  style={S.assignOption}
-                  onPress={() => {
-                    setAssignedTo(null);
-                    setAssignPickerOpen(false);
-                  }}
-                >
-                  <Text style={S.assignOptionText}>Sin asignar</Text>
-                </Pressable>
-                {members.map((m) => (
-                  <Pressable
-                    key={m.id}
-                    style={S.assignOption}
-                    onPress={() => {
-                      setAssignedTo(m.id);
-                      setAssignPickerOpen(false);
-                    }}
-                  >
-                    <Text style={S.assignOptionText}>
-                      {m.name || m.email || m.id}
-                    </Text>
-                  </Pressable>
-                ))}
+            {/* Contenido del dropdown: un solo listado donde se pueden marcar hasta 2 */}
+            {assignDropdownOpen && (
+              <View style={S.assignDropdown}>
+                <Text style={S.assignSectionTitle}>Responsables</Text>
+                <Text style={S.assignSectionHint}>
+                 
+                </Text>
+
+                {members.map((m) => {
+                  const active = selectedAssignees.includes(m.id);
+                  return (
+                    <Pressable
+                      key={m.id}
+                      style={[
+                        S.assignOption,
+                        active && S.assignOptionActive,
+                      ]}
+                      onPress={() => toggleAssignee(m.id)}
+                    >
+                      <Text
+                        style={[
+                          S.assignOptionText,
+                          active && S.assignOptionTextActive,
+                        ]}
+                      >
+                        {active ? "● " : "○ "}
+                        {m.name || m.email || m.id}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             )}
+
+            {assignError && <Text style={S.errorText}>{assignError}</Text>}
           </View>
         )}
 
@@ -470,23 +543,33 @@ export default function RelatedActivities(props: {
       ) : (
         <View>
           {(q.data ?? []).map((a) => {
-                  // Completada si está en el set local O en el master global
-          const isCompletedUI =
-            completedIds.has(a.id) || masterCompletedIds.has(a.id);
+            // Completada si está en el set local O en el master global
+            const isCompletedUI =
+              completedIds.has(a.id) || masterCompletedIds.has(a.id);
 
-          // En proceso si no está completada y está en el local O en el master global
-          const isInProgressUI =
-            !isCompletedUI &&
-            (inProgressIds.has(a.id) || masterInProgressIds.has(a.id));
+            // En proceso si no está completada y está en el local O en el master global
+            const isInProgressUI =
+              !isCompletedUI &&
+              (inProgressIds.has(a.id) || masterInProgressIds.has(a.id));
 
+            // Construir texto de asignados (hasta dos personas)
+            const assignedNames: string[] = [];
+
+            if ((a as any).assigned_to_name) {
+              assignedNames.push((a as any).assigned_to_name);
+            } else if ((a as any).assigned_to) {
+              assignedNames.push(String((a as any).assigned_to));
+            }
+
+            if ((a as any).assigned_to_2_name) {
+              assignedNames.push((a as any).assigned_to_2_name);
+            } else if ((a as any).assigned_to_2) {
+              assignedNames.push(String((a as any).assigned_to_2));
+            }
 
             const assignedInfo =
-              (a as any).assigned_to_name &&
-              (a as any).assigned_to_name.trim().length > 0
-                ? ` · asignada a ${(a as any).assigned_to_name}`
-                : (a as any).assigned_to &&
-                  String((a as any).assigned_to).trim().length > 0
-                ? ` · asignada a ${(a as any).assigned_to}`
+              assignedNames.length > 0
+                ? " · asignada a " + assignedNames.join(" y ")
                 : " · sin asignar";
 
             const createdAtValue = (a as any).created_at as
@@ -651,7 +734,7 @@ const S = StyleSheet.create({
   },
   // Colores por estado LOCAL
   rowInProgress: {
-    backgroundColor: "#DBEAFE", // azul claro
+    backgroundColor: "#DBEAFE",
     borderTopColor: "#BFDBFE",
   },
   rowDone: {
@@ -697,38 +780,63 @@ const S = StyleSheet.create({
   btnPrimary: { backgroundColor: "#7C3AED" },
   btnDanger: { backgroundColor: "#EF4444" },
 
-  // selector de asignación global (para creación)
-  assignChip: {
+  // Dropdown de asignación (un solo listado)
+  assignDropdownTrigger: {
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "#CBD5E1",
     paddingVertical: 6,
     paddingHorizontal: 10,
     backgroundColor: "#f8fafc",
-    marginBottom: 4,
+    alignSelf: "flex-start",
   },
-  assignChipText: {
+  assignDropdownText: {
     color: "#0F172A",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "700",
   },
-  assignList: {
-    marginTop: 4,
-    borderRadius: 10,
+  assignDropdown: {
+    marginTop: 6,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#CBD5E1",
-    backgroundColor: "#fff",
+    backgroundColor: "#ffffff",
     overflow: "hidden",
+  },
+  assignSectionTitle: {
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    color: "#0F172A",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  assignSectionHint: {
+    paddingHorizontal: 10,
+    paddingBottom: 4,
+    color: "#64748B",
+    fontSize: 11,
   },
   assignOption: {
     paddingVertical: 6,
     paddingHorizontal: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  assignOptionActive: {
+    backgroundColor: "#EEF2FF",
   },
   assignOptionText: {
     fontSize: 12,
     color: "#0F172A",
+  },
+  assignOptionTextActive: {
+    fontWeight: "700",
+    color: "#4F46E5",
+  },
+  errorText: {
+    marginTop: 4,
+    color: "#EF4444",
+    fontSize: 11,
   },
 
   // Dropdown de estado LOCAL
