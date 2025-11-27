@@ -19,7 +19,10 @@ export type Activity = {
   created_at: number;
   updated_at: number;
 
-  /** 👉 quién la creó */
+  /** 👉 quién la creó (id de usuario) */
+  created_by?: string | null;
+
+  /** 👉 info del creador (nombre/email) */
   created_by_name?: string | null;
   created_by_email?: string | null;
 
@@ -68,10 +71,9 @@ export async function listActivitiesByDeal(dealId: string): Promise<Activity[]> 
 
 /**
  * Crea una actividad.
- * El backend ahora acepta también:
+ * El backend acepta también:
  *  - assigned_to
  *  - assigned_to_2
- * pero desde el front seguimos mandando un Partial<Activity>.
  */
 export async function createActivity(input: Partial<Activity>): Promise<void> {
   await api.post("/activities", input);
@@ -104,7 +106,6 @@ export async function listOpenActivitiesWithReminder(
     }));
 }
 
-
 // // src/api/activities.ts
 // import { api } from "@/src/api/http";
 
@@ -126,15 +127,20 @@ export async function listOpenActivitiesWithReminder(
 //   created_at: number;
 //   updated_at: number;
 
-//   /** 👉 ya existían para mostrar quién la creó */
+//   /** 👉 quién la creó */
 //   created_by_name?: string | null;
 //   created_by_email?: string | null;
 
-//   /** 👉 NUEVOS: quién tiene asignada la actividad */
+//   /** 👉 PRIMER responsable */
 //   assigned_to?: string | null;
 //   assigned_to_name?: string | null;
-// };
+//   assigned_to_email?: string | null;
 
+//   /** 👉 SEGUNDO responsable (nuevo campo en la tabla) */
+//   assigned_to_2?: string | null;
+//   assigned_to_2_name?: string | null;
+//   assigned_to_2_email?: string | null;
+// };
 
 // export async function listActivities(filters?: {
 //   deal_id?: string;
@@ -168,6 +174,13 @@ export async function listOpenActivitiesWithReminder(
 //   return listActivities({ deal_id: dealId });
 // }
 
+// /**
+//  * Crea una actividad.
+//  * El backend ahora acepta también:
+//  *  - assigned_to
+//  *  - assigned_to_2
+//  * pero desde el front seguimos mandando un Partial<Activity>.
+//  */
 // export async function createActivity(input: Partial<Activity>): Promise<void> {
 //   await api.post("/activities", input);
 // }

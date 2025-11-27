@@ -24,9 +24,29 @@ const VALID_STATUS = new Set(["open", "done", "canceled"]);
 router.get(
   "/activities",
   wrap(async (req, res) => {
-    const { deal_id, contact_id, account_id, lead_id, status, remind_after } =
-      req.query || {};
+    const {
+      deal_id,
+      contact_id,
+      account_id,
+      lead_id,
+      status,
+      remind_after,
+    } = req.query || {};
     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
+
+    // 👇 quién es el usuario actual
+    const userId = resolveUserId(req);
+
+    // 👇 rol GLOBAL del usuario (owner | admin | member)
+    let userRole = "member";
+    if (userId) {
+      const row = await db
+        .prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`)
+        .get(userId);
+      if (row?.role) {
+        userRole = String(row.role).toLowerCase();
+      }
+    }
 
     const clauses = ["a.tenant_id = ?"];
     const params = [req.tenantId];
@@ -56,6 +76,15 @@ router.get(
       params.push(Number(remind_after));
     }
 
+    // 🔒 Si es MEMBER → solo sus actividades
+    //    (creadas por él o asignadas a él)
+    if (userRole === "member" && userId) {
+      clauses.push(
+        "(a.created_by = ? OR a.assigned_to = ? OR a.assigned_to_2 = ?)"
+      );
+      params.push(userId, userId, userId);
+    }
+
     const sql = `
       SELECT 
         a.*,
@@ -73,21 +102,25 @@ router.get(
       ORDER BY a.updated_at DESC, a.id ASC
       LIMIT ?
     `;
+
     const rows = await db.prepare(sql).all(...params, limit);
+
     console.log(
-      "📤 GET /activities ->",
+      "📤 GET /activities -> role:", userRole, "user:", userId,
+      "rows:",
       rows.map((r) => ({
         id: r.id,
         title: r.title,
+        created_by: r.created_by,
         assigned_to: r.assigned_to,
-        assigned_to_name: r.assigned_to_name,
         assigned_to_2: r.assigned_to_2,
-        assigned_to_2_name: r.assigned_to_2_name,
       }))
     );
+
     res.json(rows);
   })
 );
+
 
 /** GET /activities/:id */
 router.get(
