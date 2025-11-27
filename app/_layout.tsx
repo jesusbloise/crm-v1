@@ -309,7 +309,7 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
   const items = [
     { href: "/",                 label: "Resumen",   icon: "home" as const },
     { href: "/contacts",         label: "Contactos", icon: "users" as const },
-    // { href: "/deals",            label: "Oportun.",  icon: "briefcase" as const },
+    { href: "/deals",            label: "Oportun.",  icon: "briefcase" as const },
     { href: "/tasks",            label: "Activ.",    icon: "check-square" as const },
     { href: "/calendar",         label: "Calend.",   icon: "calendar" as const }, // 👈 añadido
     { href: "/more",             label: "Más",       icon: "grid" as const },

@@ -38,16 +38,26 @@ const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 type Filter = "all" | "open" | "done" | "canceled";
 
 type ActivityWithCreator = Activity & {
-  // aseguramos que exista en el tipo local
-  created_by?: string | null;
+  created_by?: string | null; // ID del creador (para filtros)
+  created_by_name?: string | null;
+  created_by_email?: string | null;
+  assigned_to_name?: string | null;
+  assigned_to_2?: string | null;
+  assigned_to_2_name?: string | null;
 };
 
-const MEMBERS = [
+type MemberChip = {
+  id: string;
+  label: string; // lo usaremos para buscar en los nombres
+};
+
+/** 👉 Chips que ve el ADMIN para filtrar por nombre (texto) */
+const MEMBERS: MemberChip[] = [
   { id: "all", label: "Todos" },
-  { id: "cata-user", label: "cata-user" },
-  { id: "jesus-bloise", label: "jesus-bloise" },
-  { id: "luisa-user", label: "luisa" },
-  { id: "ramon-user", label: "ramon" },
+  { id: "cata", label: "cata" },
+  { id: "jesus", label: "jesus" },
+  { id: "luisa", label: "luisa" },
+  { id: "ramon", label: "ramon" },
 ];
 
 type TenantItem = {
@@ -65,7 +75,7 @@ export default function TasksList() {
     new Set()
   );
 
-  // 🔑 Rol global + workspaces para pestañas (solo admin/owner)
+  // 🔑 Rol global + workspaces para pestañas de WS (solo admin/owner)
   const [currentRole, setCurrentRole] = useState<
     "owner" | "admin" | "member" | null
   >(null);
@@ -75,7 +85,6 @@ export default function TasksList() {
   const [busyWs, setBusyWs] = useState<string | null>(null);
 
   const isAdminOrOwner = currentRole === "owner" || currentRole === "admin";
-  const isMemberOnly = !currentRole || currentRole === "member";
 
   // 🔁 Carga maestro de COMPLETADAS
   const loadCompletedMaster = useCallback(async () => {
@@ -97,7 +106,7 @@ export default function TasksList() {
     }
   }, []);
 
-  // 🔁 Carga rol global + tenants
+  // 🔁 Carga rol y workspaces
   const loadRoleAndTenants = useCallback(async () => {
     setLoadingRole(true);
     try {
@@ -140,12 +149,6 @@ export default function TasksList() {
     }
   }, []);
 
-  // 👤 Perfil del usuario actual (para saber su id)
-  const meQuery = useQuery({
-    queryKey: ["me-profile"],
-    queryFn: () => api.get("/me/profile"),
-  });
-
   // Carga inicial
   useEffect(() => {
     loadCompletedMaster();
@@ -153,7 +156,7 @@ export default function TasksList() {
     loadRoleAndTenants();
   }, [loadCompletedMaster, loadInProgressMaster, loadRoleAndTenants]);
 
-  // Y en cada focus
+  // Y en cada focus (por si marcaste en otra pantalla o cambiaste ws)
   useFocusEffect(
     useCallback(() => {
       loadCompletedMaster();
@@ -162,7 +165,7 @@ export default function TasksList() {
     }, [loadCompletedMaster, loadInProgressMaster, loadRoleAndTenants])
   );
 
-  // 🔑 Trae TODAS las actividades del workspace activo
+  // 🔑 Trae TODAS las actividades (del workspace activo, backend ya filtra por usuario según rol)
   const q = useQuery<ActivityWithCreator[]>({
     queryKey: ["activities-all"],
     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
@@ -174,35 +177,14 @@ export default function TasksList() {
     loadCompletedMaster();
     loadInProgressMaster();
     q.refetch();
-    meQuery.refetch();
-  }, [q, loadCompletedMaster, loadInProgressMaster, meQuery]);
+  }, [q, loadCompletedMaster, loadInProgressMaster]);
 
   const data = useMemo(() => {
-    const me = meQuery.data as any;
-    const currentUserId: string | undefined = me?.id;
-
     let items: ActivityWithCreator[] = (q.data ?? [])
       .slice()
       .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
 
-    // 0) 🔒 Filtro por usuario SI es member:
-    // - creadas por él (created_by)
-    // - o asignadas a él (assigned_to / assigned_to_2)
-    if (
-      !meQuery.isLoading &&
-      !meQuery.isError &&
-      isMemberOnly &&
-      currentUserId
-    ) {
-      items = items.filter((a) => {
-        const creatorMatch = a.created_by === currentUserId;
-        const assigned1Match = a.assigned_to === currentUserId;
-        const assigned2Match = (a as any).assigned_to_2 === currentUserId;
-        return creatorMatch || assigned1Match || assigned2Match;
-      });
-    }
-
-    // 1) Filtro por estado (usando los sets locales)
+    // 1) Filtro por estado
     items = items.filter((a) => {
       const isDoneUI =
         a.status === "done" || completedMaster.has(a.id as string);
@@ -221,37 +203,29 @@ export default function TasksList() {
       }
     });
 
-    // 2) Filtro por asignado / creador desde los chips de usuarios
-    if (assigneeFilter !== "all") {
-      items = items.filter((a) => {
-        const byId =
-          (a.assigned_to &&
-            String(a.assigned_to) === assigneeFilter) ||
-          ((a as any).assigned_to_2 &&
-            String((a as any).assigned_to_2) === assigneeFilter) ||
-          (a.created_by && String(a.created_by) === assigneeFilter);
+    // 2) Filtro por NOMBRE (chips) — SOLO si admin/owner
+    if (assigneeFilter !== "all" && isAdminOrOwner) {
+      const selected = MEMBERS.find((m) => m.id === assigneeFilter);
+      if (selected) {
+        const term = selected.label.toLowerCase();
 
-        const byName =
-          (a.assigned_to_name &&
-            a.assigned_to_name
-              .toLowerCase()
-              .includes(assigneeFilter.toLowerCase())) ||
-          (a.assigned_to_2_name &&
-            a.assigned_to_2_name
-              .toLowerCase()
-              .includes(assigneeFilter.toLowerCase())) ||
-          (a.created_by_name &&
-            a.created_by_name
-              .toLowerCase()
-              .includes(assigneeFilter.toLowerCase()));
+        items = items.filter((a) => {
+          const created = (a.created_by_name || "").toLowerCase();
+          const assigned1 = (a.assigned_to_name || "").toLowerCase();
+          const assigned2 = (a.assigned_to_2_name || "").toLowerCase();
 
-        return byId || byName;
-      });
+          return (
+            created.includes(term) ||
+            assigned1.includes(term) ||
+            assigned2.includes(term)
+          );
+        });
+      }
     }
 
-    // 3) Filtro por texto libre
-    const term = search.trim().toLowerCase();
-    if (term) {
+    // 3) Filtro por texto libre (título, tipo, creador, cualquiera de los dos asignados)
+    const termText = search.trim().toLowerCase();
+    if (termText) {
       items = items.filter((a) => {
         const title = (a.title || "").toLowerCase();
         const type = (a.type || "").toLowerCase();
@@ -260,11 +234,11 @@ export default function TasksList() {
         const assigned2 = (a.assigned_to_2_name || "").toLowerCase();
 
         return (
-          title.includes(term) ||
-          type.includes(term) ||
-          created.includes(term) ||
-          assigned1.includes(term) ||
-          assigned2.includes(term)
+          title.includes(termText) ||
+          type.includes(termText) ||
+          created.includes(termText) ||
+          assigned1.includes(termText) ||
+          assigned2.includes(termText)
         );
       });
     }
@@ -277,13 +251,10 @@ export default function TasksList() {
     assigneeFilter,
     completedMaster,
     inProgressMaster,
-    isMemberOnly,
-    meQuery.isLoading,
-    meQuery.isError,
-    meQuery.data,
+    isAdminOrOwner,
   ]);
 
-  // Cambiar de workspace (solo admin/owner)
+  // 👉 Cambiar de workspace (solo admin/owner ve estas pestañas)
   const onSelectWorkspace = useCallback(
     async (tenantId: string) => {
       if (!isAdminOrOwner) return;
@@ -294,7 +265,7 @@ export default function TasksList() {
         const res = await switchTenant(tenantId);
         const confirmed = (res as any)?.active_tenant || tenantId;
         setActiveTenant(confirmed);
-        await q.refetch();
+        await q.refetch(); // recarga actividades del nuevo ws
       } catch (e) {
         console.warn("❌ Error al cambiar de workspace:", e);
       } finally {
@@ -353,32 +324,34 @@ export default function TasksList() {
           autoCorrect={false}
         />
 
-        {/* 👤 Filtros por usuario (todos los usuarios ven esto) */}
-        <View style={styles.membersRow}>
-          {MEMBERS.map((m) => {
-            const active = assigneeFilter === m.id;
-            return (
-              <Pressable
-                key={m.id}
-                onPress={() => setAssigneeFilter(m.id)}
-                style={[
-                  styles.memberChip,
-                  active && styles.memberChipActive,
-                ]}
-              >
-                <Text
+        {/* 👤 Filtros por usuario (solo admin/owner) */}
+        {isAdminOrOwner && (
+          <View style={styles.membersRow}>
+            {MEMBERS.map((m) => {
+              const active = assigneeFilter === m.id;
+              return (
+                <Pressable
+                  key={m.id}
+                  onPress={() => setAssigneeFilter(m.id)}
                   style={[
-                    styles.memberChipText,
-                    active && styles.memberChipTextActive,
+                    styles.memberChip,
+                    active && styles.memberChipActive,
                   ]}
-                  numberOfLines={1}
                 >
-                  {m.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+                  <Text
+                    style={[
+                      styles.memberChipText,
+                      active && styles.memberChipTextActive,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {m.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
 
         {/* 🌐 Pestañas de Workspaces SOLO para admin/owner */}
         {isAdminOrOwner && tenants.length > 0 && (
@@ -423,7 +396,7 @@ export default function TasksList() {
         )}
 
         {/* Lista de actividades */}
-        {q.isLoading || meQuery.isLoading ? (
+        {q.isLoading ? (
           <View style={styles.center}>
             <ActivityIndicator color={PRIMARY} />
             <Text style={styles.subtle}>Cargando actividades…</Text>
@@ -438,7 +411,7 @@ export default function TasksList() {
             keyExtractor={(item) => item.id}
             refreshControl={
               <RefreshControl
-                refreshing={q.isFetching || meQuery.isFetching}
+                refreshing={q.isFetching}
                 onRefresh={onRefresh}
               />
             }
@@ -482,6 +455,7 @@ function TaskCard({
     ? `por ${item.created_by_name}`
     : "";
 
+  // 👇 Construimos hasta 2 nombres para el resumen
   const assignedNames: string[] = [];
 
   if (item.assigned_to_name) {
@@ -622,6 +596,7 @@ const styles = StyleSheet.create({
   },
   newBtnText: { color: "#fff", fontWeight: "900" },
 
+  // 🔍 buscador
   searchInput: {
     marginBottom: 8,
     borderRadius: 10,
@@ -634,6 +609,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 
+  // 👤 chips de usuarios
   membersRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -668,6 +644,7 @@ const styles = StyleSheet.create({
     color: "#E9D5FF",
   },
 
+  // 🌐 chips de workspaces (solo admin/owner las ve)
   wsLabel: {
     color: SUBTLE,
     fontSize: 12,
@@ -746,7 +723,6 @@ const styles = StyleSheet.create({
 });
 
 
-
 // // app/tasks/index.tsx
 // import { listActivities, type Activity } from "@/src/api/activities";
 // import {
@@ -787,12 +763,8 @@ const styles = StyleSheet.create({
 // type Filter = "all" | "open" | "done" | "canceled";
 
 // type ActivityWithCreator = Activity & {
+//   // aseguramos que exista en el tipo local
 //   created_by?: string | null;
-//   created_by_name?: string | null;
-//   created_by_email?: string | null;
-//   assigned_to_name?: string | null;
-//   assigned_to_2?: string | null;
-//   assigned_to_2_name?: string | null;
 // };
 
 // const MEMBERS = [
@@ -818,16 +790,17 @@ const styles = StyleSheet.create({
 //     new Set()
 //   );
 
+//   // 🔑 Rol global + workspaces para pestañas (solo admin/owner)
+//   const [currentRole, setCurrentRole] = useState<
+//     "owner" | "admin" | "member" | null
+//   >(null);
+//   const [loadingRole, setLoadingRole] = useState(true);
 //   const [tenants, setTenants] = useState<TenantItem[]>([]);
 //   const [activeTenant, setActiveTenant] = useState<string | null>(null);
 //   const [busyWs, setBusyWs] = useState<string | null>(null);
-//   const [loadingRole, setLoadingRole] = useState(true);
 
-//   // 🔐 Perfil (lo vamos a usar luego para filtrar por usuario)
-//   const meQuery = useQuery({
-//     queryKey: ["me-profile"],
-//     queryFn: () => api.get("/me/profile"),
-//   });
+//   const isAdminOrOwner = currentRole === "owner" || currentRole === "admin";
+//   const isMemberOnly = !currentRole || currentRole === "member";
 
 //   // 🔁 Carga maestro de COMPLETADAS
 //   const loadCompletedMaster = useCallback(async () => {
@@ -849,9 +822,28 @@ const styles = StyleSheet.create({
 //     }
 //   }, []);
 
-//   // 🔁 Carga workspaces
+//   // 🔁 Carga rol global + tenants
 //   const loadRoleAndTenants = useCallback(async () => {
 //     setLoadingRole(true);
+//     try {
+//       // Rol global actual
+//       const resRole = await api.get<{
+//         tenant_id: string | null;
+//         role: string | null;
+//       }>("/tenants/role");
+//       const r = (resRole?.role || "").toLowerCase() as
+//         | "owner"
+//         | "admin"
+//         | "member"
+//         | "";
+//       setCurrentRole(r || null);
+//     } catch (e) {
+//       console.warn("⚠️ No se pudo obtener rol actual:", e);
+//       setCurrentRole(null);
+//     } finally {
+//       setLoadingRole(false);
+//     }
+
 //     try {
 //       const localActive = await getActiveTenant();
 //       if (localActive) setActiveTenant(localActive);
@@ -870,10 +862,14 @@ const styles = StyleSheet.create({
 //       }
 //     } catch (e) {
 //       console.warn("⚠️ No se pudo obtener lista de workspaces:", e);
-//     } finally {
-//       setLoadingRole(false);
 //     }
 //   }, []);
+
+//   // 👤 Perfil del usuario actual (para saber su id)
+//   const meQuery = useQuery({
+//     queryKey: ["me-profile"],
+//     queryFn: () => api.get("/me/profile"),
+//   });
 
 //   // Carga inicial
 //   useEffect(() => {
@@ -891,7 +887,7 @@ const styles = StyleSheet.create({
 //     }, [loadCompletedMaster, loadInProgressMaster, loadRoleAndTenants])
 //   );
 
-//   // 🔑 Trae actividades del workspace activo
+//   // 🔑 Trae TODAS las actividades del workspace activo
 //   const q = useQuery<ActivityWithCreator[]>({
 //     queryKey: ["activities-all"],
 //     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
@@ -906,11 +902,30 @@ const styles = StyleSheet.create({
 //     meQuery.refetch();
 //   }, [q, loadCompletedMaster, loadInProgressMaster, meQuery]);
 
-//   // 🔍 Filtros (estado, asignado, texto) — SIN filtrar aún por usuario
 //   const data = useMemo(() => {
+//     const me = meQuery.data as any;
+//     const currentUserId: string | undefined = me?.id;
+
 //     let items: ActivityWithCreator[] = (q.data ?? [])
 //       .slice()
 //       .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
+
+//     // 0) 🔒 Filtro por usuario SI es member:
+//     // - creadas por él (created_by)
+//     // - o asignadas a él (assigned_to / assigned_to_2)
+//     if (
+//       !meQuery.isLoading &&
+//       !meQuery.isError &&
+//       isMemberOnly &&
+//       currentUserId
+//     ) {
+//       items = items.filter((a) => {
+//         const creatorMatch = a.created_by === currentUserId;
+//         const assigned1Match = a.assigned_to === currentUserId;
+//         const assigned2Match = (a as any).assigned_to_2 === currentUserId;
+//         return creatorMatch || assigned1Match || assigned2Match;
+//       });
+//     }
 
 //     // 1) Filtro por estado (usando los sets locales)
 //     items = items.filter((a) => {
@@ -920,7 +935,7 @@ const styles = StyleSheet.create({
 
 //       switch (filter) {
 //         case "open":
-//           return !isDoneUI && !isInProgressUI;
+//           return !isDoneUI && !isInProgressUI; // abiertas
 //         case "done":
 //           return isDoneUI;
 //         case "canceled":
@@ -987,11 +1002,16 @@ const styles = StyleSheet.create({
 //     assigneeFilter,
 //     completedMaster,
 //     inProgressMaster,
+//     isMemberOnly,
+//     meQuery.isLoading,
+//     meQuery.isError,
+//     meQuery.data,
 //   ]);
 
-//   // Cambiar de workspace
+//   // Cambiar de workspace (solo admin/owner)
 //   const onSelectWorkspace = useCallback(
 //     async (tenantId: string) => {
+//       if (!isAdminOrOwner) return;
 //       if (busyWs || tenantId === activeTenant) return;
 
 //       setBusyWs(tenantId);
@@ -1006,7 +1026,7 @@ const styles = StyleSheet.create({
 //         setBusyWs(null);
 //       }
 //     },
-//     [busyWs, activeTenant, q]
+//     [isAdminOrOwner, busyWs, activeTenant, q]
 //   );
 
 //   return (
@@ -1058,7 +1078,7 @@ const styles = StyleSheet.create({
 //           autoCorrect={false}
 //         />
 
-//         {/* 👤 Filtros por usuario */}
+//         {/* 👤 Filtros por usuario (todos los usuarios ven esto) */}
 //         <View style={styles.membersRow}>
 //           {MEMBERS.map((m) => {
 //             const active = assigneeFilter === m.id;
@@ -1085,8 +1105,8 @@ const styles = StyleSheet.create({
 //           })}
 //         </View>
 
-//         {/* 🌐 Pestañas de Workspaces */}
-//         {tenants.length > 0 && (
+//         {/* 🌐 Pestañas de Workspaces SOLO para admin/owner */}
+//         {isAdminOrOwner && tenants.length > 0 && (
 //           <View style={{ marginTop: 8 }}>
 //             <Text style={styles.wsLabel}>Workspaces</Text>
 //             <View style={styles.wsRow}>
@@ -1449,3 +1469,5 @@ const styles = StyleSheet.create({
 //     letterSpacing: 0.3,
 //   },
 // });
+
+
