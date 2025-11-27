@@ -73,9 +73,9 @@ export default function ContactDetail() {
 
   // Estado local de edición
   const [name, setName] = useState("");
-  const [clientType, setClientType] = useState<"productora" | "agencia" | "">(
-    ""
-  );
+  const [clientType, setClientType] = useState<
+    "productora" | "agencia" | "directo" | ""
+  >("");
   const [companyText, setCompanyText] = useState("");
   const [position, setPosition] = useState("");
   const [email, setEmail] = useState("");
@@ -85,12 +85,14 @@ export default function ContactDetail() {
   useEffect(() => {
     if (q.data) {
       setName(q.data.name ?? "");
-      setClientType(
-        (q.data as any).client_type === "productora" ||
-          (q.data as any).client_type === "agencia"
-          ? (q.data as any).client_type
-          : ""
-      );
+
+      const ct = (q.data as any).client_type;
+      if (ct === "productora" || ct === "agencia" || ct === "directo") {
+        setClientType(ct);
+      } else {
+        setClientType("");
+      }
+
       setCompanyText(q.data.company ?? "");
       setPosition(q.data.position ?? "");
       setEmail(q.data.email ?? "");
@@ -221,11 +223,18 @@ export default function ContactDetail() {
               </View>
             )}
 
-            {/* Cliente: Productora / Agencia */}
+            {/* Cliente: Productora / Agencia / Cliente directo */}
             <Text style={styles.label}>Cliente</Text>
             <View style={styles.clientTypeRow}>
-              {(["productora", "agencia"] as const).map((t) => {
+              {(["productora", "agencia", "directo"] as const).map((t) => {
                 const active = clientType === t;
+                const label =
+                  t === "productora"
+                    ? "Productora"
+                    : t === "agencia"
+                    ? "Agencia"
+                    : "Cliente directo";
+
                 return (
                   <Pressable
                     key={t}
@@ -243,7 +252,7 @@ export default function ContactDetail() {
                         active && styles.clientTypeTextActive,
                       ]}
                     >
-                      {t === "productora" ? "Productora" : "Agencia"}
+                      {label}
                     </Text>
                   </Pressable>
                 );
@@ -402,9 +411,10 @@ const styles = StyleSheet.create({
     color: TEXT,
   },
 
-  // Cliente: productora / agencia
+  // Cliente: productora / agencia / directo
   clientTypeRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 6,
     marginTop: 4,
   },
