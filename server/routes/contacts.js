@@ -140,7 +140,6 @@ router.get(
 );
 
 
-
 /**
  * POST /contacts
  * Crear contacto (incluye client_type)
@@ -339,6 +338,123 @@ router.delete(
       return res.status(404).json({ error: "not_found" });
 
     res.json({ ok: true });
+  })
+);
+
+/**
+ * GET /contacts/export-all-csv
+ * Exporta TODOS los contactos de la tabla contacts (todos los tenants).
+ * Solo para usuarios con rol GLOBAL admin u owner.
+ * Opcional: ?since=TIMESTAMP_MS → solo contactos con updated_at > since.
+ */
+router.get(
+  "/contacts/export-all-csv",
+  wrap(async (req, res) => {
+    const { resolveUserId } = require("../lib/authorize");
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    // Rol global del usuario
+    const user = await db
+      .prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`)
+      .get(userId);
+    const role = user?.role || "member";
+
+    if (role !== "admin" && role !== "owner") {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const sinceRaw = req.query?.since;
+    let sinceMs = 0;
+    if (sinceRaw != null) {
+      const n = Number(sinceRaw);
+      if (Number.isFinite(n) && n > 0) {
+        sinceMs = n;
+      }
+    }
+
+    const clauses = ["1=1"];
+    const params = [];
+
+    if (sinceMs > 0) {
+      clauses.push("updated_at > ?");
+      params.push(sinceMs);
+    }
+
+    const rows = await db
+      .prepare(
+        `
+        SELECT 
+          id,
+          tenant_id,
+          name,
+          email,
+          phone,
+          company,
+          position,
+          client_type,
+          account_id,
+          created_by,
+          created_at,
+          updated_at
+        FROM contacts
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY tenant_id ASC, created_at ASC
+      `
+      )
+      .all(...params);
+
+    const headers = [
+      "id",
+      "tenant_id",
+      "name",
+      "email",
+      "phone",
+      "company",
+      "position",
+      "client_type",
+      "account_id",
+      "created_by",
+      "created_at",
+      "updated_at",
+    ];
+
+    const esc = (val) => {
+      if (val === null || val === undefined) return "";
+      const s = String(val);
+      if (
+        s.includes('"') ||
+        s.includes(",") ||
+        s.includes("\n") ||
+        s.includes("\r")
+      ) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    };
+
+    const lines = [
+      headers.join(","),
+      ...rows.map((r) => headers.map((h) => esc(r[h])).join(",")),
+    ];
+    const csv = lines.join("\r\n");
+
+    const now = new Date();
+    const pad = (n) => (n < 10 ? "0" + n : String(n));
+    const filename = `contacts-all-${now.getFullYear()}${pad(
+      now.getMonth() + 1
+    )}${pad(now.getDate())}-${pad(now.getHours())}${pad(
+      now.getMinutes()
+    )}.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`
+    );
+    res.send(csv);
   })
 );
 
