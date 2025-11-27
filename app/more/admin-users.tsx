@@ -2,14 +2,14 @@
 import { Stack, router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Modal,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import { api } from "../../src/api/http";
 import { COLORS, RADIUS } from "../../src/theme";
@@ -181,26 +181,37 @@ export default function AdminUsers() {
     });
   };
 
-  const executeChangeGlobalRole = async () => {
-    if (!confirmDialog.userId || !confirmDialog.newRole) return;
-    setConfirmDialog((d) => ({ ...d, visible: false }));
+ const executeChangeGlobalRole = async () => {
+  if (!confirmDialog.userId || !confirmDialog.newRole) return;
 
-    try {
-      setUpdatingUserId(confirmDialog.userId);
-      await api.put(`/admin/users/${confirmDialog.userId}/role`, {
-        role: confirmDialog.newRole,
-      });
-      Alert.alert(
-        "Éxito",
-        `Usuario actualizado a ${confirmDialog.newRole === "admin" ? "Admin 🔑" : "Member 👤"}`
-      );
-      await loadUsers();
-    } catch (err: any) {
-      Alert.alert("Error", err?.message || "No se pudo cambiar el rol");
-    } finally {
-      setUpdatingUserId(null);
-    }
-  };
+  setConfirmDialog((d) => ({ ...d, visible: false }));
+
+  try {
+    setUpdatingUserId(confirmDialog.userId);
+
+    // 👇 Coincide con tu backend: POST + /change-role + body.newRole
+    await api.post(`/admin/users/${confirmDialog.userId}/change-role`, {
+      newRole: confirmDialog.newRole,
+    });
+
+    Alert.alert(
+      "Éxito",
+      `Usuario actualizado a ${
+        confirmDialog.newRole === "admin" ? "Admin 🔑" :
+        confirmDialog.newRole === "owner" ? "Owner 👑" :
+        "Member 👤"
+      }`
+    );
+
+    await loadUsers();
+  } catch (err: any) {
+    console.error("❌ Error cambiando rol global:", err);
+    Alert.alert("Error", err?.message || "No se pudo cambiar el rol");
+  } finally {
+    setUpdatingUserId(null);
+  }
+};
+
 
   const handleConfirm = () => {
     if (confirmDialog.type === "toggle-active") executeToggleActive();
