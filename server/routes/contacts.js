@@ -84,10 +84,10 @@ router.get(
 /**
  * GET /contacts/:id
  * Detalle por id dentro del tenant.
+ * Cualquier usuario del tenant puede verlo (admin, owner, member).
  */
 router.get(
   "/contacts/:id",
-  canRead("contacts"),
   wrap(async (req, res) => {
     const row = await db
       .prepare(
@@ -103,11 +103,14 @@ router.get(
       )
       .get(req.params.id, req.tenantId);
 
-    if (!row) return res.status(404).json({ error: "not_found" });
+    if (!row) {
+      return res.status(404).json({ error: "not_found" });
+    }
 
     res.json(row);
   })
 );
+
 /**
  * GET /contacts-all
  * Devuelve TODOS los contactos de la tabla contacts, sin filtro de tenant.
