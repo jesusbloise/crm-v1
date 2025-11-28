@@ -240,18 +240,22 @@ r.post("/tenants/switch", async (req, res) => {
 
 
 /* =========================================================
-   GET /tenants/discover → búsqueda de workspaces
+   GET /tenants/discover → búsqueda de workspaces (case-insensitive)
 ========================================================= */
 r.get("/tenants/discover", async (req, res) => {
   try {
-    const q = String(req.query.query || "").trim();
-    console.log('🔍 /tenants/discover - query:', q);
-    
-    if (!q) return res.json({ items: [] });
+    // Aceptamos tanto ?query= como ?q= por si acaso
+    const raw = String(req.query.query || req.query.q || "").trim();
+    console.log("🆔 DISCOVER_VERSION=v4");
+    console.log("🔍 /tenants/discover - query:", raw);
+
+    if (!raw) {
+      return res.json({ items: [] });
+    }
 
     const userId = resolveUserId(req);
-    const searchPattern = `%${q}%`;
-    
+    const pattern = `%${raw.toLowerCase()}%`;
+
     const rows = await db
       .prepare(
         `SELECT 
@@ -263,20 +267,23 @@ r.get("/tenants/discover", async (req, res) => {
           (t.created_by = $1) AS is_creator
         FROM tenants t
         LEFT JOIN users u ON u.id = t.created_by
-        WHERE t.id LIKE $2 OR t.name LIKE $3
+        WHERE 
+          LOWER(t.id)   LIKE $2 OR 
+          LOWER(t.name) LIKE $3
         ORDER BY t.name ASC
         LIMIT 20`
       )
-      .all(userId, searchPattern, searchPattern);
+      .all(userId, pattern, pattern);
 
-    console.log('✅ Found workspaces:', rows?.length || 0);
-    
+    console.log("✅ Found workspaces:", rows?.length || 0);
+
     return res.json({ items: rows || [] });
   } catch (e) {
     console.error("GET /tenants/discover error:", e);
     return res.status(500).json({ error: "internal_error", message: e.message });
   }
 });
+
 /* =========================================================
    GET /tenants/members → miembros del workspace activo
 ========================================================= */
