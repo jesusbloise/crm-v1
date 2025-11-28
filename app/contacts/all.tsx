@@ -6,16 +6,16 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Stack } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Platform,
-    Pressable,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Platform,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
 /* 🎨 Tema consistente (igual que index) */
@@ -120,7 +120,7 @@ export default function ContactsAllList() {
   const errorMsg = (q.error as any)?.message || "";
 
   // 🔄 Backup de TODOS los contactos (solo admin/owner)
-  const handleBackupPress = useCallback(async () => {
+    const handleBackupPress = useCallback(async () => {
     try {
       if (!isAdmin) {
         Alert.alert(
@@ -135,23 +135,8 @@ export default function ContactsAllList() {
         return;
       }
 
-      // último backup
-      const last = await AsyncStorage.getItem(EXPORT_TS_KEY);
-      const lastTs = last ? Number(last) : 0;
-
-      // buscamos la fecha de creación más reciente
-      const maxCreated = data.reduce((max: number, c: any) => {
-        const v = c.created_at ? Number(c.created_at) : 0;
-        return v > max ? v : max;
-      }, 0);
-
-      if (lastTs && maxCreated && lastTs >= maxCreated) {
-        Alert.alert(
-          "Sin cambios",
-          "No hay contactos nuevos desde el último backup."
-        );
-        return;
-      }
+      // 👉 ya no bloqueamos por último backup
+      // igual podemos seguir guardando la marca de tiempo solo informativa
 
       // construimos CSV desde data
       const headers = [
@@ -214,11 +199,18 @@ export default function ContactsAllList() {
         );
       }
 
-      // guardamos como "último backup" el maxCreated (o ahora mismo)
+      // 👉 ahora solo marcamos la fecha del último backup, pero no bloquea
+      const maxCreated = data.reduce((max: number, c: any) => {
+        const v = c.created_at ? Number(c.created_at) : 0;
+        return v > max ? v : max;
+      }, 0);
       const toStore = maxCreated || Date.now();
       await AsyncStorage.setItem(EXPORT_TS_KEY, String(toStore));
 
-      Alert.alert("Backup generado", "Se ha generado el archivo de contactos.");
+      Alert.alert(
+        "Backup generado",
+        "Se ha generado el archivo de contactos."
+      );
     } catch (e: any) {
       console.error("Error generando backup:", e);
       Alert.alert(
@@ -227,6 +219,7 @@ export default function ContactsAllList() {
       );
     }
   }, [isAdmin, data]);
+
 
   return (
     <>

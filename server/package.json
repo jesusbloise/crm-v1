@@ -13,6 +13,7 @@
     "db:schema:local": "node scripts/print-local-schema.js"
   },
   "dependencies": {
+    "axios": "^1.13.2",
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^9.6.0",
     "cors": "^2.8.5",

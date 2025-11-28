@@ -1,49 +1,70 @@
-const nodemailer = require("nodemailer");
+// server/lib/mailer.js
+const axios = require("axios");
 
-const {
-  SMTP_HOST,
-  SMTP_PORT,
-  SMTP_USER,
-  SMTP_PASS,
-  MAIL_FROM,
-} = process.env;
+const API_KEY = process.env.BREVO_API_KEY;
+const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL;
+const SENDER_NAME = process.env.BREVO_SENDER_NAME || "CRM Atomica";
 
-if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS || !MAIL_FROM) {
-  console.warn("⚠️ Falta configuración SMTP en .env, no se enviarán correos");
+if (!API_KEY) {
+  console.warn("⚠️ BREVO_API_KEY no está definida. No se podrán enviar correos.");
+}
+if (!SENDER_EMAIL) {
+  console.warn("⚠️ BREVO_SENDER_EMAIL no está definida. Brevo puede rechazar el envío.");
 }
 
-const transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: Number(SMTP_PORT) || 587,
-  secure: false,            // Gmail + 587 = STARTTLS
-  requireTLS: true,
-  auth: {
-    user: SMTP_USER.trim(),
-    pass: SMTP_PASS.trim(),
-  },
-});
-
-async function sendMail({ to, subject, html, text }) {
-  console.log("📨 Intentando enviar correo a:", to, "asunto:", subject);
-
-  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-    console.warn("⚠️ SMTP no configurado, simulando envío:", { to, subject });
-    return;
+async function sendMail({ to, subject, text, html }) {
+  if (!API_KEY) {
+    throw new Error("BREVO_API_KEY missing");
   }
+  if (!to) {
+    throw new Error("sendMail: 'to' es obligatorio");
+  }
+
+  const payload = {
+    sender: {
+      email: SENDER_EMAIL,
+      name: SENDER_NAME,
+    },
+    to: [
+      {
+        email: to,
+      },
+    ],
+    subject,
+    textContent: text || "",
+    htmlContent: html || "",
+  };
 
   try {
-    const info = await transporter.sendMail({
-      from: MAIL_FROM,
-      to,
-      subject,
-      text,
-      html,
-    });
+    console.log("📤 Enviando correo vía Brevo a:", to);
+    const res = await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      payload,
+      {
+        headers: {
+          "api-key": API_KEY,
+          "Content-Type": "application/json",
+          accept: "application/json",
+        },
+        timeout: 10000,
+      }
+    );
 
-    console.log("📧 Email enviado OK:", info.messageId);
+    console.log("✅ Brevo respuesta OK:", res.status, res.data?.messageId || "");
+    return res.data;
   } catch (err) {
-    console.error("❌ Error enviando correo:", err);
+    // Log detallado para debug
+    console.error("❌ Error al enviar correo con Brevo:");
+    if (err.response) {
+      console.error("Status:", err.response.status);
+      console.error("Data:", err.response.data);
+    } else {
+      console.error("Mensaje:", err.message);
+    }
+    throw err;
   }
 }
 
-module.exports = { sendMail };
+module.exports = {
+  sendMail,
+};
