@@ -102,20 +102,53 @@ export default function ContactsAllList() {
     ];
   }, [data]);
 
-  const filtered = useMemo(() => {
+    const filtered = useMemo(() => {
+    // 1) Filtro por pestaña (cargo)
     const byTab =
       activePos === "Todos"
         ? data
         : data.filter((c: any) => positionKey(c) === activePos);
+
+    // 2) Filtro por buscador
     const bySearch = search
       ? byTab.filter((c: any) => matchesContact(search, c))
       : byTab;
-    return [...bySearch].sort((a: any, b: any) =>
+
+    // 3) Agrupar por "persona" para que no se duplique en la UI
+    //    clave = nombre normalizado + email + teléfono
+    const map = new Map<string, any>();
+
+    for (const c of bySearch as any[]) {
+      const key =
+        normalize(c.name || "") +
+        "|" +
+        (c.email || "").toLowerCase() +
+        "|" +
+        (c.phone || "").trim();
+
+      const existing = map.get(key);
+      if (!existing) {
+        // guardamos el primero y empezamos contador
+        map.set(key, {
+          ...c,
+          tenant_count: 1,
+        });
+      } else {
+        // mismo contacto en otro workspace
+        existing.tenant_count = (existing.tenant_count || 1) + 1;
+      }
+    }
+
+    const arr = Array.from(map.values());
+
+    // 4) Ordenar por nombre
+    return arr.sort((a: any, b: any) =>
       (a?.name ?? "").localeCompare(b?.name ?? "", "es", {
         sensitivity: "base",
       })
     );
   }, [data, activePos, search]);
+
 
   const errorMsg = (q.error as any)?.message || "";
 
@@ -380,15 +413,25 @@ export default function ContactsAllList() {
                 >
                   <View style={{ flex: 1 }}>
                     <View style={styles.nameRow}>
-                      <Text style={styles.name} numberOfLines={1}>
-                        {item.name}
-                      </Text>
-                      {item.created_by_name && (
-                        <Text style={styles.creator} numberOfLines={1}>
-                          · {item.created_by_name}
-                        </Text>
-                      )}
-                    </View>
+  <Text style={styles.name} numberOfLines={1}>
+    {item.name}
+  </Text>
+
+  {/* quién lo creó */}
+  {item.created_by_name && (
+    <Text style={styles.creator} numberOfLines={1}>
+      · {item.created_by_name}
+    </Text>
+  )}
+
+  {/* cuántos workspaces (si está en más de uno) */}
+  {item.tenant_count > 1 && (
+    <Text style={styles.wsTag} numberOfLines={1}>
+      · {item.tenant_count} WS
+    </Text>
+  )}
+</View>
+
                     <Text style={styles.sub}>
                       {strip(item.position) ||
                         strip(item.company) ||
@@ -578,5 +621,11 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.16)",
   },
   retryText: { color: "#fff", fontWeight: "900" },
+    wsTag: {
+    color: ACCENT_2,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
 });
 
