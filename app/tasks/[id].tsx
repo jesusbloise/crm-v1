@@ -65,7 +65,7 @@ export default function TaskDetail() {
   // dropdown de estado
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
 
-  // 👇 Estado LOCAL solo visual para el dropdown
+  // 👇 Estado LOCAL solo visual para el dropdown (lo dejamos por si luego vuelves a usar badges)
   const [localStatus, setLocalStatus] = useState<Status | null>(null);
 
   // Cargar maestro UI
@@ -175,9 +175,9 @@ export default function TaskDetail() {
       ).catch(() => {});
       return next;
     });
-    // agregar a en proceso
+    // ✅ agregar a en proceso (aquí estaba el bug: antes no agregaba si no existía)
     setInProgressMaster((prev) => {
-      if (!prev.has(actId)) return prev;
+      if (prev.has(actId)) return prev;
       const next = new Set(prev);
       next.add(actId);
       AsyncStorage.setItem(
@@ -209,16 +209,22 @@ export default function TaskDetail() {
       alert("No se pudo eliminar la actividad. Intenta nuevamente."),
   });
 
-  // 🔁 Reasignar (0, 1 o 2 personas)
+    // 🔁 Reasignar (0, 1 o 2 personas)
   const mReassign = useMutation({
-    // ⚠️ CAMBIO: agregamos title opcional al payload para que no se pierda
+    // Ahora mandamos también notas y relaciones para que NO se pierdan
     mutationFn: async (payload: {
       assigned_to: string | null;
       assigned_to_2: string | null;
-      title?: string;
+      title?: string | null;
+      notes?: string | null;
+      account_id?: string | null;
+      contact_id?: string | null;
+      deal_id?: string | null;
+      lead_id?: string | null;
     }) => {
       if (!id) throw new Error("Missing activity id");
-      await updateActivity(id, payload);
+      // 👇 Aquí forzamos el tipo para que TS no moleste
+      await updateActivity(id, payload as any);
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["activity", id] });
@@ -232,6 +238,7 @@ export default function TaskDetail() {
       );
     },
   });
+
 
   // Buscar en cache de la lista para rellenar
   const listAll =
@@ -272,18 +279,18 @@ export default function TaskDetail() {
       }
     }
 
-    // ⚠️ CAMBIO: mandamos también el título actual para que el backend no lo pise
+    // ✅ Mandamos también notas y relaciones actuales para no perderlas
     mReassign.mutate({
       assigned_to: primary,
       assigned_to_2: secondary,
-      title: activity.title,
+      title: activity.title ?? null,
+      notes: activity.notes ?? null,
+      account_id: activity.account_id ?? null,
+      contact_id: activity.contact_id ?? null,
+      deal_id: activity.deal_id ?? null,
+      lead_id: activity.lead_id ?? null,
     });
   };
-
-  // Estado efectivo solo para UI
-  const currentStatus: Status = (localStatus ??
-    (activity?.status as Status) ??
-    "open") as Status;
 
   // Chips “Relacionado con…”
   const contextChips = useMemo(() => {
@@ -328,12 +335,15 @@ export default function TaskDetail() {
     return cs;
   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
 
-  const isDoneUI = activity
-    ? activity.status === "done" || completedMaster.has(activity.id)
-    : false;
+  // ✅ done si viene del backend o si está marcado en UI
+  const isDoneUI =
+    activity?.status === "done" || completedMaster.has(activity?.id ?? "");
 
+  // ✅ EN PROCESO si el backend dice "canceled" (tu significado)
+  // o si la UI lo marcó
   const isInProgressUI =
-    activity && !isDoneUI ? inProgressMaster.has(activity.id) : false;
+    (!isDoneUI && activity?.status === "canceled") ||
+    inProgressMaster.has(activity?.id ?? "");
 
   const statusLabel = isDoneUI
     ? "Realizada"
@@ -387,7 +397,7 @@ export default function TaskDetail() {
                   : "Sin título"}
               </Text>
 
-              {/* Línea resumen estilo RelatedActivities, ahora con 2 asignados */}
+              {/* Línea resumen: tipo, estado, creador, asignados, fecha de creación */}
               {(() => {
                 const a = activity;
                 const statusText = statusLabel;
@@ -529,6 +539,7 @@ export default function TaskDetail() {
                       <Pressable
                         style={styles.statusOption}
                         onPress={() => {
+                          if (!activity) return;
                           markAsOpen(activity.id);
                           setLocalStatus("open");
                           setStatusMenuOpen(false);
@@ -541,6 +552,7 @@ export default function TaskDetail() {
                       <Pressable
                         style={styles.statusOption}
                         onPress={() => {
+                          if (!activity) return;
                           markInProgress(activity.id);
                           setLocalStatus("canceled");
                           setStatusMenuOpen(false);
@@ -553,6 +565,7 @@ export default function TaskDetail() {
                       <Pressable
                         style={styles.statusOption}
                         onPress={() => {
+                          if (!activity) return;
                           markAsCompleted(activity.id);
                           setLocalStatus("done");
                           setStatusMenuOpen(false);
@@ -563,31 +576,6 @@ export default function TaskDetail() {
                     </View>
                   )}
                 </View>
-              </View>
-
-              {/* Badges tipo/estado */}
-              <View style={styles.rowWrap}>
-                <Text
-                  style={[
-                    styles.badgeSoft,
-                    badgeByType(activity.type, isDoneUI),
-                  ]}
-                >
-                  {labelByType(activity.type)}
-                </Text>
-                <Text
-                  style={[
-                    styles.badgeSoft,
-                    badgeByStatus(currentStatus, isDoneUI),
-                  ]}
-                >
-                  {labelByStatus(currentStatus, isDoneUI)}
-                </Text>
-                {isDoneUI && (
-                  <Text style={[styles.badgeSolidDone]}>
-                    ✔ Tarea completada
-                  </Text>
-                )}
               </View>
 
               {/* Notas */}
@@ -758,12 +746,26 @@ function formatDateTime(ms?: number | null) {
   })}`;
 }
 
-function formatDateShort(ms?: number | null) {
-  if (!ms) return "—";
-  const d = new Date(ms);
+function formatDateShort(
+  value?: number | string | null
+): string {
+  if (value == null) return "—";
+
+  // Si es número o string numérico (timestamp)
+  if (typeof value === "number" || /^\d+$/.test(String(value))) {
+    const n = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(n)) return "—";
+    const d = new Date(n);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString();
+  }
+
+  // Si es un string tipo "2025-12-03T15:20:00Z"
+  const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString();
 }
+
 
 /* ——— Estilos ——— */
 const styles = StyleSheet.create({
@@ -925,6 +927,7 @@ const styles = StyleSheet.create({
 });
 
 
+
 // // app/tasks/[id].tsx
 // import { updateActivity } from "@/src/api/activities";
 // import {
@@ -1032,7 +1035,8 @@ const styles = StyleSheet.create({
 //   const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
 //   const qDeal = useQuery({ queryKey: ["deals"], queryFn: listDeals });
 //   const qLead = useQuery({ queryKey: ["leads"], queryFn: listLeads });
-//     // Miembros del workspace actual (para reasignar)
+
+//   // Miembros del workspace actual (para reasignar)
 //   const qMembers = useQuery<TenantMember[]>({
 //     queryKey: ["tenant-members"],
 //     queryFn: listTenantMembers,
@@ -1103,7 +1107,7 @@ const styles = StyleSheet.create({
 //     });
 //     // agregar a en proceso
 //     setInProgressMaster((prev) => {
-//       if (prev.has(actId)) return prev;
+//       if (!prev.has(actId)) return prev;
 //       const next = new Set(prev);
 //       next.add(actId);
 //       AsyncStorage.setItem(
@@ -1135,11 +1139,13 @@ const styles = StyleSheet.create({
 //       alert("No se pudo eliminar la actividad. Intenta nuevamente."),
 //   });
 
-//      const mReassign = useMutation({
-//     // payload puede traer assigned_to o assigned_to_2 (o ambos)
+//   // 🔁 Reasignar (0, 1 o 2 personas)
+//   const mReassign = useMutation({
+//     // ⚠️ CAMBIO: agregamos title opcional al payload para que no se pierda
 //     mutationFn: async (payload: {
-//       assigned_to?: string | null;
-//       assigned_to_2?: string | null;
+//       assigned_to: string | null;
+//       assigned_to_2: string | null;
+//       title?: string;
 //     }) => {
 //       if (!id) throw new Error("Missing activity id");
 //       await updateActivity(id, payload);
@@ -1157,16 +1163,6 @@ const styles = StyleSheet.create({
 //     },
 //   });
 
-//   const handleReassignPrimary = (memberId: string | null) => {
-//     if (!activity) return;
-//     mReassign.mutate({ assigned_to: memberId });
-//   };
-
-//   const handleReassignSecondary = (memberId: string | null) => {
-//     if (!activity) return;
-//     mReassign.mutate({ assigned_to_2: memberId });
-//   };
-
 //   // Buscar en cache de la lista para rellenar
 //   const listAll =
 //     (qc.getQueryData<ActivityWithCreator[]>(["activities-all"]) ?? []) as
@@ -1177,6 +1173,42 @@ const styles = StyleSheet.create({
 //   const activity: ActivityWithCreator | undefined = qAct.data
 //     ? ({ ...(fromList || {}), ...qAct.data } as ActivityWithCreator)
 //     : fromList;
+
+//   // Toggle de asignación para un miembro (máx. 2 personas)
+//   const toggleAssignedMember = (memberId: string) => {
+//     if (!activity) return;
+
+//     let primary = activity.assigned_to ?? null;
+//     let secondary = activity.assigned_to_2 ?? null;
+
+//     const isPrimary = primary === memberId;
+//     const isSecondary = secondary === memberId;
+
+//     if (isPrimary) {
+//       // Si ya es primary → quitarlo
+//       primary = null;
+//     } else if (isSecondary) {
+//       // Si ya es secondary → quitarlo
+//       secondary = null;
+//     } else {
+//       // No está asignado aún
+//       if (!primary) {
+//         primary = memberId;
+//       } else if (!secondary) {
+//         secondary = memberId;
+//       } else {
+//         // Ya hay 2 asignados → reemplazamos el secundario
+//         secondary = memberId;
+//       }
+//     }
+
+//     // ⚠️ CAMBIO: mandamos también el título actual para que el backend no lo pise
+//     mReassign.mutate({
+//       assigned_to: primary,
+//       assigned_to_2: secondary,
+//       title: activity.title,
+//     });
+//   };
 
 //   // Estado efectivo solo para UI
 //   const currentStatus: Status = (localStatus ??
@@ -1226,12 +1258,16 @@ const styles = StyleSheet.create({
 //     return cs;
 //   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
 
-//   const isDoneUI = activity
-//     ? activity.status === "done" || completedMaster.has(activity.id)
-//     : false;
+// // done si viene del backend o si está marcado en UI
+// const isDoneUI =
+//   activity?.status === "done" || completedMaster.has(activity?.id ?? "");
 
-//   const isInProgressUI =
-//     activity && !isDoneUI ? inProgressMaster.has(activity.id) : false;
+// // EN PROCESO si el backend dice "canceled" (tu significado)
+// // o si la UI lo marcó
+// const isInProgressUI =
+//   (!isDoneUI && activity?.status === "canceled") ||
+//   inProgressMaster.has(activity?.id ?? "");
+
 
 //   const statusLabel = isDoneUI
 //     ? "Realizada"
@@ -1329,9 +1365,8 @@ const styles = StyleSheet.create({
 //                 );
 //               })()}
 
-          
 
-//               {/* Asignada a (detalle), ahora mostrando 1 o 2 personas */}
+//               {/* Asignada a (detalle), mostrando 1 o 2 personas */}
 //               <Text style={styles.item}>
 //                 <Text style={styles.itemLabel}>Asignada a: </Text>
 //                 <Text style={styles.itemValue}>
@@ -1357,35 +1392,11 @@ const styles = StyleSheet.create({
 //                 </Text>
 //               </Text>
 
-//                             {/* Asignada a (detalle), ahora mostrando 1 o 2 personas */}
-//               <Text style={styles.item}>
-//                 <Text style={styles.itemLabel}>Asignada a: </Text>
-//                 <Text style={styles.itemValue}>
-//                   {(() => {
-//                     const names: string[] = [];
-
-//                     if (activity.assigned_to_name) {
-//                       names.push(activity.assigned_to_name);
-//                     } else if (activity.assigned_to) {
-//                       names.push(String(activity.assigned_to));
-//                     }
-
-//                     if (activity.assigned_to_2_name) {
-//                       names.push(activity.assigned_to_2_name);
-//                     } else if ((activity as any).assigned_to_2) {
-//                       names.push(String((activity as any).assigned_to_2));
-//                     }
-
-//                     if (names.length === 0) return "Sin asignar";
-//                     if (names.length === 1) return names[0];
-//                     return `${names[0]} y ${names[1]}`;
-//                   })()}
+//               {/* Reasignar actividad: una sola sección, máx. 2 personas */}
+//               <View style={{ marginTop: 8, gap: 6 }}>
+//                 <Text style={styles.itemLabel}>
+//                   Personas asignadas (máx. 2)
 //                 </Text>
-//               </Text>
-
-//                            {/* Reasignar actividad: responsable principal y secundario */}
-//               <View style={{ marginTop: 8, gap: 10 }}>
-//                 <Text style={styles.itemLabel}>Reasignar actividad</Text>
 
 //                 {qMembers.isLoading && (
 //                   <Text style={styles.subtle}>Cargando miembros…</Text>
@@ -1398,87 +1409,35 @@ const styles = StyleSheet.create({
 //                 )}
 
 //                 {qMembers.data && qMembers.data.length > 0 && (
-//                   <>
-//                     {/* Responsable principal */}
-//                     <View style={{ gap: 4 }}>
-//                       <Text style={styles.itemLabel}>Responsable principal</Text>
-//                       <View style={styles.membersRow}>
-//                         {/* Opción "Sin asignar" */}
+//                   <View style={styles.membersRow}>
+//                     {qMembers.data.map((m) => {
+//                       const isAssigned =
+//                         activity.assigned_to === m.id ||
+//                         activity.assigned_to_2 === m.id;
+
+//                       return (
 //                         <Pressable
-//                           key="primary-none"
+//                           key={m.id}
 //                           style={[
 //                             styles.memberChip,
-//                             !activity.assigned_to && styles.memberChipActive,
+//                             isAssigned && styles.memberChipActive,
 //                           ]}
-//                           onPress={() => handleReassignPrimary(null)}
+//                           onPress={() => toggleAssignedMember(m.id)}
 //                           disabled={mReassign.isPending}
 //                         >
-//                           <Text style={styles.memberChipText}>Sin asignar</Text>
+//                           <Text style={styles.memberChipText}>
+//                             {m.name || m.email || m.id}
+//                           </Text>
 //                         </Pressable>
-
-//                         {qMembers.data.map((m) => (
-//                           <Pressable
-//                             key={"primary-" + m.id}
-//                             style={[
-//                               styles.memberChip,
-//                               activity.assigned_to === m.id &&
-//                                 styles.memberChipActive,
-//                             ]}
-//                             onPress={() => handleReassignPrimary(m.id)}
-//                             disabled={mReassign.isPending}
-//                           >
-//                             <Text style={styles.memberChipText}>
-//                               {m.name || m.email || m.id}
-//                             </Text>
-//                           </Pressable>
-//                         ))}
-//                       </View>
-//                     </View>
-
-//                     {/* Responsable secundario */}
-//                     <View style={{ gap: 4, marginTop: 6 }}>
-//                       <Text style={styles.itemLabel}>Responsable secundario</Text>
-//                       <View style={styles.membersRow}>
-//                         {/* Opción "Sin asignar" */}
-//                         <Pressable
-//                           key="secondary-none"
-//                           style={[
-//                             styles.memberChip,
-//                             !activity.assigned_to_2 && styles.memberChipActive,
-//                           ]}
-//                           onPress={() => handleReassignSecondary(null)}
-//                           disabled={mReassign.isPending}
-//                         >
-//                           <Text style={styles.memberChipText}>Sin asignar</Text>
-//                         </Pressable>
-
-//                         {qMembers.data.map((m) => (
-//                           <Pressable
-//                             key={"secondary-" + m.id}
-//                             style={[
-//                               styles.memberChip,
-//                               activity.assigned_to_2 === m.id &&
-//                                 styles.memberChipActive,
-//                             ]}
-//                             onPress={() => handleReassignSecondary(m.id)}
-//                             disabled={mReassign.isPending}
-//                           >
-//                             <Text style={styles.memberChipText}>
-//                               {m.name || m.email || m.id}
-//                             </Text>
-//                           </Pressable>
-//                         ))}
-//                       </View>
-//                     </View>
-//                   </>
+//                       );
+//                     })}
+//                   </View>
 //                 )}
 
 //                 {mReassign.isPending && (
-//                   <Text style={styles.subtle}>Reasignando…</Text>
+//                   <Text style={styles.subtleSmall}>Reasignando…</Text>
 //                 )}
 //               </View>
-
-
 
 //               {/* Estado + dropdown (solo front) */}
 //               <View style={styles.stateRow}>
@@ -1541,7 +1500,7 @@ const styles = StyleSheet.create({
 //                 </View>
 //               </View>
 
-//               {/* Badges tipo/estado */}
+//               {/* Badges tipo/estado
 //               <View style={styles.rowWrap}>
 //                 <Text
 //                   style={[
@@ -1564,7 +1523,7 @@ const styles = StyleSheet.create({
 //                     ✔ Tarea completada
 //                   </Text>
 //                 )}
-//               </View>
+//               </View> */}
 
 //               {/* Notas */}
 //               {!!activity.notes && (
@@ -1872,9 +1831,10 @@ const styles = StyleSheet.create({
 //   btnText: { color: "#fff", fontWeight: "900" },
 
 //   subtle: { color: SUBTLE },
+//   subtleSmall: { color: SUBTLE, fontSize: 11 },
 //   error: { color: "#fecaca" },
 
-//     membersRow: {
+//   membersRow: {
 //     flexDirection: "row",
 //     flexWrap: "wrap",
 //     gap: 8,
@@ -1897,6 +1857,5 @@ const styles = StyleSheet.create({
 //     fontWeight: "700",
 //     fontSize: 12,
 //   },
-
 // });
 
