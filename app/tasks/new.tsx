@@ -1,16 +1,17 @@
 // app/tasks/new.tsx
 import { createActivity, type ActivityType } from "@/src/api/activities";
+import { listContacts } from "@/src/api/contacts";
 import {
   listWorkspaceMembers,
   type WorkspaceMember,
 } from "@/src/api/workspaceMembers";
 
-import { listContacts } from "@/src/api/contacts";
-
+import { createCalendarEventFromActivity } from "@/src/lib/googleCalendar";
 import {
   initNotifications,
   scheduleActivityReminder,
 } from "@/src/utils/notifications";
+
 import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack, useLocalSearchParams } from "expo-router";
@@ -47,14 +48,6 @@ const STATUS_LABEL: Record<ActivityStatus, string> = {
   open: "Abierta",
   in_progress: "En proceso",
   done: "Realizada",
-};
-
-// 👇 Mapeamos al formato real del backend (open/done/canceled)
-type BackendStatus = "open" | "done" | "canceled";
-const mapStatusForBackend = (s: ActivityStatus): BackendStatus => {
-  if (s === "in_progress") return "canceled"; // usamos "canceled" como "En proceso"
-  if (s === "done") return "done";
-  return "open";
 };
 
 /** Igual que MemberOption en RelatedActivities, pero usando el tipo de la API */
@@ -168,8 +161,7 @@ export default function NewActivity() {
         id: uid(),
         type,
         title: title.trim(),
-        // 👇 mapeamos el estado visual al que entiende el backend
-        status: mapStatusForBackend(status),
+        status, // ojo: el backend solo acepta open/done/canceled, igual que antes (mapearás luego si hace falta)
         notes: notes.trim() ? notes.trim() : null,
         due_date: due || null,
         contact_id: contactId || null,
@@ -179,7 +171,12 @@ export default function NewActivity() {
 
       console.log("Nuevo payload actividad (NewActivity):", payload);
 
+      // 1) Crear actividad en tu backend
       await createActivity(payload);
+
+      // 2) Si hay recordatorio → programar notificación local
+      //    y crear evento en Google Calendar usando la misma fecha/hora
+      let eventStart: Date | null = null;
 
       if (remind) {
         const base = parseDueDate(dateStr)!;
@@ -187,23 +184,42 @@ export default function NewActivity() {
         const when = new Date(base);
         when.setHours(t.h, t.m, 0, 0);
 
+        // Notificación local (nativo) o alert en web
         await scheduleActivityReminder({
           activityId: payload.id,
           title: payload.title,
           body: payload.notes || `Recordatorio: ${payload.title}`,
           when,
         });
+
+        eventStart = when;
       }
+
+      // 3) Crear evento en Google Calendar (si tenemos fecha/hora válidas)
+// 3) Crear evento en Google Calendar (si tenemos fecha/hora válidas)
+if (eventStart) {
+  try {
+    await createCalendarEventFromActivity({
+      id: payload.id,
+      title: payload.title,
+      notes: payload.notes ?? null,
+      startAt: eventStart, // la Date completa, GoogleCalendar se encarga del resto
+    });
+  } catch (e) {
+    console.warn("No se pudo crear evento en Google Calendar:", e);
+  }
+}
+
+
     },
     onSuccess: async () => {
-      // 👇 invalidamos todas las listas relevantes
-      await qc.invalidateQueries({ queryKey: ["activities-all"] });
-      await qc.invalidateQueries({ queryKey: ["activities"] });
-      if (contactId) {
-        await qc.invalidateQueries({
-          queryKey: ["activities", { contact_id: contactId } as any],
-        });
-      }
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["activities"] }),
+        contactId &&
+          qc.invalidateQueries({
+            queryKey: ["activities", { contact_id: contactId } as any],
+          }),
+      ]);
       router.back();
     },
     onError: (e: any) => {
@@ -249,7 +265,9 @@ export default function NewActivity() {
               </Pressable>
             );
           })}
-          {items.length === 0 && <Text style={styles.subtle}>— vacío —</Text>}
+          {items.length === 0 && (
+            <Text style={styles.subtle}>— vacío —</Text>
+          )}
         </View>
       </View>
     );
@@ -328,7 +346,11 @@ export default function NewActivity() {
                 <Text
                   style={[styles.pillText, active && styles.pillTextActive]}
                 >
-                  {t === "task" ? "Tarea" : t === "call" ? "Llamada" : "Reunión"}
+                  {t === "task"
+                    ? "Tarea"
+                    : t === "call"
+                    ? "Llamada"
+                    : "Reunión"}
                 </Text>
               </Pressable>
             );
@@ -343,7 +365,10 @@ export default function NewActivity() {
             onPress={() => setStatusMenuOpen((v) => !v)}
           >
             <View
-              style={[styles.statusDot, styles[`statusDot_${status}` as const]]}
+              style={[
+                styles.statusDot,
+                styles[`statusDot_${status}` as const],
+              ]}
             />
             <Text style={styles.statusDropdownText}>
               {STATUS_LABEL[status]}
@@ -377,7 +402,9 @@ export default function NewActivity() {
           <Text style={styles.label}>Asignación</Text>
 
           {qMembers.isLoading ? (
-            <Text style={styles.subtle}>Cargando miembros del workspace…</Text>
+            <Text style={styles.subtle}>
+              Cargando miembros del workspace…
+            </Text>
           ) : qMembers.isError ? (
             <Text style={styles.error}>
               Error cargando miembros del workspace
@@ -477,7 +504,9 @@ export default function NewActivity() {
             />
           </View>
           <View style={{ alignItems: "center" }}>
-            <Text style={[styles.label, { marginBottom: 6 }]}>Recordarme</Text>
+            <Text style={[styles.label, { marginBottom: 6 }]}>
+              Recordarme
+            </Text>
             <Switch
               value={remind}
               onValueChange={setRemind}
@@ -629,7 +658,7 @@ const styles = StyleSheet.create({
     color: TEXT,
   },
 
-  // Dropdown de asignación (compacto)
+  // Dropdown de asignación (compacto, armonizado con RelatedActivities pero dark)
   assignDropdownTrigger: {
     borderRadius: 999,
     borderWidth: 1,
@@ -710,8 +739,10 @@ const styles = StyleSheet.create({
 
 // import { listContacts } from "@/src/api/contacts";
 
+// import ToastCenter from "@/src/ui/ToastCenter";
 // import {
 //   initNotifications,
+//   registerToast,
 //   scheduleActivityReminder,
 // } from "@/src/utils/notifications";
 // import { uid } from "@/src/utils/uid";
@@ -791,6 +822,11 @@ const styles = StyleSheet.create({
 //   // vínculo contacto
 //   const [contactId, setContactId] = useState<string | undefined>();
 
+//   // 🔔 Toast local centrado
+//   const [toast, setToast] = useState<{ title: string; msg: string } | null>(
+//     null
+//   );
+
 //   // bloquear si vienen por query
 //   const locked: Partial<Record<RelKey, true>> = useMemo(() => {
 //     const lk: Partial<Record<RelKey, true>> = {};
@@ -806,6 +842,13 @@ const styles = StyleSheet.create({
 
 //   useEffect(() => {
 //     initNotifications().catch(() => {});
+//   }, []);
+
+//   // Registrar callback para que notifications.ts pueda mostrar el toast
+//   useEffect(() => {
+//     registerToast((title, msg) => {
+//       setToast({ title, msg });
+//     });
 //   }, []);
 
 //   // helpers fecha/hora
@@ -863,7 +906,7 @@ const styles = StyleSheet.create({
 //         id: uid(),
 //         type,
 //         title: title.trim(),
-//         status, // ojo: el backend solo acepta open/done/canceled, igual que antes
+//         status, // ojo: el backend solo acepta open/done/canceled, igual que antes (mapearás luego si hace falta)
 //         notes: notes.trim() ? notes.trim() : null,
 //         due_date: due || null,
 //         contact_id: contactId || null,
@@ -942,7 +985,9 @@ const styles = StyleSheet.create({
 //               </Pressable>
 //             );
 //           })}
-//           {items.length === 0 && <Text style={styles.subtle}>— vacío —</Text>}
+//           {items.length === 0 && (
+//             <Text style={styles.subtle}>— vacío —</Text>
+//           )}
 //         </View>
 //       </View>
 //     );
@@ -1021,7 +1066,11 @@ const styles = StyleSheet.create({
 //                 <Text
 //                   style={[styles.pillText, active && styles.pillTextActive]}
 //                 >
-//                   {t === "task" ? "Tarea" : t === "call" ? "Llamada" : "Reunión"}
+//                   {t === "task"
+//                     ? "Tarea"
+//                     : t === "call"
+//                     ? "Llamada"
+//                     : "Reunión"}
 //                 </Text>
 //               </Pressable>
 //             );
@@ -1036,7 +1085,10 @@ const styles = StyleSheet.create({
 //             onPress={() => setStatusMenuOpen((v) => !v)}
 //           >
 //             <View
-//               style={[styles.statusDot, styles[`statusDot_${status}` as const]]}
+//               style={[
+//                 styles.statusDot,
+//                 styles[`statusDot_${status}` as const],
+//               ]}
 //             />
 //             <Text style={styles.statusDropdownText}>
 //               {STATUS_LABEL[status]}
@@ -1070,7 +1122,9 @@ const styles = StyleSheet.create({
 //           <Text style={styles.label}>Asignación</Text>
 
 //           {qMembers.isLoading ? (
-//             <Text style={styles.subtle}>Cargando miembros del workspace…</Text>
+//             <Text style={styles.subtle}>
+//               Cargando miembros del workspace…
+//             </Text>
 //           ) : qMembers.isError ? (
 //             <Text style={styles.error}>
 //               Error cargando miembros del workspace
@@ -1093,7 +1147,9 @@ const styles = StyleSheet.create({
 //                 style={styles.assignDropdownTrigger}
 //                 onPress={() => setAssignDropdownOpen((v) => !v)}
 //               >
-//                 <Text style={styles.assignDropdownText}>{assignedSummary}</Text>
+//                 <Text style={styles.assignDropdownText}>
+//                   {assignedSummary}
+//                 </Text>
 //               </Pressable>
 
 //               {/* Contenido del dropdown: un solo listado donde se pueden marcar hasta 2 */}
@@ -1168,7 +1224,9 @@ const styles = StyleSheet.create({
 //             />
 //           </View>
 //           <View style={{ alignItems: "center" }}>
-//             <Text style={[styles.label, { marginBottom: 6 }]}>Recordarme</Text>
+//             <Text style={[styles.label, { marginBottom: 6 }]}>
+//               Recordarme
+//             </Text>
 //             <Switch
 //               value={remind}
 //               onValueChange={setRemind}
@@ -1220,6 +1278,16 @@ const styles = StyleSheet.create({
 //           <Text style={styles.btnText}>Cancelar</Text>
 //         </Pressable>
 //       </ScrollView>
+
+//       {/* Toast centrado para web / entornos sin notificaciones */}
+//       {toast && (
+//         <ToastCenter
+//           visible={true}
+//           title={toast.title}
+//           message={toast.msg}
+//           onClose={() => setToast(null)}
+//         />
+//       )}
 //     </KeyboardAvoidingView>
 //   );
 // }
@@ -1390,5 +1458,4 @@ const styles = StyleSheet.create({
 //   subtle: { color: SUBTLE },
 //   error: { color: "#fecaca" },
 // });
-
 

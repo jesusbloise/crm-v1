@@ -6,26 +6,18 @@
     "build:web": "NODE_ENV=production expo export -p web --clear --output-dir dist",
     "build:web:vercel": "expo export -p web --clear --output-dir dist",
     "preview:web": "npx serve dist -l 5174",
-
-    
     "start": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start",
     "start:development": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start",
     "android": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start --android",
     "ios": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start --ios",
     "web": "cross-env EXPO_PUBLIC_API_URL=http://localhost:4000 EXPO_PUBLIC_ENV=development expo start --web",
-
     "start:production": "cross-env EXPO_PUBLIC_ENV=production expo start",
-
     "reset-project": "node ./scripts/reset-project.js",
-
-  
     "update:preview": "cross-env EXPO_PUBLIC_API_URL=https://crm-v1-b5rg.onrender.com EXPO_PUBLIC_ENV=production eas update --branch preview -m \"pequeños fixes\"",
     "update:production": "cross-env EXPO_PUBLIC_API_URL=https://crm-v1-b5rg.onrender.com EXPO_PUBLIC_ENV=production eas update --branch production -m \"Update producción\"",
-
     "build:apk:preview": "eas build -p android --profile preview",
     "build:apk:production": "eas build -p android --profile production",
     "build:ios:production": "eas build -p ios --profile production",
-
     "deploy:web": "echo \"push a main y Vercel auto-deploy; si cambias env → Redeploy en Vercel\"",
     "sync:check": "echo \"✅ Backend URL: $EXPO_PUBLIC_API_URL\" && echo \"Todas las plataformas deben usar la misma URL para sincronizar datos\"",
     "lint": "expo lint"
@@ -45,7 +37,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "expo": "54.0.17",
-    "expo-auth-session": "~7.0.8",
+    "expo-auth-session": "~7.0.9",
     "expo-constants": "~18.0.10",
     "expo-font": "~14.0.8",
     "expo-haptics": "~15.0.7",
