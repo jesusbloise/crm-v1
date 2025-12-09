@@ -47,15 +47,13 @@ export default function GoogleCalendarScreen() {
   const [events, setEvents] = useState<GoogleEvent[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
 
+  // 👇 ESTA ERA LA VERSIÓN QUE YA TE FUNCIONABA EN LOCAL
+  const redirectUri = AuthSession.makeRedirectUri();
+  console.log("Redirect URI final ->", redirectUri);
 
-  const redirectUri =
-    typeof window !== "undefined"
-      ? window.location.origin // ej: http://localhost:8081 o https://crm-v1-1-uo1a.onrender.com
-      : AuthSession.makeRedirectUri();
-
-  console.log("🔗 redirectUri Google Calendar:", redirectUri);
+  // solo para mostrarla en la UI en modo desarrollo
+  const debugRedirectUri = redirectUri;
 
   const [request, response, promptAsync] = AuthSession.useAuthRequest(
     {
@@ -270,7 +268,7 @@ export default function GoogleCalendarScreen() {
 
   // Datos para el GRID mensual
   const monthGrid = useMemo(() => {
-    const today = new Date();
+       const today = new Date();
     const year = today.getFullYear();
     const month = today.getMonth();
 
@@ -335,6 +333,14 @@ export default function GoogleCalendarScreen() {
             </Pressable>
           </Link>
         </View>
+
+        {/* DEBUG redirectUri en modo desarrollo */}
+        {__DEV__ && (
+          <Text style={styles.debugText}>
+            DEBUG redirectUri: {debugRedirectUri}
+          </Text>
+        )}
+
         <View style={styles.centerBox}>
           <ActivityIndicator size="small" color="#22D3EE" />
           <Text style={styles.subtitle}>Preparando integración…</Text>
@@ -354,6 +360,13 @@ export default function GoogleCalendarScreen() {
           </Pressable>
         </Link>
       </View>
+
+      {/* DEBUG redirectUri en modo desarrollo */}
+      {__DEV__ && (
+        <Text style={styles.debugText}>
+          DEBUG redirectUri: {debugRedirectUri}
+        </Text>
+      )}
 
       {!accessToken ? (
         <View style={styles.centerBox}>
@@ -505,12 +518,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8,
+    marginBottom: 4,
   },
   title: {
     color: TEXT,
     fontSize: 20,
     fontWeight: "900",
+  },
+  debugText: {
+    color: SUBTLE,
+    fontSize: 10,
+    marginBottom: 6,
   },
   newActivityBtn: {
     backgroundColor: PRIMARY,
@@ -693,6 +711,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 });
+
 
 // // app/calendar/google.tsx
 // import { api } from "@/src/api/http";
