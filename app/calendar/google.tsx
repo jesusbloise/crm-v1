@@ -48,8 +48,14 @@ export default function GoogleCalendarScreen() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-const redirectUri = AuthSession.makeRedirectUri();
 
+
+  const redirectUri =
+    typeof window !== "undefined"
+      ? window.location.origin // ej: http://localhost:8081 o https://crm-v1-1-uo1a.onrender.com
+      : AuthSession.makeRedirectUri();
+
+  console.log("🔗 redirectUri Google Calendar:", redirectUri);
 
   const [request, response, promptAsync] = AuthSession.useAuthRequest(
     {
