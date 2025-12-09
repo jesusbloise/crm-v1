@@ -7,6 +7,7 @@ import * as WebBrowser from "expo-web-browser";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,12 +24,11 @@ const discovery = {
   revocationEndpoint: "https://oauth2.googleapis.com/revoke",
 };
 
-// Clave para guardar el token en AsyncStorage
 const STORAGE_KEY = "crm:googleCalendarToken";
 
 type StoredToken = {
   accessToken: string;
-  expiresAt: number; // epoch ms
+  expiresAt: number;
 };
 
 type GoogleEvent = {
@@ -48,12 +48,15 @@ export default function GoogleCalendarScreen() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 👇 ESTA ERA LA VERSIÓN QUE YA TE FUNCIONABA EN LOCAL
-  const redirectUri = AuthSession.makeRedirectUri();
-  console.log("Redirect URI final ->", redirectUri);
+  const isWeb = Platform.OS === "web";
 
-  // solo para mostrarla en la UI en modo desarrollo
-  const debugRedirectUri = redirectUri;
+  const redirectUri = isWeb
+    ? window.location.hostname === "localhost"
+      ? "http://localhost:8081"
+      : "https://crm-v1-1-uo1a.onrender.com/"
+    : AuthSession.makeRedirectUri();
+
+  console.log("[GoogleCalendar] redirectUri =>", redirectUri);
 
   const [request, response, promptAsync] = AuthSession.useAuthRequest(
     {
@@ -61,24 +64,20 @@ export default function GoogleCalendarScreen() {
       scopes: ["https://www.googleapis.com/auth/calendar.readonly"],
       redirectUri,
       responseType: AuthSession.ResponseType.Token,
-      usePKCE: false, // importante para evitar el error de code_challenge
+      usePKCE: false,
     },
     discovery
   );
 
-  // 1) Al montar, intentamos recuperar un token guardado
   useEffect(() => {
     const loadToken = async () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (!raw) return;
-
         const parsed: StoredToken = JSON.parse(raw);
         if (parsed.expiresAt > Date.now()) {
-          // Token aún válido
           setAccessToken(parsed.accessToken);
         } else {
-          // Expirado, limpiamos
           await AsyncStorage.removeItem(STORAGE_KEY);
         }
       } catch (e) {
@@ -91,12 +90,9 @@ export default function GoogleCalendarScreen() {
   }, []);
 
   useEffect(() => {
-    if (accessToken && loadingToken) {
-      setLoadingToken(false);
-    }
+    if (accessToken && loadingToken) setLoadingToken(false);
   }, [accessToken, loadingToken]);
 
-  // 2) Respuesta OAuth
   useEffect(() => {
     if (!response) return;
     if (response.type === "success") {
@@ -105,10 +101,9 @@ export default function GoogleCalendarScreen() {
         const token = auth.access_token as string;
         const expiresInSec = Number(auth.expires_in ?? 3600);
         const expiresAt =
-          Date.now() + expiresInSec * 1000 - 60 * 1000; // margen 1 min
+          Date.now() + expiresInSec * 1000 - 60 * 1000;
 
         const stored: StoredToken = { accessToken: token, expiresAt };
-
         AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(stored)).catch(
           () => {}
         );
@@ -124,7 +119,6 @@ export default function GoogleCalendarScreen() {
     }
   }, [response]);
 
-  // 3) Cuando tenemos token, cargamos eventos
   useEffect(() => {
     if (!accessToken) return;
     loadEvents(accessToken);
@@ -135,7 +129,6 @@ export default function GoogleCalendarScreen() {
       setLoadingEvents(true);
       setError(null);
 
-      // Traer TODO el mes actual (para parecerse al calendario web)
       const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -152,9 +145,7 @@ export default function GoogleCalendarScreen() {
           encodeURIComponent(timeMax) +
           "&maxResults=250",
         {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { Authorization: `Bearer ${token}` },
         }
       );
 
@@ -177,7 +168,6 @@ export default function GoogleCalendarScreen() {
     }
   }
 
-  // 4) Desconectar
   const handleDisconnect = async () => {
     try {
       await AsyncStorage.removeItem(STORAGE_KEY);
@@ -185,8 +175,6 @@ export default function GoogleCalendarScreen() {
     setAccessToken(null);
     setEvents([]);
   };
-
-  // Helpers de fecha
 
   function parseStart(ev: GoogleEvent) {
     const s = ev.start;
@@ -207,15 +195,11 @@ export default function GoogleCalendarScreen() {
   function formatTimeRange(ev: GoogleEvent) {
     const s = ev.start;
     const e = ev.end;
-    if (s?.date || e?.date) {
-      return "Todo el día";
-    }
+    if (s?.date || e?.date) return "Todo el día";
     if (s?.dateTime && e?.dateTime) {
       const ds = new Date(s.dateTime);
       const de = new Date(e.dateTime);
-      if (Number.isNaN(ds.getTime()) || Number.isNaN(de.getTime())) {
-        return "";
-      }
+      if (Number.isNaN(ds.getTime()) || Number.isNaN(de.getTime())) return "";
       return `${ds.toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
@@ -237,14 +221,13 @@ export default function GoogleCalendarScreen() {
     return dia.toUpperCase();
   }
 
-  // Agrupar por día (para la lista de abajo)
   const grouped = useMemo(() => {
     const map = new Map<string, { date: Date; items: GoogleEvent[] }>();
 
     for (const ev of events) {
       const d = parseStart(ev);
       if (!d) continue;
-      const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+      const key = d.toISOString().slice(0, 10);
       if (!map.has(key)) {
         map.set(key, { date: d, items: [] });
       }
@@ -266,9 +249,8 @@ export default function GoogleCalendarScreen() {
     return arr;
   }, [events]);
 
-  // Datos para el GRID mensual
   const monthGrid = useMemo(() => {
-       const today = new Date();
+    const today = new Date();
     const year = today.getFullYear();
     const month = today.getMonth();
 
@@ -276,20 +258,20 @@ export default function GoogleCalendarScreen() {
     const lastDay = new Date(year, month + 1, 0);
     const daysInMonth = lastDay.getDate();
 
-    // Mapeo día -> eventos
     const eventsByDay = new Map<number, GoogleEvent[]>();
     for (const ev of events) {
       const d = parseStart(ev);
       if (!d) continue;
       if (d.getFullYear() !== year || d.getMonth() !== month) continue;
       const day = d.getDate();
-      if (!eventsByDay.has(day)) eventsByDay.set(day, []);
+      if (!eventsByDay.has(day)) {
+        eventsByDay.set(day, []);
+      }
       eventsByDay.get(day)!.push(ev);
     }
 
-    // En JS getDay() Domingo=0, Lunes=1...; queremos Lunes primera columna
-    const jsFirst = firstDay.getDay(); // 0..6
-    const mondayIndex = (jsFirst + 6) % 7; // 0..6 (Lunes=0)
+    const jsFirst = firstDay.getDay();
+    const mondayIndex = (jsFirst + 6) % 7;
 
     const cells: {
       key: string;
@@ -298,12 +280,10 @@ export default function GoogleCalendarScreen() {
       events: GoogleEvent[];
     }[] = [];
 
-    // huecos antes del 1
     for (let i = 0; i < mondayIndex; i++) {
       cells.push({ key: `empty-${i}`, events: [] });
     }
 
-    // días del mes
     for (let day = 1; day <= daysInMonth; day++) {
       const isToday =
         day === today.getDate() &&
@@ -320,8 +300,6 @@ export default function GoogleCalendarScreen() {
     return { cells, year, month };
   }, [events]);
 
-  // UI
-
   if (loadingToken && !accessToken) {
     return (
       <View style={styles.screen}>
@@ -334,12 +312,11 @@ export default function GoogleCalendarScreen() {
           </Link>
         </View>
 
-        {/* DEBUG redirectUri en modo desarrollo */}
-        {__DEV__ && (
-          <Text style={styles.debugText}>
-            DEBUG redirectUri: {debugRedirectUri}
-          </Text>
-        )}
+        <View style={styles.debugBox}>
+          <Text style={styles.debugLabel}>Platform: {Platform.OS}</Text>
+          <Text style={styles.debugLabel}>redirectUri actual:</Text>
+          <Text style={styles.debugValue}>{redirectUri}</Text>
+        </View>
 
         <View style={styles.centerBox}>
           <ActivityIndicator size="small" color="#22D3EE" />
@@ -351,7 +328,6 @@ export default function GoogleCalendarScreen() {
 
   return (
     <View style={styles.screen}>
-      {/* Barra superior: título + botón de nueva actividad */}
       <View style={styles.topBar}>
         <Text style={styles.title}>Google Calendar</Text>
         <Link href="/tasks/new" asChild>
@@ -361,12 +337,11 @@ export default function GoogleCalendarScreen() {
         </Link>
       </View>
 
-      {/* DEBUG redirectUri en modo desarrollo */}
-      {__DEV__ && (
-        <Text style={styles.debugText}>
-          DEBUG redirectUri: {debugRedirectUri}
-        </Text>
-      )}
+      <View style={styles.debugBox}>
+        <Text style={styles.debugLabel}>Platform: {Platform.OS}</Text>
+        <Text style={styles.debugLabel}>redirectUri actual:</Text>
+        <Text style={styles.debugValue}>{redirectUri}</Text>
+      </View>
 
       {!accessToken ? (
         <View style={styles.centerBox}>
@@ -401,7 +376,6 @@ export default function GoogleCalendarScreen() {
             </View>
           ) : (
             <>
-              {/* GRID mensual tipo Google */}
               <View style={styles.monthHeaderRow}>
                 <Text style={styles.monthTitle}>
                   {new Date(
@@ -459,7 +433,6 @@ export default function GoogleCalendarScreen() {
                 })}
               </View>
 
-              {/* Lista detallada de eventos por día (debajo del grid) */}
               {grouped.length === 0 ? (
                 <View style={[styles.centerBox, { paddingTop: 16 }]}>
                   <Text style={styles.subtitle}>
@@ -499,8 +472,6 @@ export default function GoogleCalendarScreen() {
   );
 }
 
-/* 🎨 Estilos */
-
 const BG = "#0F1115";
 const TEXT = "#F3F4F6";
 const SUBTLE = "#A4ADBD";
@@ -518,17 +489,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 4,
+    marginBottom: 8,
   },
   title: {
     color: TEXT,
     fontSize: 20,
     fontWeight: "900",
-  },
-  debugText: {
-    color: SUBTLE,
-    fontSize: 10,
-    marginBottom: 6,
   },
   newActivityBtn: {
     backgroundColor: PRIMARY,
@@ -555,7 +521,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
   },
-
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -565,7 +530,6 @@ const styles = StyleSheet.create({
   connectedText: {
     color: SUBTLE,
   },
-
   connectBtn: {
     backgroundColor: PRIMARY,
     borderRadius: 999,
@@ -577,7 +541,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
-
   disconnectBtn: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -591,9 +554,23 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
-
-  /* Grid mensual */
-
+  debugBox: {
+    marginBottom: 8,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: "#111827",
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  debugLabel: {
+    color: SUBTLE,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  debugValue: {
+    color: TEXT,
+    fontSize: 11,
+  },
   monthHeaderRow: {
     marginTop: 4,
     marginBottom: 4,
@@ -664,9 +641,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 1,
   },
-
-  /* Lista detallada */
-
   list: {
     paddingTop: 8,
     paddingBottom: 24,
@@ -704,7 +678,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
-
   error: {
     color: "#fecaca",
     marginTop: 8,
