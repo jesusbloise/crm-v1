@@ -48,7 +48,7 @@ export default function GoogleCalendarScreen() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
- const isWeb = Platform.OS === "web";
+const isWeb = Platform.OS === "web";
 
 // Para web usamos SIEMPRE la ruta /calendar/google
 const redirectUri = isWeb
