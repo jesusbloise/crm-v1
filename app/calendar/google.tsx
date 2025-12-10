@@ -48,13 +48,13 @@ export default function GoogleCalendarScreen() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-const isWeb = Platform.OS === "web";
+  const isWeb = Platform.OS === "web";
 
-// Para web usamos SIEMPRE la ruta /calendar/google
-const redirectUri = isWeb
-  ? `${window.location.origin}/calendar/google`
-  : AuthSession.makeRedirectUri();
-
+  const redirectUri = isWeb
+    ? window.location.hostname === "localhost"
+      ? "http://localhost:8081"
+      : "https://crm-v1-1-uo1a.onrender.com/"
+    : AuthSession.makeRedirectUri();
 
   console.log("[GoogleCalendar] redirectUri =>", redirectUri);
 
