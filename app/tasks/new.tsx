@@ -122,27 +122,35 @@ export default function NewActivity() {
     if (!m) return null;
     return { h: Number(m[1]), m: Number(m[2]) };
   };
+const validate = () => {
+  if (!title.trim()) return "El título es obligatorio.";
 
-  const validate = () => {
-    if (!title.trim()) return "El título es obligatorio.";
-    if (dateStr.trim()) {
-      const ts = parseDueDate(dateStr);
-      if (isNaN(ts as any)) return "La fecha debe ser YYYY-MM-DD.";
-    }
-    if (remind) {
-      if (!dateStr.trim()) return "Para recordar, ingresa una fecha.";
-      if (!timeStr.trim() || !parseTime(timeStr))
-        return "La hora debe ser HH:MM (24h).";
+  // 🔥 NUEVA REGLA: debe tener contacto sí o sí
+  if (!contactId) return "Debes seleccionar un contacto.";
 
-      const due = parseDueDate(dateStr)!;
-      const t = parseTime(timeStr)!;
-      const when = new Date(due);
-      when.setHours(t.h, t.m, 0, 0);
-      if (when.getTime() <= Date.now())
-        return "El recordatorio debe ser en el futuro.";
-    }
-    return null;
-  };
+  if (dateStr.trim()) {
+    const ts = parseDueDate(dateStr);
+    if (isNaN(ts as any)) return "La fecha debe ser YYYY-MM-DD.";
+  }
+
+  if (remind) {
+    if (!dateStr.trim()) return "Para recordar, ingresa una fecha.";
+
+    if (!timeStr.trim() || !parseTime(timeStr))
+      return "La hora debe ser HH:MM (24h).";
+
+    const due = parseDueDate(dateStr)!;
+    const t = parseTime(timeStr)!;
+    const when = new Date(due);
+    when.setHours(t.h, t.m, 0, 0);
+
+    if (when.getTime() <= Date.now())
+      return "El recordatorio debe estar en el futuro.";
+  }
+
+  return null;
+};
+
 
  const mCreate = useMutation({
   mutationFn: async () => {
@@ -478,7 +486,7 @@ export default function NewActivity() {
         />
 
         {/* Fecha / Hora simple */}
-        <Text style={styles.label}>Fecha (YYYY-MM-DD)</Text>
+        <Text style={styles.label}>Fecha (YYYY-MM-DD) Agregar al calendario</Text>
         <TextInput
           style={styles.input}
           value={dateStr}
