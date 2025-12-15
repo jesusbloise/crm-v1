@@ -1,23 +1,19 @@
-
-
 // app/tasks/[id].tsx
-import { updateActivity } from "@/src/api/activities";
-import {
-  listTenantMembers,
-  type TenantMember,
-} from "@/src/api/tenants";
-
-import { listAccounts } from "@/src/api/accounts";
 import {
   deleteActivity,
   getActivity,
   listActivities,
+  updateActivity,
   type Activity,
   type ActivityStatus,
 } from "@/src/api/activities";
+import { listTenantMembers, type TenantMember } from "@/src/api/tenants";
+
+import { listAccounts } from "@/src/api/accounts";
 import { listContacts } from "@/src/api/contacts";
 import { listDeals } from "@/src/api/deals";
 import { listLeads } from "@/src/api/leads";
+
 import Confirm from "@/src/ui/Confirm";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -26,8 +22,10 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -60,15 +58,21 @@ const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 export default function TaskDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
+
   const [showConfirm, setShowConfirm] = useState(false);
   const [completedMaster, setCompletedMaster] = useState<Set<string>>(new Set());
-  const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(new Set());
+  const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(
+    new Set()
+  );
 
   // dropdown de estado
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
 
-  // 👇 Estado LOCAL solo visual para el dropdown (lo dejamos por si luego vuelves a usar badges)
+  // Estado local opcional (solo visual)
   const [localStatus, setLocalStatus] = useState<Status | null>(null);
+
+  // 🆕 nota nueva para el historial
+  const [newNoteBody, setNewNoteBody] = useState("");
 
   // Cargar maestro UI
   useEffect(() => {
@@ -79,8 +83,12 @@ export default function TaskDetail() {
           AsyncStorage.getItem(MASTER_INPROGRESS_KEY),
         ]);
 
-        setCompletedMaster(new Set(rawCompleted ? JSON.parse(rawCompleted) : []));
-        setInProgressMaster(new Set(rawInProgress ? JSON.parse(rawInProgress) : []));
+        setCompletedMaster(
+          new Set(rawCompleted ? JSON.parse(rawCompleted) : [])
+        );
+        setInProgressMaster(
+          new Set(rawInProgress ? JSON.parse(rawInProgress) : [])
+        );
       } catch {
         setCompletedMaster(new Set());
         setInProgressMaster(new Set());
@@ -95,7 +103,7 @@ export default function TaskDetail() {
     enabled: !!id,
   });
 
-  // Lista completa (para rellenar datos que vienen en index)
+  // Lista completa (cache opcional)
   useQuery<ActivityWithCreator[]>({
     queryKey: ["activities-all"],
     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
@@ -116,7 +124,6 @@ export default function TaskDetail() {
 
   // Helpers UI maestro: solo visual, sin tocar backend
   const markAsOpen = (actId: string) => {
-    // quitar de completadas
     setCompletedMaster((prev) => {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
@@ -127,7 +134,6 @@ export default function TaskDetail() {
       ).catch(() => {});
       return next;
     });
-    // quitar de en proceso
     setInProgressMaster((prev) => {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
@@ -141,7 +147,6 @@ export default function TaskDetail() {
   };
 
   const markAsCompleted = (actId: string) => {
-    // quitar de en proceso
     setInProgressMaster((prev) => {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
@@ -152,7 +157,6 @@ export default function TaskDetail() {
       ).catch(() => {});
       return next;
     });
-    // agregar a completadas
     setCompletedMaster((prev) => {
       if (prev.has(actId)) return prev;
       const next = new Set(prev);
@@ -166,7 +170,6 @@ export default function TaskDetail() {
   };
 
   const markInProgress = (actId: string) => {
-    // quitar de completadas
     setCompletedMaster((prev) => {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
@@ -177,7 +180,6 @@ export default function TaskDetail() {
       ).catch(() => {});
       return next;
     });
-    // ✅ agregar a en proceso (aquí estaba el bug: antes no agregaba si no existía)
     setInProgressMaster((prev) => {
       if (prev.has(actId)) return prev;
       const next = new Set(prev);
@@ -211,9 +213,8 @@ export default function TaskDetail() {
       alert("No se pudo eliminar la actividad. Intenta nuevamente."),
   });
 
-    // 🔁 Reasignar (0, 1 o 2 personas)
+  // 🔁 Reasignar / actualizar (usamos esto también para actualizar notas)
   const mReassign = useMutation({
-    // Ahora mandamos también notas y relaciones para que NO se pierdan
     mutationFn: async (payload: {
       assigned_to: string | null;
       assigned_to_2: string | null;
@@ -223,24 +224,26 @@ export default function TaskDetail() {
       contact_id?: string | null;
       deal_id?: string | null;
       lead_id?: string | null;
+      status?: ActivityStatus | null;
+      due_date?: number | null;
+      type?: Activity["type"] | null;
     }) => {
       if (!id) throw new Error("Missing activity id");
-      // 👇 Aquí forzamos el tipo para que TS no moleste
       await updateActivity(id, payload as any);
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["activity", id] });
       await qc.invalidateQueries({ queryKey: ["activities"] });
       await qc.invalidateQueries({ queryKey: ["activities-all"] });
+      setNewNoteBody("");
     },
     onError: (err) => {
       alert(
-        "No se pudo reasignar la actividad. Intenta nuevamente.\n\n" +
+        "No se pudo actualizar la actividad. Intenta nuevamente.\n\n" +
           String((err as any)?.message ?? err)
       );
     },
   });
-
 
   // Buscar en cache de la lista para rellenar
   const listAll =
@@ -258,39 +261,88 @@ export default function TaskDetail() {
     if (!activity) return;
 
     let primary = activity.assigned_to ?? null;
-    let secondary = activity.assigned_to_2 ?? null;
+    let secondary = (activity as any).assigned_to_2 ?? null;
 
     const isPrimary = primary === memberId;
     const isSecondary = secondary === memberId;
 
     if (isPrimary) {
-      // Si ya es primary → quitarlo
       primary = null;
     } else if (isSecondary) {
-      // Si ya es secondary → quitarlo
       secondary = null;
     } else {
-      // No está asignado aún
-      if (!primary) {
-        primary = memberId;
-      } else if (!secondary) {
-        secondary = memberId;
-      } else {
-        // Ya hay 2 asignados → reemplazamos el secundario
-        secondary = memberId;
-      }
+      if (!primary) primary = memberId;
+      else if (!secondary) secondary = memberId;
+      else secondary = memberId; // reemplaza el 2do si ya hay 2
     }
 
-    // ✅ Mandamos también notas y relaciones actuales para no perderlas
     mReassign.mutate({
       assigned_to: primary,
       assigned_to_2: secondary,
       title: activity.title ?? null,
       notes: activity.notes ?? null,
-      account_id: activity.account_id ?? null,
-      contact_id: activity.contact_id ?? null,
-      deal_id: activity.deal_id ?? null,
-      lead_id: activity.lead_id ?? null,
+      account_id: (activity as any).account_id ?? null,
+      contact_id: (activity as any).contact_id ?? null,
+      deal_id: (activity as any).deal_id ?? null,
+      lead_id: (activity as any).lead_id ?? null,
+      status: activity.status ?? null,
+      due_date: (activity as any).due_date ?? null,
+      type: activity.type ?? null,
+    });
+  };
+
+  // --- Notas: parse / add / delete ---
+  const noteBlocks = useMemo(() => {
+    const raw = (activity?.notes || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(/\n{2,}/)
+      .map((b) => b.trim())
+      .filter(Boolean);
+  }, [activity?.notes]);
+
+  const handleAddNote = () => {
+    if (!activity) return;
+    const body = newNoteBody.trim();
+    if (!body) return;
+
+    const prev = (activity.notes || "").trim();
+    const timestamp = new Date().toLocaleString(); // fecha + hora
+    const newBlock = `[${timestamp}] ${body}`;
+    const merged = prev ? `${prev}\n\n${newBlock}` : newBlock;
+
+    mReassign.mutate({
+      assigned_to: activity.assigned_to ?? null,
+      assigned_to_2: (activity as any).assigned_to_2 ?? null,
+      title: activity.title ?? null,
+      notes: merged,
+      account_id: (activity as any).account_id ?? null,
+      contact_id: (activity as any).contact_id ?? null,
+      deal_id: (activity as any).deal_id ?? null,
+      lead_id: (activity as any).lead_id ?? null,
+      status: activity.status ?? null,
+      due_date: (activity as any).due_date ?? null,
+      type: activity.type ?? null,
+    });
+  };
+
+  const handleDeleteNoteAt = (index: number) => {
+    if (!activity) return;
+    const nextBlocks = noteBlocks.filter((_, i) => i !== index);
+    const merged = nextBlocks.join("\n\n"); // preservamos el formato
+
+    mReassign.mutate({
+      assigned_to: activity.assigned_to ?? null,
+      assigned_to_2: (activity as any).assigned_to_2 ?? null,
+      title: activity.title ?? null,
+      notes: merged ? merged : null,
+      account_id: (activity as any).account_id ?? null,
+      contact_id: (activity as any).contact_id ?? null,
+      deal_id: (activity as any).deal_id ?? null,
+      lead_id: (activity as any).lead_id ?? null,
+      status: activity.status ?? null,
+      due_date: (activity as any).due_date ?? null,
+      type: activity.type ?? null,
     });
   };
 
@@ -298,54 +350,50 @@ export default function TaskDetail() {
   const contextChips = useMemo(() => {
     if (!activity) return [];
     const cs: { label: string; href: string }[] = [];
-    if (activity.account_id) {
+    if ((activity as any).account_id) {
       const name =
-        (qAcc.data ?? []).find((x) => x.id === activity.account_id)?.name ??
-        activity.account_id;
+        (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)
+          ?.name ?? (activity as any).account_id;
       cs.push({
         label: `Cuenta: ${name}`,
-        href: `/accounts/${activity.account_id}`,
+        href: `/accounts/${(activity as any).account_id}`,
       });
     }
-    if (activity.contact_id) {
+    if ((activity as any).contact_id) {
       const name =
-        (qCon.data ?? []).find((x) => x.id === activity.contact_id)?.name ??
-        activity.contact_id;
+        (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)
+          ?.name ?? (activity as any).contact_id;
       cs.push({
         label: `Contacto: ${name}`,
-        href: `/contacts/${activity.contact_id}`,
+        href: `/contacts/${(activity as any).contact_id}`,
       });
     }
-    if (activity.deal_id) {
+    if ((activity as any).deal_id) {
       const name =
-        (qDeal.data ?? []).find((x) => x.id === activity.deal_id)?.title ??
-        activity.deal_id;
+        (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)
+          ?.title ?? (activity as any).deal_id;
       cs.push({
         label: `Oportunidad: ${name}`,
-        href: `/deals/${activity.deal_id}`,
+        href: `/deals/${(activity as any).deal_id}`,
       });
     }
-    if (activity.lead_id) {
+    if ((activity as any).lead_id) {
       const name =
-        (qLead.data ?? []).find((x) => x.id === activity.lead_id)?.name ??
-        activity.lead_id;
+        (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)
+          ?.name ?? (activity as any).lead_id;
       cs.push({
         label: `Lead: ${name}`,
-        href: `/leads/${activity.lead_id}`,
+        href: `/leads/${(activity as any).lead_id}`,
       });
     }
     return cs;
   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
 
-  // ✅ done si viene del backend o si está marcado en UI
   const isDoneUI =
     activity?.status === "done" || completedMaster.has(activity?.id ?? "");
 
-  // ✅ EN PROCESO si el backend dice "canceled" (tu significado)
-  // o si la UI lo marcó
   const isInProgressUI =
-    (!isDoneUI && activity?.status === "canceled") ||
-    inProgressMaster.has(activity?.id ?? "");
+    !isDoneUI && inProgressMaster.has(activity?.id ?? "");
 
   const statusLabel = isDoneUI
     ? "Realizada"
@@ -353,7 +401,6 @@ export default function TaskDetail() {
     ? "En proceso"
     : "Abierta";
 
-  // ——— Render ———
   return (
     <>
       <Stack.Screen
@@ -368,9 +415,7 @@ export default function TaskDetail() {
               hitSlop={8}
               style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
             >
-              <Text style={{ color: DANGER, fontWeight: "900" }}>
-                Eliminar
-              </Text>
+              <Text style={{ color: DANGER, fontWeight: "900" }}>Eliminar</Text>
             </Pressable>
           ),
         }}
@@ -391,7 +436,6 @@ export default function TaskDetail() {
         ) : (
           <>
             <View style={[styles.card, isDoneUI && styles.cardDone]}>
-              {/* Título igual que en index */}
               <Text style={[styles.title, isDoneUI && styles.titleDone]}>
                 {iconByType(activity.type)}{" "}
                 {activity.title && activity.title.length > 0
@@ -399,25 +443,16 @@ export default function TaskDetail() {
                   : "Sin título"}
               </Text>
 
-              {/* Línea resumen: tipo, estado, creador, asignados, fecha de creación */}
+              {/* Resumen */}
               {(() => {
                 const a = activity;
-                const statusText = statusLabel;
 
-                // Construimos lista de nombres asignados (1 o 2)
                 const assignedNames: string[] = [];
+                if ((a as any).assigned_to_name) assignedNames.push((a as any).assigned_to_name);
+                else if ((a as any).assigned_to) assignedNames.push(String((a as any).assigned_to));
 
-                if (a.assigned_to_name) {
-                  assignedNames.push(a.assigned_to_name);
-                } else if (a.assigned_to) {
-                  assignedNames.push(String(a.assigned_to));
-                }
-
-                if (a.assigned_to_2_name) {
-                  assignedNames.push(a.assigned_to_2_name);
-                } else if ((a as any).assigned_to_2) {
-                  assignedNames.push(String((a as any).assigned_to_2));
-                }
+                if ((a as any).assigned_to_2_name) assignedNames.push((a as any).assigned_to_2_name);
+                else if ((a as any).assigned_to_2) assignedNames.push(String((a as any).assigned_to_2));
 
                 const assignedInfo =
                   assignedNames.length === 0
@@ -426,16 +461,14 @@ export default function TaskDetail() {
                     ? ` · asignada a ${assignedNames[0]}`
                     : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
 
-                const createdLabel = a.created_at
-                  ? ` · creada el ${formatDateShort(a.created_at)}`
+                const createdLabel = (a as any).created_at
+                  ? ` · creada el ${formatDateShort((a as any).created_at)}`
                   : "";
 
                 return (
-                  <Text
-                    style={[styles.summary, isDoneUI && styles.summaryDone]}
-                  >
-                    {a.type} · {statusText}
-                    {a.created_by_name ? ` · por ${a.created_by_name}` : ""}
+                  <Text style={[styles.summary, isDoneUI && styles.summaryDone]}>
+                    {(a.type || "task")} · {statusLabel}
+                    {(a as any).created_by_name ? ` · por ${(a as any).created_by_name}` : ""}
                     {assignedInfo}
                     {createdLabel}
                     {isDoneUI ? " · tarea completada" : ""}
@@ -443,24 +476,21 @@ export default function TaskDetail() {
                 );
               })()}
 
-              {/* Asignada a (detalle), mostrando 1 o 2 personas */}
+              {/* Asignada a */}
               <Text style={styles.item}>
                 <Text style={styles.itemLabel}>Asignada a: </Text>
                 <Text style={styles.itemValue}>
                   {(() => {
                     const names: string[] = [];
+                    if ((activity as any).assigned_to_name)
+                      names.push((activity as any).assigned_to_name);
+                    else if ((activity as any).assigned_to)
+                      names.push(String((activity as any).assigned_to));
 
-                    if (activity.assigned_to_name) {
-                      names.push(activity.assigned_to_name);
-                    } else if (activity.assigned_to) {
-                      names.push(String(activity.assigned_to));
-                    }
-
-                    if (activity.assigned_to_2_name) {
-                      names.push(activity.assigned_to_2_name);
-                    } else if ((activity as any).assigned_to_2) {
+                    if ((activity as any).assigned_to_2_name)
+                      names.push((activity as any).assigned_to_2_name);
+                    else if ((activity as any).assigned_to_2)
                       names.push(String((activity as any).assigned_to_2));
-                    }
 
                     if (names.length === 0) return "Sin asignar";
                     if (names.length === 1) return names[0];
@@ -469,16 +499,13 @@ export default function TaskDetail() {
                 </Text>
               </Text>
 
-              {/* Reasignar actividad: una sola sección, máx. 2 personas */}
+              {/* Reasignar */}
               <View style={{ marginTop: 8, gap: 6 }}>
-                <Text style={styles.itemLabel}>
-                  Personas asignadas (máx. 2)
-                </Text>
+                <Text style={styles.itemLabel}>Personas asignadas (máx. 2)</Text>
 
                 {qMembers.isLoading && (
                   <Text style={styles.subtle}>Cargando miembros…</Text>
                 )}
-
                 {qMembers.isError && (
                   <Text style={styles.error}>
                     No se pudieron cargar los miembros.
@@ -489,8 +516,8 @@ export default function TaskDetail() {
                   <View style={styles.membersRow}>
                     {qMembers.data.map((m) => {
                       const isAssigned =
-                        activity.assigned_to === m.id ||
-                        activity.assigned_to_2 === m.id;
+                        (activity as any).assigned_to === m.id ||
+                        (activity as any).assigned_to_2 === m.id;
 
                       return (
                         <Pressable
@@ -512,11 +539,11 @@ export default function TaskDetail() {
                 )}
 
                 {mReassign.isPending && (
-                  <Text style={styles.subtleSmall}>Reasignando…</Text>
+                  <Text style={styles.subtleSmall}>Actualizando…</Text>
                 )}
               </View>
 
-              {/* Estado + dropdown (solo front) */}
+              {/* Estado dropdown (solo front) */}
               <View style={styles.stateRow}>
                 <Text style={styles.itemLabel}>Estado: </Text>
 
@@ -537,11 +564,9 @@ export default function TaskDetail() {
 
                   {statusMenuOpen && (
                     <View style={styles.statusList}>
-                      {/* Abierta */}
                       <Pressable
                         style={styles.statusOption}
                         onPress={() => {
-                          if (!activity) return;
                           markAsOpen(activity.id);
                           setLocalStatus("open");
                           setStatusMenuOpen(false);
@@ -550,11 +575,9 @@ export default function TaskDetail() {
                         <Text style={styles.statusOptionText}>Abierta</Text>
                       </Pressable>
 
-                      {/* En proceso */}
                       <Pressable
                         style={styles.statusOption}
                         onPress={() => {
-                          if (!activity) return;
                           markInProgress(activity.id);
                           setLocalStatus("canceled");
                           setStatusMenuOpen(false);
@@ -563,11 +586,9 @@ export default function TaskDetail() {
                         <Text style={styles.statusOptionText}>En proceso</Text>
                       </Pressable>
 
-                      {/* Realizada */}
                       <Pressable
                         style={styles.statusOption}
                         onPress={() => {
-                          if (!activity) return;
                           markAsCompleted(activity.id);
                           setLocalStatus("done");
                           setStatusMenuOpen(false);
@@ -581,12 +602,71 @@ export default function TaskDetail() {
               </View>
 
               {/* Notas */}
-              {!!activity.notes && (
-                <Text style={styles.item}>
-                  <Text style={styles.itemLabel}>Notas: </Text>
-                  <Text style={styles.itemValue}>{activity.notes}</Text>
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.subSectionTitle}>Notas de la actividad</Text>
+                <Text style={styles.subSectionHint}>
+                  Aquí puedes ir registrando avances, acuerdos o detalles. Cada
+                  nota nueva se guarda con fecha y hora.
                 </Text>
-              )}
+
+                {noteBlocks.length > 0 ? (
+                  <View style={styles.notesHistoryWrapper}>
+                    <ScrollView
+                      style={styles.notesHistoryScroll}
+                      nestedScrollEnabled
+                      contentContainerStyle={styles.notesHistoryContent}
+                    >
+                      {noteBlocks.map((block, idx) => (
+                        <View key={idx} style={styles.noteRow}>
+                          <Text style={styles.notesHistoryText}>
+                            {block}
+                          </Text>
+
+                          <Pressable
+                            onPress={() => handleDeleteNoteAt(idx)}
+                            disabled={mReassign.isPending}
+                            style={[
+                              styles.noteDeleteBtn,
+                              mReassign.isPending && { opacity: 0.5 },
+                            ]}
+                            hitSlop={8}
+                          >
+                            <Text style={styles.noteDeleteText}>Borrar</Text>
+                          </Pressable>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : (
+                  <Text style={[styles.subtleSmall, { marginTop: 4 }]}>
+                    Aún no hay notas en esta actividad.
+                  </Text>
+                )}
+
+                {/* Input + Agregar */}
+                <View style={styles.historyInputRow}>
+                  <TextInput
+                    style={styles.historyInput}
+                    placeholder="Escribe una nueva nota…"
+                    placeholderTextColor={SUBTLE}
+                    value={newNoteBody}
+                    onChangeText={setNewNoteBody}
+                    multiline
+                  />
+                  <Pressable
+                    style={[
+                      styles.historyAddBtn,
+                      (!newNoteBody.trim() || mReassign.isPending) && {
+                        opacity: 0.5,
+                      },
+                    ]}
+                    onPress={handleAddNote}
+                    disabled={!newNoteBody.trim() || mReassign.isPending}
+                  >
+                    <Text style={styles.historyAddText}>Agregar</Text>
+                  </Pressable>
+                </View>
+              </View>
 
               {/* Relacionados */}
               {contextChips.length > 0 && (
@@ -611,7 +691,7 @@ export default function TaskDetail() {
               )}
             </View>
 
-            {/* Solo botón eliminar abajo */}
+            {/* Botón eliminar actividad */}
             <Pressable
               style={[
                 styles.btn,
@@ -652,108 +732,10 @@ function iconByType(t: "task" | "call" | "meeting" | "note") {
   if (t === "note") return "📝";
   return "✅";
 }
-function labelByType(t: "task" | "call" | "meeting" | "note") {
-  if (t === "call") return "Llamada";
-  if (t === "meeting") return "Reunión";
-  if (t === "note") return "Nota>";
-  return "Tarea";
-}
 
-function labelStatus(s?: Status): string {
-  if (!s || s === "open") return "Abierta";
-  if (s === "done") return "Realizada";
-  if (s === "canceled") return "En proceso";
-  return String(s);
-}
-
-function labelByStatus(s: Status, isDoneUI: boolean) {
-  if (isDoneUI || s === "done") return "Realizada";
-  if (s === "open") return "Abierta";
-  if (s === "canceled") return "En proceso";
-  return "Abierta";
-}
-
-function badgeByType(
-  t: "task" | "call" | "meeting" | "note",
-  isDoneUI: boolean
-) {
-  const base = {
-    borderColor: "#2d3340",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    color: TEXT,
-  };
-  if (isDoneUI)
-    return {
-      ...base,
-      borderColor: SUCCESS,
-      backgroundColor: "rgba(22,163,74,0.12)",
-    };
-  if (t === "call")
-    return {
-      ...base,
-      borderColor: ACCENT,
-      backgroundColor: "rgba(34,211,238,0.10)",
-    };
-  if (t === "meeting")
-    return {
-      ...base,
-      borderColor: "#10b981",
-      backgroundColor: "rgba(16,185,129,0.12)",
-    };
-  if (t === "note")
-    return {
-      ...base,
-      borderColor: "#f59e0b",
-      backgroundColor: "rgba(245,158,11,0.10)",
-    };
-  return {
-    ...base,
-    borderColor: PRIMARY,
-    backgroundColor: "rgba(124,58,237,0.10)",
-  };
-}
-
-function badgeByStatus(s: Status, isDoneUI: boolean) {
-  const base = {
-    borderColor: "#2d3340",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    color: TEXT,
-  };
-  if (isDoneUI || s === "done")
-    return {
-      ...base,
-      borderColor: SUCCESS,
-      backgroundColor: "rgba(22,163,74,0.12)",
-    };
-  if (s === "canceled")
-    return {
-      ...base,
-      borderColor: "#3b82f6",
-      backgroundColor: "rgba(37,99,235,0.12)",
-    }; // azul “En proceso”
-  return {
-    ...base,
-    borderColor: PRIMARY,
-    backgroundColor: "rgba(124,58,237,0.10)",
-  };
-}
-
-function formatDateTime(ms?: number | null) {
-  if (!ms) return "—";
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return "—";
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  })}`;
-}
-
-function formatDateShort(
-  value?: number | string | null
-): string {
+function formatDateShort(value?: number | string | null): string {
   if (value == null) return "—";
 
-  // Si es número o string numérico (timestamp)
   if (typeof value === "number" || /^\d+$/.test(String(value))) {
     const n = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(n)) return "—";
@@ -762,12 +744,10 @@ function formatDateShort(
     return d.toLocaleDateString();
   }
 
-  // Si es un string tipo "2025-12-03T15:20:00Z"
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString();
 }
-
 
 /* ——— Estilos ——— */
 const styles = StyleSheet.create({
@@ -792,22 +772,10 @@ const styles = StyleSheet.create({
   summary: { color: SUBTLE, fontSize: 12 },
   summaryDone: { color: SUCCESS },
 
-  creator: { color: SUBTLE, fontSize: 12 },
-  creatorDone: { color: SUCCESS },
-
-  meta: { color: SUBTLE, fontSize: 12 },
-  metaDone: { color: SUCCESS },
-
-  label: { color: SUBTLE, fontWeight: "700" },
-  labelStrong: { color: TEXT, fontWeight: "900" },
-
-  rowWrap: { flexDirection: "row", gap: 8, marginTop: 4, flexWrap: "wrap" },
-
   item: { color: SUBTLE },
   itemLabel: { color: SUBTLE, fontWeight: "700" },
   itemValue: { color: TEXT, fontWeight: "700" },
 
-  // Fila de estado
   stateRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -815,7 +783,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  // Dropdown de estado
   statusChip: {
     borderRadius: 999,
     paddingHorizontal: 10,
@@ -858,31 +825,6 @@ const styles = StyleSheet.create({
     color: "#0F172A",
   },
 
-  badgeSoft: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    borderWidth: 1,
-    overflow: "hidden",
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "800",
-    color: TEXT,
-  } as any,
-
-  badgeSolidDone: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: SUCCESS,
-    color: "#fff",
-    fontSize: 11,
-    fontWeight: "900",
-    overflow: "hidden",
-  } as any,
-
   chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: {
     paddingHorizontal: 10,
@@ -896,7 +838,6 @@ const styles = StyleSheet.create({
 
   btn: { padding: 12, borderRadius: 12, alignItems: "center" },
   btnDanger: { backgroundColor: DANGER },
-
   btnText: { color: "#fff", fontWeight: "900" },
 
   subtle: { color: SUBTLE },
@@ -926,6 +867,97 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 12,
   },
+
+  // Notas
+  subSectionTitle: {
+    color: TEXT,
+    fontWeight: "800",
+    fontSize: 15,
+    marginBottom: 2,
+  },
+  subSectionHint: {
+    color: SUBTLE,
+    fontSize: 11,
+    marginBottom: 6,
+  },
+  notesHistoryWrapper: {
+    maxHeight: 220,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#11121b",
+    overflow: "hidden",
+  },
+  notesHistoryScroll: {
+    maxHeight: 220,
+  },
+  notesHistoryContent: {
+    paddingVertical: 4,
+  },
+
+  // ✅ NUEVO: fila de nota + botón sutil a la derecha
+  noteRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2937",
+  },
+  notesHistoryText: {
+    color: TEXT,
+    fontSize: 13,
+    flex: 1,
+  },
+  noteDeleteBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "rgba(239,68,68,0.18)", // rojo suave
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "flex-start",
+  },
+  noteDeleteText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 12,
+  },
+
+  historyInputRow: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "flex-start",
+    marginTop: 8,
+  },
+  historyInput: {
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#11121b",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: TEXT,
+    fontSize: 13,
+    minHeight: 40,
+    maxHeight: 80,
+  },
+  historyAddBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: PRIMARY,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  historyAddText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 12,
+  },
 });
-
-

@@ -231,14 +231,14 @@ export default function TasksList() {
       .slice()
       .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
 
-    // 0) Filtro por rango de tiempo (usamos due_date o created_at/updated_at)
+    // 0) Filtro por rango de tiempo
     if (timeFilter !== "all") {
       let baseDate: Date | null = null;
       if (timeFilterDateStr.trim()) {
         baseDate = parseDateStr(timeFilterDateStr);
       }
       if (!baseDate) {
-        baseDate = new Date(); // hoy por defecto
+        baseDate = new Date(); // hoy
       }
       const start = new Date(baseDate);
       start.setHours(0, 0, 0, 0);
@@ -247,9 +247,8 @@ export default function TasksList() {
       if (timeFilter === "day") {
         end.setDate(start.getDate() + 1);
       } else if (timeFilter === "week") {
-        // semana Lunes-Domingo
-        const day = start.getDay(); // 0 = Domingo
-        const diff = (day + 6) % 7; // días desde lunes
+        const day = start.getDay(); // 0 = domingo
+        const diff = (day + 6) % 7;
         start.setDate(start.getDate() - diff);
         end.setTime(start.getTime());
         end.setDate(start.getDate() + 7);
@@ -287,7 +286,7 @@ export default function TasksList() {
       }
     });
 
-    // 2) Filtro por nombre (dropdown) solo admin/owner
+    // 2) Filtro por persona (solo admin/owner)
     if (assigneeFilter !== "all" && isAdminOrOwner) {
       const selected = memberChips.find((m) => m.id === assigneeFilter);
       if (selected) {
@@ -307,7 +306,7 @@ export default function TasksList() {
       }
     }
 
-    // 3) Filtro por texto libre
+    // 3) Filtro de texto libre
     const termText = search.trim().toLowerCase();
     if (termText) {
       items = items.filter((a) => {
@@ -409,7 +408,7 @@ export default function TasksList() {
           })}
 
           {/* Botón nueva actividad comentado */}
-          {/*
+          {/* 
           <Link href="/tasks/new" asChild>
             <Pressable style={styles.newBtn} accessibilityRole="button">
               <Text style={styles.newBtnText}>＋ Nueva</Text>
@@ -418,7 +417,7 @@ export default function TasksList() {
           */}
         </View>
 
-        {/* Filtro de tiempo: día / semana / mes */}
+        {/* Filtro de tiempo */}
         <View style={styles.timeFiltersRow}>
           {(["all", "day", "week", "month"] as TimeFilter[]).map((tf) => {
             const active = timeFilter === tf;
@@ -447,7 +446,7 @@ export default function TasksList() {
           })}
         </View>
 
-        {/* Fecha base para el filtro de tiempo */}
+        {/* Fecha base filtro tiempo */}
         {timeFilter !== "all" && (
           <TextInput
             value={timeFilterDateStr}
@@ -460,7 +459,7 @@ export default function TasksList() {
           />
         )}
 
-        {/* Buscador general */}
+        {/* Buscador */}
         <TextInput
           value={search}
           onChangeText={setSearch}
@@ -471,7 +470,7 @@ export default function TasksList() {
           autoCorrect={false}
         />
 
-        {/* Dropdown por persona (solo admin/owner) */}
+        {/* Dropdown persona (solo admin/owner) */}
         {isAdminOrOwner && memberChips.length > 0 && (
           <View style={styles.dropdownRow}>
             <View style={styles.dropdownWrapper}>
@@ -510,9 +509,7 @@ export default function TasksList() {
                           ]}
                           numberOfLines={1}
                         >
-                          {m.id === "all"
-                            ? "Todas las personas"
-                            : m.label}
+                          {m.id === "all" ? "Todas las personas" : m.label}
                         </Text>
                       </Pressable>
                     );
@@ -523,7 +520,7 @@ export default function TasksList() {
           </View>
         )}
 
-        {/* Dropdown de workspaces (solo admin/owner) */}
+        {/* Dropdown workspaces (solo admin/owner) */}
         {isAdminOrOwner && tenants.length > 0 && (
           <View style={styles.dropdownRow}>
             <View style={styles.dropdownWrapper}>
@@ -621,6 +618,20 @@ export default function TasksList() {
   );
 }
 
+/** 🆕 helper para obtener el último bloque de notas */
+function getLastNoteBlock(notes?: string | null): string | null {
+  if (!notes) return null;
+
+  // Separamos por uno o más saltos de línea en blanco (lo mismo que usamos en el detalle)
+  const blocks = notes
+    .split(/\n{2,}/)
+    .map((b) => b.trim())
+    .filter(Boolean);
+
+  if (blocks.length === 0) return null;
+  return blocks[blocks.length - 1];
+}
+
 function TaskCard({
   item,
   completedMaster,
@@ -669,6 +680,9 @@ function TaskCard({
       ? ` · creada el ${formatDate(item.created_at as any)}`
       : "";
 
+  // Último bloque de notas (incluye la fecha porque la guardas así en el detalle)
+  const lastNoteBlock = getLastNoteBlock(item.notes as any);
+
   return (
     <Link href={{ pathname: "/tasks/[id]", params: { id: item.id } }} asChild>
       <Pressable accessibilityRole="link" hitSlop={8}>
@@ -707,6 +721,13 @@ function TaskCard({
               (isDoneUI ? " · tarea completada" : "")}
           </Text>
 
+          {/* Nota en el mismo tono que la línea de estado/creador/asignación */}
+          {lastNoteBlock && (
+            <Text style={styles.lastNoteText} numberOfLines={2}>
+              {lastNoteBlock}
+            </Text>
+          )}
+
           {isDoneUI && (
             <View style={styles.badgeDone}>
               <Text style={styles.badgeDoneText}>Tarea completada</Text>
@@ -717,6 +738,7 @@ function TaskCard({
     </Link>
   );
 }
+
 
 function labelFilter(f: Filter) {
   switch (f) {
@@ -931,8 +953,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     letterSpacing: 0.3,
   },
-});
 
+  // 🆕 estilos última nota
+    lastNoteText: {
+    color: SUBTLE,      // mismo tono que la descripción
+    fontSize: 12,
+    marginTop: 2,
+  },
+
+  
+});
 
 
 // // app/tasks/index.tsx
@@ -979,7 +1009,7 @@ const styles = StyleSheet.create({
 // type Filter = "all" | "open" | "done" | "canceled";
 
 // type ActivityWithCreator = Activity & {
-//   created_by?: string | null; // ID del creador (para filtros)
+//   created_by?: string | null;
 //   created_by_name?: string | null;
 //   created_by_email?: string | null;
 //   assigned_to_name?: string | null;
@@ -989,13 +1019,15 @@ const styles = StyleSheet.create({
 
 // type MemberChip = {
 //   id: string;
-//   label: string; // se usa para mostrar y para buscar
+//   label: string;
 // };
 
 // type TenantItem = {
 //   id: string;
 //   name?: string;
 // };
+
+// type TimeFilter = "all" | "day" | "week" | "month";
 
 // export default function TasksList() {
 //   const [filter, setFilter] = useState<Filter>("all");
@@ -1009,7 +1041,15 @@ const styles = StyleSheet.create({
 //     new Set()
 //   );
 
-//   // 🔑 Rol global + workspaces para pestañas de WS (solo admin/owner)
+//   // Filtros por persona / workspace (dropdowns)
+//   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
+//   const [wsMenuOpen, setWsMenuOpen] = useState(false);
+
+//   // 🔹 Filtro de tiempo
+//   const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
+//   const [timeFilterDateStr, setTimeFilterDateStr] = useState("");
+
+//   // Rol global + workspaces
 //   const [currentRole, setCurrentRole] = useState<
 //     "owner" | "admin" | "member" | null
 //   >(null);
@@ -1020,7 +1060,25 @@ const styles = StyleSheet.create({
 
 //   const isAdminOrOwner = currentRole === "owner" || currentRole === "admin";
 
-//   // 🔁 Carga maestro de COMPLETADAS
+//   // 🔹 Helpers fecha
+//   const parseDateStr = (s: string): Date | null => {
+//     const trimmed = s.trim();
+//     if (!trimmed) return null;
+//     const m = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+//     if (!m) return null;
+//     const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+//     return Number.isNaN(d.getTime()) ? null : d;
+//   };
+
+//   const getRefDateMs = (a: ActivityWithCreator): number | null => {
+//     const raw = (a as any).due_date ?? a.created_at ?? a.updated_at;
+//     if (raw == null) return null;
+//     const n = typeof raw === "string" ? Number(raw) : raw;
+//     if (!Number.isFinite(n)) return null;
+//     return n;
+//   };
+
+//   // Carga maestro completadas
 //   const loadCompletedMaster = useCallback(async () => {
 //     try {
 //       const raw = await AsyncStorage.getItem(MASTER_COMPLETED_KEY);
@@ -1030,7 +1088,7 @@ const styles = StyleSheet.create({
 //     }
 //   }, []);
 
-//   // 🔁 Carga maestro de EN PROCESO
+//   // Carga maestro en proceso
 //   const loadInProgressMaster = useCallback(async () => {
 //     try {
 //       const raw = await AsyncStorage.getItem(MASTER_INPROGRESS_KEY);
@@ -1040,11 +1098,10 @@ const styles = StyleSheet.create({
 //     }
 //   }, []);
 
-//   // 🔁 Carga rol y workspaces
+//   // Rol y workspaces
 //   const loadRoleAndTenants = useCallback(async () => {
 //     setLoadingRole(true);
 //     try {
-//       // Rol global actual
 //       const resRole = await api.get<{
 //         tenant_id: string | null;
 //         role: string | null;
@@ -1056,7 +1113,7 @@ const styles = StyleSheet.create({
 //         | "";
 //       setCurrentRole(r || null);
 //     } catch (e) {
-//       console.warn("⚠️ No se pudo obtener rol actual:", e);
+//       console.warn("No se pudo obtener rol actual:", e);
 //       setCurrentRole(null);
 //     } finally {
 //       setLoadingRole(false);
@@ -1079,7 +1136,7 @@ const styles = StyleSheet.create({
 //         setActiveTenant(data.active_tenant);
 //       }
 //     } catch (e) {
-//       console.warn("⚠️ No se pudo obtener lista de workspaces:", e);
+//       console.warn("No se pudo obtener lista de workspaces:", e);
 //     }
 //   }, []);
 
@@ -1090,7 +1147,7 @@ const styles = StyleSheet.create({
 //     loadRoleAndTenants();
 //   }, [loadCompletedMaster, loadInProgressMaster, loadRoleAndTenants]);
 
-//   // Y en cada focus (por si marcaste en otra pantalla o cambiaste ws)
+//   // Al enfocar pantalla
 //   useFocusEffect(
 //     useCallback(() => {
 //       loadCompletedMaster();
@@ -1099,7 +1156,7 @@ const styles = StyleSheet.create({
 //     }, [loadCompletedMaster, loadInProgressMaster, loadRoleAndTenants])
 //   );
 
-//   // 🔑 Trae TODAS las actividades (del workspace activo, backend ya filtra por usuario según rol)
+//   // Actividades
 //   const q = useQuery<ActivityWithCreator[]>({
 //     queryKey: ["activities-all"],
 //     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
@@ -1107,13 +1164,12 @@ const styles = StyleSheet.create({
 //     refetchOnWindowFocus: true,
 //   });
 
-//   // 🔹 Miembros del tenant para chips dinámicos (como en asignar)
+//   // Miembros
 //   const qMembers = useQuery<TenantMember[]>({
 //     queryKey: ["tenant-members"],
 //     queryFn: listTenantMembers,
 //   });
 
-//   // Construir chips de miembros desde la DB
 //   const memberChips: MemberChip[] = useMemo(() => {
 //     const base: MemberChip[] = [{ id: "all", label: "Todos" }];
 
@@ -1142,6 +1198,43 @@ const styles = StyleSheet.create({
 //       .slice()
 //       .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
 
+//     // 0) Filtro por rango de tiempo (usamos due_date o created_at/updated_at)
+//     if (timeFilter !== "all") {
+//       let baseDate: Date | null = null;
+//       if (timeFilterDateStr.trim()) {
+//         baseDate = parseDateStr(timeFilterDateStr);
+//       }
+//       if (!baseDate) {
+//         baseDate = new Date(); // hoy por defecto
+//       }
+//       const start = new Date(baseDate);
+//       start.setHours(0, 0, 0, 0);
+//       const end = new Date(start);
+
+//       if (timeFilter === "day") {
+//         end.setDate(start.getDate() + 1);
+//       } else if (timeFilter === "week") {
+//         // semana Lunes-Domingo
+//         const day = start.getDay(); // 0 = Domingo
+//         const diff = (day + 6) % 7; // días desde lunes
+//         start.setDate(start.getDate() - diff);
+//         end.setTime(start.getTime());
+//         end.setDate(start.getDate() + 7);
+//       } else if (timeFilter === "month") {
+//         start.setDate(1);
+//         end.setMonth(start.getMonth() + 1, 1);
+//       }
+
+//       const startMs = start.getTime();
+//       const endMs = end.getTime();
+
+//       items = items.filter((a) => {
+//         const ref = getRefDateMs(a);
+//         if (ref == null) return false;
+//         return ref >= startMs && ref < endMs;
+//       });
+//     }
+
 //     // 1) Filtro por estado
 //     items = items.filter((a) => {
 //       const isDoneUI =
@@ -1150,7 +1243,7 @@ const styles = StyleSheet.create({
 
 //       switch (filter) {
 //         case "open":
-//           return !isDoneUI && !isInProgressUI; // abiertas
+//           return !isDoneUI && !isInProgressUI;
 //         case "done":
 //           return isDoneUI;
 //         case "canceled":
@@ -1161,7 +1254,7 @@ const styles = StyleSheet.create({
 //       }
 //     });
 
-//     // 2) Filtro por NOMBRE (chips) — SOLO si admin/owner
+//     // 2) Filtro por nombre (dropdown) solo admin/owner
 //     if (assigneeFilter !== "all" && isAdminOrOwner) {
 //       const selected = memberChips.find((m) => m.id === assigneeFilter);
 //       if (selected) {
@@ -1181,7 +1274,7 @@ const styles = StyleSheet.create({
 //       }
 //     }
 
-//     // 3) Filtro por texto libre (título, tipo, creador, cualquiera de los dos asignados)
+//     // 3) Filtro por texto libre
 //     const termText = search.trim().toLowerCase();
 //     if (termText) {
 //       items = items.filter((a) => {
@@ -1211,9 +1304,11 @@ const styles = StyleSheet.create({
 //     inProgressMaster,
 //     isAdminOrOwner,
 //     memberChips,
+//     timeFilter,
+//     timeFilterDateStr,
 //   ]);
 
-//   // 👉 Cambiar de workspace (solo admin/owner ve estas pestañas)
+//   // Cambiar de workspace
 //   const onSelectWorkspace = useCallback(
 //     async (tenantId: string) => {
 //       if (!isAdminOrOwner) return;
@@ -1224,15 +1319,30 @@ const styles = StyleSheet.create({
 //         const res = await switchTenant(tenantId);
 //         const confirmed = (res as any)?.active_tenant || tenantId;
 //         setActiveTenant(confirmed);
-//         await q.refetch(); // recarga actividades del nuevo ws
+//         await q.refetch();
 //       } catch (e) {
-//         console.warn("❌ Error al cambiar de workspace:", e);
+//         console.warn("Error al cambiar de workspace:", e);
 //       } finally {
 //         setBusyWs(null);
 //       }
 //     },
 //     [isAdminOrOwner, busyWs, activeTenant, q]
 //   );
+
+//   // Labels dropdowns
+//   const assigneeActiveLabel = useMemo(() => {
+//     const opt = memberChips.find((m) => m.id === assigneeFilter);
+//     if (!opt) return "Todas las personas";
+//     return assigneeFilter === "all" ? "Todas las personas" : opt.label;
+//   }, [assigneeFilter, memberChips]);
+
+//   const wsActiveLabel = useMemo(() => {
+//     if (!tenants.length) return "Sin workspaces";
+//     const t = tenants.find((tt) => tt.id === activeTenant);
+//     if (t?.name) return `Workspace: ${t.name}`;
+//     if (t?.id) return `Workspace: ${t.id}`;
+//     return "Seleccionar workspace";
+//   }, [tenants, activeTenant]);
 
 //   return (
 //     <>
@@ -1245,7 +1355,7 @@ const styles = StyleSheet.create({
 //         }}
 //       />
 //       <View style={styles.screen}>
-//         {/* Filtros de estado + Nueva */}
+//         {/* Filtros de estado */}
 //         <View style={styles.filters}>
 //           {(["all", "open", "done", "canceled"] as Filter[]).map((f) => {
 //             const active = filter === f;
@@ -1265,14 +1375,59 @@ const styles = StyleSheet.create({
 //             );
 //           })}
 
+//           {/* Botón nueva actividad comentado */}
+//           {/*
 //           <Link href="/tasks/new" asChild>
 //             <Pressable style={styles.newBtn} accessibilityRole="button">
 //               <Text style={styles.newBtnText}>＋ Nueva</Text>
 //             </Pressable>
 //           </Link>
+//           */}
 //         </View>
 
-//         {/* 🔍 Buscador general */}
+//         {/* Filtro de tiempo: día / semana / mes */}
+//         <View style={styles.timeFiltersRow}>
+//           {(["all", "day", "week", "month"] as TimeFilter[]).map((tf) => {
+//             const active = timeFilter === tf;
+//             return (
+//               <Pressable
+//                 key={tf}
+//                 onPress={() => setTimeFilter(tf)}
+//                 style={[styles.timeChip, active && styles.timeChipActive]}
+//               >
+//                 <Text
+//                   style={[
+//                     styles.timeChipText,
+//                     active && styles.timeChipTextActive,
+//                   ]}
+//                 >
+//                   {tf === "all"
+//                     ? "Todas"
+//                     : tf === "day"
+//                     ? "Día"
+//                     : tf === "week"
+//                     ? "Semana"
+//                     : "Mes"}
+//                 </Text>
+//               </Pressable>
+//             );
+//           })}
+//         </View>
+
+//         {/* Fecha base para el filtro de tiempo */}
+//         {timeFilter !== "all" && (
+//           <TextInput
+//             value={timeFilterDateStr}
+//             onChangeText={setTimeFilterDateStr}
+//             placeholder="Fecha base (YYYY-MM-DD). Vacío = hoy"
+//             placeholderTextColor={SUBTLE}
+//             style={styles.dateFilterInput}
+//             autoCapitalize="none"
+//             keyboardType="numbers-and-punctuation"
+//           />
+//         )}
+
+//         {/* Buscador general */}
 //         <TextInput
 //           value={search}
 //           onChangeText={setSearch}
@@ -1283,81 +1438,106 @@ const styles = StyleSheet.create({
 //           autoCorrect={false}
 //         />
 
-//         {/* 👤 Filtros por usuario (solo admin/owner) */}
-//         {isAdminOrOwner && (
-//           <>
-//             {qMembers.isLoading && (
-//               <Text style={{ color: SUBTLE, fontSize: 11, marginBottom: 4 }}>
-//                 Cargando usuarios…
-//               </Text>
-//             )}
+//         {/* Dropdown por persona (solo admin/owner) */}
+//         {isAdminOrOwner && memberChips.length > 0 && (
+//           <View style={styles.dropdownRow}>
+//             <View style={styles.dropdownWrapper}>
+//               <Pressable
+//                 style={styles.dropdownTrigger}
+//                 onPress={() => setAssigneeMenuOpen((v) => !v)}
+//               >
+//                 <Text style={styles.dropdownText} numberOfLines={1}>
+//                   {assigneeActiveLabel}
+//                 </Text>
+//                 <Text style={styles.dropdownArrow}>
+//                   {assigneeMenuOpen ? "▲" : "▼"}
+//                 </Text>
+//               </Pressable>
 
-//             {qMembers.isError && (
-//               <Text style={{ color: "#fecaca", fontSize: 11, marginBottom: 4 }}>
-//                 No se pudieron cargar los usuarios.
-//               </Text>
-//             )}
-
-//             {memberChips.length > 0 && (
-//               <View style={styles.membersRow}>
-//                 {memberChips.map((m) => {
-//                   const active = assigneeFilter === m.id;
-//                   return (
-//                     <Pressable
-//                       key={m.id}
-//                       onPress={() => setAssigneeFilter(m.id)}
-//                       style={[
-//                         styles.memberChip,
-//                         active && styles.memberChipActive,
-//                       ]}
-//                     >
-//                       <Text
+//               {assigneeMenuOpen && (
+//                 <View style={styles.dropdownMenu}>
+//                   {memberChips.map((m) => {
+//                     const active = assigneeFilter === m.id;
+//                     return (
+//                       <Pressable
+//                         key={m.id}
 //                         style={[
-//                           styles.memberChipText,
-//                           active && styles.memberChipTextActive,
+//                           styles.dropdownOption,
+//                           active && styles.dropdownOptionActive,
 //                         ]}
-//                         numberOfLines={1}
+//                         onPress={() => {
+//                           setAssigneeFilter(m.id);
+//                           setAssigneeMenuOpen(false);
+//                         }}
 //                       >
-//                         {m.label}
-//                       </Text>
-//                     </Pressable>
-//                   );
-//                 })}
-//               </View>
-//             )}
-//           </>
+//                         <Text
+//                           style={[
+//                             styles.dropdownOptionText,
+//                             active && styles.dropdownOptionTextActive,
+//                           ]}
+//                           numberOfLines={1}
+//                         >
+//                           {m.id === "all"
+//                             ? "Todas las personas"
+//                             : m.label}
+//                         </Text>
+//                       </Pressable>
+//                     );
+//                   })}
+//                 </View>
+//               )}
+//             </View>
+//           </View>
 //         )}
 
-//         {/* 🌐 Pestañas de Workspaces SOLO para admin/owner */}
+//         {/* Dropdown de workspaces (solo admin/owner) */}
 //         {isAdminOrOwner && tenants.length > 0 && (
-//           <View style={{ marginTop: 8 }}>
-//             <Text style={styles.wsLabel}>Workspaces</Text>
-//             <View style={styles.wsRow}>
-//               {tenants.map((t) => {
-//                 const active = activeTenant === t.id;
-//                 const busy = busyWs === t.id;
-//                 return (
-//                   <Pressable
-//                     key={t.id}
-//                     onPress={() => onSelectWorkspace(t.id)}
-//                     style={[
-//                       styles.wsChip,
-//                       active && styles.wsChipActive,
-//                       busy && { opacity: 0.5 },
-//                     ]}
-//                   >
-//                     <Text
-//                       style={[
-//                         styles.wsChipText,
-//                         active && styles.wsChipTextActive,
-//                       ]}
-//                       numberOfLines={1}
-//                     >
-//                       {t.name || t.id}
-//                     </Text>
-//                   </Pressable>
-//                 );
-//               })}
+//           <View style={styles.dropdownRow}>
+//             <View style={styles.dropdownWrapper}>
+//               <Pressable
+//                 style={styles.dropdownTrigger}
+//                 onPress={() => setWsMenuOpen((v) => !v)}
+//               >
+//                 <Text style={styles.dropdownText} numberOfLines={1}>
+//                   {wsActiveLabel}
+//                 </Text>
+//                 <Text style={styles.dropdownArrow}>
+//                   {wsMenuOpen ? "▲" : "▼"}
+//                 </Text>
+//               </Pressable>
+
+//               {wsMenuOpen && (
+//                 <View style={styles.dropdownMenu}>
+//                   {tenants.map((t) => {
+//                     const active = activeTenant === t.id;
+//                     const busy = busyWs === t.id;
+//                     return (
+//                       <Pressable
+//                         key={t.id}
+//                         style={[
+//                           styles.dropdownOption,
+//                           active && styles.dropdownOptionActive,
+//                           busy && { opacity: 0.5 },
+//                         ]}
+//                         onPress={async () => {
+//                           await onSelectWorkspace(t.id);
+//                           setWsMenuOpen(false);
+//                         }}
+//                       >
+//                         <Text
+//                           style={[
+//                             styles.dropdownOptionText,
+//                             active && styles.dropdownOptionTextActive,
+//                           ]}
+//                           numberOfLines={1}
+//                         >
+//                           {t.name || t.id}
+//                         </Text>
+//                       </Pressable>
+//                     );
+//                   })}
+//                 </View>
+//               )}
 //             </View>
 //           </View>
 //         )}
@@ -1430,7 +1610,6 @@ const styles = StyleSheet.create({
 //     ? `por ${item.created_by_name}`
 //     : "";
 
-//   // 👇 Construimos hasta 2 nombres para el resumen
 //   const assignedNames: string[] = [];
 
 //   if (item.assigned_to_name) {
@@ -1497,7 +1676,7 @@ const styles = StyleSheet.create({
 
 //           {isDoneUI && (
 //             <View style={styles.badgeDone}>
-//               <Text style={styles.badgeDoneText}>✔ Tarea completada</Text>
+//               <Text style={styles.badgeDoneText}>Tarea completada</Text>
 //             </View>
 //           )}
 //         </View>
@@ -1571,7 +1750,46 @@ const styles = StyleSheet.create({
 //   },
 //   newBtnText: { color: "#fff", fontWeight: "900" },
 
-//   // 🔍 buscador
+//   // Filtro de tiempo
+//   timeFiltersRow: {
+//     flexDirection: "row",
+//     alignItems: "center",
+//     gap: 8,
+//     marginBottom: 6,
+//   },
+//   timeChip: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 6,
+//     borderRadius: 999,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#11121b",
+//   },
+//   timeChipActive: {
+//     backgroundColor: "rgba(124,58,237,0.20)",
+//     borderColor: PRIMARY,
+//   },
+//   timeChipText: {
+//     color: SUBTLE,
+//     fontSize: 11,
+//     fontWeight: "700",
+//   },
+//   timeChipTextActive: {
+//     color: "#E9D5FF",
+//   },
+//   dateFilterInput: {
+//     marginBottom: 8,
+//     borderRadius: 10,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#11121b",
+//     paddingHorizontal: 12,
+//     paddingVertical: 8,
+//     color: TEXT,
+//     fontSize: 13,
+//   },
+
+//   // buscador
 //   searchInput: {
 //     marginBottom: 8,
 //     borderRadius: 10,
@@ -1584,75 +1802,60 @@ const styles = StyleSheet.create({
 //     fontSize: 14,
 //   },
 
-//   // 👤 chips de usuarios
-//   membersRow: {
-//     flexDirection: "row",
-//     flexWrap: "wrap",
-//     gap: 8,
-//     marginBottom: 8,
+//   // dropdown genérico
+//   dropdownRow: {
+//     marginBottom: 6,
 //   },
-//   memberChip: {
-//     width: 110,
-//     height: 44,
-//     borderRadius: 22,
+//   dropdownWrapper: {
+//     alignSelf: "flex-start",
+//     minWidth: 180,
+//   },
+//   dropdownTrigger: {
+//     flexDirection: "row",
+//     alignItems: "center",
+//     justifyContent: "space-between",
+//     borderRadius: 999,
+//     borderWidth: 1,
+//     borderColor: BORDER,
 //     backgroundColor: "#11121b",
-//     borderWidth: 1,
-//     borderColor: BORDER,
-//     alignItems: "center",
-//     justifyContent: "center",
+//     paddingHorizontal: 12,
+//     paddingVertical: 8,
 //   },
-//   memberChipActive: {
-//     backgroundColor: "#111827",
-//     borderColor: PRIMARY,
-//     shadowColor: "#000",
-//     shadowOpacity: 0.35,
-//     shadowOffset: { width: 0, height: 2 },
-//     shadowRadius: 4,
-//     elevation: 4,
-//   },
-//   memberChipText: {
-//     color: SUBTLE,
-//     fontWeight: "700",
-//     fontSize: 13,
-//   },
-//   memberChipTextActive: {
-//     color: "#E9D5FF",
-//   },
-
-//   // 🌐 chips de workspaces (solo admin/owner las ve)
-//   wsLabel: {
-//     color: SUBTLE,
+//   dropdownText: {
+//     color: TEXT,
 //     fontSize: 12,
-//     marginBottom: 4,
+//     fontWeight: "700",
+//     flexShrink: 1,
 //   },
-//   wsRow: {
-//     flexDirection: "row",
-//     flexWrap: "wrap",
-//     gap: 8,
-//     marginBottom: 8,
+//   dropdownArrow: {
+//     color: SUBTLE,
+//     fontSize: 10,
+//     marginLeft: 6,
 //   },
-//   wsChip: {
-//     minWidth: 120,
-//     height: 40,
-//     borderRadius: 20,
-//     backgroundColor: "#090a10",
+//   dropdownMenu: {
+//     marginTop: 4,
+//     borderRadius: 10,
 //     borderWidth: 1,
 //     borderColor: BORDER,
-//     alignItems: "center",
-//     justifyContent: "center",
-//     paddingHorizontal: 10,
+//     backgroundColor: "#11121b",
+//     overflow: "hidden",
 //   },
-//   wsChipActive: {
+//   dropdownOption: {
+//     paddingHorizontal: 12,
+//     paddingVertical: 8,
+//     borderBottomWidth: 1,
+//     borderBottomColor: "#1f2933",
+//   },
+//   dropdownOptionActive: {
 //     backgroundColor: "#1f2937",
-//     borderColor: PRIMARY,
 //   },
-//   wsChipText: {
-//     color: SUBTLE,
-//     fontWeight: "700",
+//   dropdownOptionText: {
+//     color: TEXT,
 //     fontSize: 12,
 //   },
-//   wsChipTextActive: {
+//   dropdownOptionTextActive: {
 //     color: "#E9D5FF",
+//     fontWeight: "700",
 //   },
 
 //   row: {
@@ -1696,3 +1899,5 @@ const styles = StyleSheet.create({
 //     letterSpacing: 0.3,
 //   },
 // });
+
+
