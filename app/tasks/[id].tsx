@@ -1,3 +1,4 @@
+
 // app/tasks/[id].tsx
 import {
   deleteActivity,
@@ -31,7 +32,6 @@ import {
 
 /* 🎨 Paleta */
 const PRIMARY = "#7C3AED";
-const ACCENT = "#22D3EE";
 const BG = "#0F1115";
 const CARD = "#171923";
 const BORDER = "#2B3140";
@@ -41,7 +41,7 @@ const DANGER = "#EF4444";
 const SUCCESS = "#16a34a";
 
 /** Estados permitidos */
-type Status = ActivityStatus; // "open" | "done" | "canceled"
+type Status = ActivityStatus;
 
 /** Activity enriquecida */
 type ActivityWithCreator = Activity & {
@@ -51,7 +51,7 @@ type ActivityWithCreator = Activity & {
   assigned_to_2_name?: string | null;
 };
 
-/** Maestro global de completadas por UI */
+/** Maestro global UI */
 const MASTER_COMPLETED_KEY = "completedActivities:v1:all";
 const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 
@@ -67,12 +67,13 @@ export default function TaskDetail() {
 
   // dropdown de estado
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
-
-  // Estado local opcional (solo visual)
   const [localStatus, setLocalStatus] = useState<Status | null>(null);
 
-  // 🆕 nota nueva para el historial
+  // 🆕 nota nueva
   const [newNoteBody, setNewNoteBody] = useState("");
+
+  // 🆕 dropdown asignación
+  const [assigneesMenuOpen, setAssigneesMenuOpen] = useState(false);
 
   // Cargar maestro UI
   useEffect(() => {
@@ -82,12 +83,11 @@ export default function TaskDetail() {
           AsyncStorage.getItem(MASTER_COMPLETED_KEY),
           AsyncStorage.getItem(MASTER_INPROGRESS_KEY),
         ]);
-
         setCompletedMaster(
-          new Set(rawCompleted ? JSON.parse(rawCompleted) : [])
+          new Set<string>(rawCompleted ? JSON.parse(rawCompleted) : [])
         );
         setInProgressMaster(
-          new Set(rawInProgress ? JSON.parse(rawInProgress) : [])
+          new Set<string>(rawInProgress ? JSON.parse(rawInProgress) : [])
         );
       } catch {
         setCompletedMaster(new Set());
@@ -103,7 +103,7 @@ export default function TaskDetail() {
     enabled: !!id,
   });
 
-  // Lista completa (cache opcional)
+  // Cache lista (opcional)
   useQuery<ActivityWithCreator[]>({
     queryKey: ["activities-all"],
     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
@@ -116,13 +116,13 @@ export default function TaskDetail() {
   const qDeal = useQuery({ queryKey: ["deals"], queryFn: listDeals });
   const qLead = useQuery({ queryKey: ["leads"], queryFn: listLeads });
 
-  // Miembros del workspace actual (para reasignar)
+  // Miembros del workspace actual
   const qMembers = useQuery<TenantMember[]>({
     queryKey: ["tenant-members"],
     queryFn: listTenantMembers,
   });
 
-  // Helpers UI maestro: solo visual, sin tocar backend
+  // Helpers UI estado (solo visual)
   const markAsOpen = (actId: string) => {
     setCompletedMaster((prev) => {
       if (!prev.has(actId)) return prev;
@@ -213,7 +213,7 @@ export default function TaskDetail() {
       alert("No se pudo eliminar la actividad. Intenta nuevamente."),
   });
 
-  // 🔁 Reasignar / actualizar (usamos esto también para actualizar notas)
+  // 🔁 updateActivity (reasignación / notas)
   const mReassign = useMutation({
     mutationFn: async (payload: {
       assigned_to: string | null;
@@ -245,7 +245,7 @@ export default function TaskDetail() {
     },
   });
 
-  // Buscar en cache de la lista para rellenar
+  // Rellenar desde cache lista
   const listAll =
     (qc.getQueryData<ActivityWithCreator[]>(["activities-all"]) ?? []) as
       | ActivityWithCreator[]
@@ -256,21 +256,19 @@ export default function TaskDetail() {
     ? ({ ...(fromList || {}), ...qAct.data } as ActivityWithCreator)
     : fromList;
 
-  // Toggle de asignación para un miembro (máx. 2 personas)
+  // Toggle asignación (máx 2)
   const toggleAssignedMember = (memberId: string) => {
     if (!activity) return;
 
-    let primary = activity.assigned_to ?? null;
+    let primary = (activity as any).assigned_to ?? null;
     let secondary = (activity as any).assigned_to_2 ?? null;
 
     const isPrimary = primary === memberId;
     const isSecondary = secondary === memberId;
 
-    if (isPrimary) {
-      primary = null;
-    } else if (isSecondary) {
-      secondary = null;
-    } else {
+    if (isPrimary) primary = null;
+    else if (isSecondary) secondary = null;
+    else {
       if (!primary) primary = memberId;
       else if (!secondary) secondary = memberId;
       else secondary = memberId; // reemplaza el 2do si ya hay 2
@@ -291,7 +289,7 @@ export default function TaskDetail() {
     });
   };
 
-  // --- Notas: parse / add / delete ---
+  // Notas
   const noteBlocks = useMemo(() => {
     const raw = (activity?.notes || "").trim();
     if (!raw) return [];
@@ -307,12 +305,12 @@ export default function TaskDetail() {
     if (!body) return;
 
     const prev = (activity.notes || "").trim();
-    const timestamp = new Date().toLocaleString(); // fecha + hora
+    const timestamp = new Date().toLocaleString();
     const newBlock = `[${timestamp}] ${body}`;
     const merged = prev ? `${prev}\n\n${newBlock}` : newBlock;
 
     mReassign.mutate({
-      assigned_to: activity.assigned_to ?? null,
+      assigned_to: (activity as any).assigned_to ?? null,
       assigned_to_2: (activity as any).assigned_to_2 ?? null,
       title: activity.title ?? null,
       notes: merged,
@@ -329,10 +327,10 @@ export default function TaskDetail() {
   const handleDeleteNoteAt = (index: number) => {
     if (!activity) return;
     const nextBlocks = noteBlocks.filter((_, i) => i !== index);
-    const merged = nextBlocks.join("\n\n"); // preservamos el formato
+    const merged = nextBlocks.join("\n\n");
 
     mReassign.mutate({
-      assigned_to: activity.assigned_to ?? null,
+      assigned_to: (activity as any).assigned_to ?? null,
       assigned_to_2: (activity as any).assigned_to_2 ?? null,
       title: activity.title ?? null,
       notes: merged ? merged : null,
@@ -346,46 +344,36 @@ export default function TaskDetail() {
     });
   };
 
-  // Chips “Relacionado con…”
+  // Relacionados
   const contextChips = useMemo(() => {
     if (!activity) return [];
     const cs: { label: string; href: string }[] = [];
+
     if ((activity as any).account_id) {
       const name =
         (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)
           ?.name ?? (activity as any).account_id;
-      cs.push({
-        label: `Cuenta: ${name}`,
-        href: `/accounts/${(activity as any).account_id}`,
-      });
+      cs.push({ label: `Cuenta: ${name}`, href: `/accounts/${(activity as any).account_id}` });
     }
     if ((activity as any).contact_id) {
       const name =
         (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)
           ?.name ?? (activity as any).contact_id;
-      cs.push({
-        label: `Contacto: ${name}`,
-        href: `/contacts/${(activity as any).contact_id}`,
-      });
+      cs.push({ label: `Contacto: ${name}`, href: `/contacts/${(activity as any).contact_id}` });
     }
     if ((activity as any).deal_id) {
       const name =
         (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)
           ?.title ?? (activity as any).deal_id;
-      cs.push({
-        label: `Oportunidad: ${name}`,
-        href: `/deals/${(activity as any).deal_id}`,
-      });
+      cs.push({ label: `Oportunidad: ${name}`, href: `/deals/${(activity as any).deal_id}` });
     }
     if ((activity as any).lead_id) {
       const name =
         (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)
           ?.name ?? (activity as any).lead_id;
-      cs.push({
-        label: `Lead: ${name}`,
-        href: `/leads/${(activity as any).lead_id}`,
-      });
+      cs.push({ label: `Lead: ${name}`, href: `/leads/${(activity as any).lead_id}` });
     }
+
     return cs;
   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
 
@@ -395,11 +383,25 @@ export default function TaskDetail() {
   const isInProgressUI =
     !isDoneUI && inProgressMaster.has(activity?.id ?? "");
 
-  const statusLabel = isDoneUI
-    ? "Realizada"
-    : isInProgressUI
-    ? "En proceso"
-    : "Abierta";
+  const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
+
+  // Label dropdown asignados
+  const assigneesLabel = useMemo(() => {
+    if (!activity) return "Sin asignar";
+
+    const names: string[] = [];
+    const a: any = activity;
+
+    if (a.assigned_to_name) names.push(a.assigned_to_name);
+    else if (a.assigned_to) names.push(String(a.assigned_to));
+
+    if (a.assigned_to_2_name) names.push(a.assigned_to_2_name);
+    else if (a.assigned_to_2) names.push(String(a.assigned_to_2));
+
+    if (names.length === 0) return "Sin asignar";
+    if (names.length === 1) return names[0];
+    return `${names[0]} y ${names[1]}`;
+  }, [activity]);
 
   return (
     <>
@@ -445,14 +447,14 @@ export default function TaskDetail() {
 
               {/* Resumen */}
               {(() => {
-                const a = activity;
+                const a: any = activity;
 
                 const assignedNames: string[] = [];
-                if ((a as any).assigned_to_name) assignedNames.push((a as any).assigned_to_name);
-                else if ((a as any).assigned_to) assignedNames.push(String((a as any).assigned_to));
+                if (a.assigned_to_name) assignedNames.push(a.assigned_to_name);
+                else if (a.assigned_to) assignedNames.push(String(a.assigned_to));
 
-                if ((a as any).assigned_to_2_name) assignedNames.push((a as any).assigned_to_2_name);
-                else if ((a as any).assigned_to_2) assignedNames.push(String((a as any).assigned_to_2));
+                if (a.assigned_to_2_name) assignedNames.push(a.assigned_to_2_name);
+                else if (a.assigned_to_2) assignedNames.push(String(a.assigned_to_2));
 
                 const assignedInfo =
                   assignedNames.length === 0
@@ -461,14 +463,14 @@ export default function TaskDetail() {
                     ? ` · asignada a ${assignedNames[0]}`
                     : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
 
-                const createdLabel = (a as any).created_at
-                  ? ` · creada el ${formatDateShort((a as any).created_at)}`
+                const createdLabel = a.created_at
+                  ? ` · creada el ${formatDateShort(a.created_at)}`
                   : "";
 
                 return (
                   <Text style={[styles.summary, isDoneUI && styles.summaryDone]}>
                     {(a.type || "task")} · {statusLabel}
-                    {(a as any).created_by_name ? ` · por ${(a as any).created_by_name}` : ""}
+                    {a.created_by_name ? ` · por ${a.created_by_name}` : ""}
                     {assignedInfo}
                     {createdLabel}
                     {isDoneUI ? " · tarea completada" : ""}
@@ -476,67 +478,69 @@ export default function TaskDetail() {
                 );
               })()}
 
-              {/* Asignada a */}
-              <Text style={styles.item}>
-                <Text style={styles.itemLabel}>Asignada a: </Text>
-                <Text style={styles.itemValue}>
-                  {(() => {
-                    const names: string[] = [];
-                    if ((activity as any).assigned_to_name)
-                      names.push((activity as any).assigned_to_name);
-                    else if ((activity as any).assigned_to)
-                      names.push(String((activity as any).assigned_to));
-
-                    if ((activity as any).assigned_to_2_name)
-                      names.push((activity as any).assigned_to_2_name);
-                    else if ((activity as any).assigned_to_2)
-                      names.push(String((activity as any).assigned_to_2));
-
-                    if (names.length === 0) return "Sin asignar";
-                    if (names.length === 1) return names[0];
-                    return `${names[0]} y ${names[1]}`;
-                  })()}
-                </Text>
-              </Text>
-
-              {/* Reasignar */}
-              <View style={{ marginTop: 8, gap: 6 }}>
+              {/* ✅ Dropdown de asignación */}
+              <View style={{ marginTop: 10, gap: 6 }}>
                 <Text style={styles.itemLabel}>Personas asignadas (máx. 2)</Text>
 
-                {qMembers.isLoading && (
-                  <Text style={styles.subtle}>Cargando miembros…</Text>
-                )}
-                {qMembers.isError && (
-                  <Text style={styles.error}>
-                    No se pudieron cargar los miembros.
-                  </Text>
-                )}
+                <View style={styles.dropdownWrapper}>
+                  <Pressable
+                    style={styles.dropdownTrigger}
+                    onPress={() => setAssigneesMenuOpen((v) => !v)}
+                  >
+                    <Text style={styles.dropdownText} numberOfLines={1}>
+                      {assigneesLabel}
+                    </Text>
+                    <Text style={styles.dropdownArrow}>
+                      {assigneesMenuOpen ? "▲" : "▼"}
+                    </Text>
+                  </Pressable>
 
-                {qMembers.data && qMembers.data.length > 0 && (
-                  <View style={styles.membersRow}>
-                    {qMembers.data.map((m) => {
-                      const isAssigned =
-                        (activity as any).assigned_to === m.id ||
-                        (activity as any).assigned_to_2 === m.id;
+                  {assigneesMenuOpen && (
+                    <View style={styles.dropdownMenu}>
+                      {qMembers.isLoading ? (
+                        <View style={{ padding: 10 }}>
+                          <Text style={styles.subtleSmall}>Cargando miembros…</Text>
+                        </View>
+                      ) : qMembers.isError ? (
+                        <View style={{ padding: 10 }}>
+                          <Text style={styles.error}>No se pudieron cargar los miembros.</Text>
+                        </View>
+                      ) : (qMembers.data ?? []).length === 0 ? (
+                        <View style={{ padding: 10 }}>
+                          <Text style={styles.subtleSmall}>No hay miembros.</Text>
+                        </View>
+                      ) : (
+                        (qMembers.data ?? []).map((m) => {
+                          const a: any = activity;
+                          const isAssigned = a.assigned_to === m.id || a.assigned_to_2 === m.id;
 
-                      return (
-                        <Pressable
-                          key={m.id}
-                          style={[
-                            styles.memberChip,
-                            isAssigned && styles.memberChipActive,
-                          ]}
-                          onPress={() => toggleAssignedMember(m.id)}
-                          disabled={mReassign.isPending}
-                        >
-                          <Text style={styles.memberChipText}>
-                            {m.name || m.email || m.id}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                )}
+                          return (
+                            <Pressable
+                              key={m.id}
+                              style={[
+                                styles.dropdownOption,
+                                isAssigned && styles.dropdownOptionActive,
+                              ]}
+                              onPress={() => toggleAssignedMember(m.id)}
+                              disabled={mReassign.isPending}
+                            >
+                              <Text
+                                style={[
+                                  styles.dropdownOptionText,
+                                  isAssigned && styles.dropdownOptionTextActive,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {m.name || m.email || m.id}
+                                {isAssigned ? "  ✓" : ""}
+                              </Text>
+                            </Pressable>
+                          );
+                        })
+                      )}
+                    </View>
+                  )}
+                </View>
 
                 {mReassign.isPending && (
                   <Text style={styles.subtleSmall}>Actualizando…</Text>
@@ -604,12 +608,8 @@ export default function TaskDetail() {
               {/* Notas */}
               <View style={{ marginTop: 12 }}>
                 <Text style={styles.subSectionTitle}>Notas de la actividad</Text>
-                <Text style={styles.subSectionHint}>
-                  Aquí puedes ir registrando avances, acuerdos o detalles. Cada
-                  nota nueva se guarda con fecha y hora.
-                </Text>
 
-                {noteBlocks.length > 0 ? (
+                {noteBlocks.length > 0 && (
                   <View style={styles.notesHistoryWrapper}>
                     <ScrollView
                       style={styles.notesHistoryScroll}
@@ -618,9 +618,7 @@ export default function TaskDetail() {
                     >
                       {noteBlocks.map((block, idx) => (
                         <View key={idx} style={styles.noteRow}>
-                          <Text style={styles.notesHistoryText}>
-                            {block}
-                          </Text>
+                          <Text style={styles.notesHistoryText}>{block}</Text>
 
                           <Pressable
                             onPress={() => handleDeleteNoteAt(idx)}
@@ -637,10 +635,6 @@ export default function TaskDetail() {
                       ))}
                     </ScrollView>
                   </View>
-                ) : (
-                  <Text style={[styles.subtleSmall, { marginTop: 4 }]}>
-                    Aún no hay notas en esta actividad.
-                  </Text>
                 )}
 
                 {/* Input + Agregar */}
@@ -670,7 +664,7 @@ export default function TaskDetail() {
 
               {/* Relacionados */}
               {contextChips.length > 0 && (
-                <View style={{ marginTop: 6, gap: 6 }}>
+                <View style={{ marginTop: 10, gap: 6 }}>
                   <Text style={[styles.itemLabel, { marginBottom: 2 }]}>
                     Relacionado con
                   </Text>
@@ -691,7 +685,7 @@ export default function TaskDetail() {
               )}
             </View>
 
-            {/* Botón eliminar actividad */}
+            {/* Eliminar actividad */}
             <Pressable
               style={[
                 styles.btn,
@@ -772,17 +766,58 @@ const styles = StyleSheet.create({
   summary: { color: SUBTLE, fontSize: 12 },
   summaryDone: { color: SUCCESS },
 
-  item: { color: SUBTLE },
   itemLabel: { color: SUBTLE, fontWeight: "700" },
-  itemValue: { color: TEXT, fontWeight: "700" },
 
+  subtle: { color: SUBTLE },
+  subtleSmall: { color: SUBTLE, fontSize: 11 },
+  error: { color: "#fecaca" },
+
+  // Dropdown (asignación)
+  dropdownWrapper: { alignSelf: "flex-start", minWidth: 220 },
+  dropdownTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#11121b",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  dropdownText: {
+    color: TEXT,
+    fontSize: 12,
+    fontWeight: "700",
+    flexShrink: 1,
+  },
+  dropdownArrow: { color: SUBTLE, fontSize: 10, marginLeft: 6 },
+  dropdownMenu: {
+    marginTop: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#11121b",
+    overflow: "hidden",
+    minWidth: 220,
+  },
+  dropdownOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2933",
+  },
+  dropdownOptionActive: { backgroundColor: "#1f2937" },
+  dropdownOptionText: { color: TEXT, fontSize: 12 },
+  dropdownOptionTextActive: { color: "#E9D5FF", fontWeight: "800" },
+
+  // Estado
   stateRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginTop: 4,
+    marginTop: 6,
   },
-
   statusChip: {
     borderRadius: 999,
     paddingHorizontal: 10,
@@ -794,18 +829,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#0F172A",
   },
-  statusOpen: {
-    backgroundColor: "#e5e7eb",
-    borderColor: "#9ca3af",
-  },
-  statusInProgress: {
-    backgroundColor: "#DBEAFE",
-    borderColor: "#3b82f6",
-  },
-  statusDone: {
-    backgroundColor: "#dcfce7",
-    borderColor: "#22c55e",
-  },
+  statusOpen: { backgroundColor: "#e5e7eb", borderColor: "#9ca3af" },
+  statusInProgress: { backgroundColor: "#DBEAFE", borderColor: "#3b82f6" },
+  statusDone: { backgroundColor: "#dcfce7", borderColor: "#22c55e" },
   statusList: {
     marginTop: 4,
     borderRadius: 8,
@@ -820,65 +846,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#E2E8F0",
   },
-  statusOptionText: {
-    fontSize: 12,
-    color: "#0F172A",
-  },
-
-  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#1a1b2a",
-  },
-  chipText: { color: "#E5E7EB", fontWeight: "800", fontSize: 12 },
-
-  btn: { padding: 12, borderRadius: 12, alignItems: "center" },
-  btnDanger: { backgroundColor: DANGER },
-  btnText: { color: "#fff", fontWeight: "900" },
-
-  subtle: { color: SUBTLE },
-  subtleSmall: { color: SUBTLE, fontSize: 11 },
-  error: { color: "#fecaca" },
-
-  membersRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 4,
-  },
-  memberChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#1F2937",
-  },
-  memberChipActive: {
-    borderColor: PRIMARY,
-    backgroundColor: "rgba(124,58,237,0.25)",
-  },
-  memberChipText: {
-    color: TEXT,
-    fontWeight: "700",
-    fontSize: 12,
-  },
+  statusOptionText: { fontSize: 12, color: "#0F172A" },
 
   // Notas
   subSectionTitle: {
     color: TEXT,
     fontWeight: "800",
     fontSize: 15,
-    marginBottom: 2,
-  },
-  subSectionHint: {
-    color: SUBTLE,
-    fontSize: 11,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   notesHistoryWrapper: {
     maxHeight: 220,
@@ -887,15 +862,11 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     backgroundColor: "#11121b",
     overflow: "hidden",
+    marginTop: 6,
   },
-  notesHistoryScroll: {
-    maxHeight: 220,
-  },
-  notesHistoryContent: {
-    paddingVertical: 4,
-  },
+  notesHistoryScroll: { maxHeight: 220 },
+  notesHistoryContent: { paddingVertical: 4 },
 
-  // ✅ NUEVO: fila de nota + botón sutil a la derecha
   noteRow: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -906,33 +877,25 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#1f2937",
   },
-  notesHistoryText: {
-    color: TEXT,
-    fontSize: 13,
-    flex: 1,
-  },
+  notesHistoryText: { color: TEXT, fontSize: 13, flex: 1 },
   noteDeleteBtn: {
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 10,
-    backgroundColor: "rgba(239,68,68,0.18)", // rojo suave
+    backgroundColor: "rgba(239,68,68,0.18)",
     borderWidth: 1,
     borderColor: "rgba(239,68,68,0.35)",
     alignItems: "center",
     justifyContent: "center",
     alignSelf: "flex-start",
   },
-  noteDeleteText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 12,
-  },
+  noteDeleteText: { color: "#fff", fontWeight: "800", fontSize: 12 },
 
   historyInputRow: {
     flexDirection: "row",
     gap: 8,
     alignItems: "flex-start",
-    marginTop: 8,
+    marginTop: 10,
   },
   historyInput: {
     flex: 1,
@@ -955,9 +918,987 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  historyAddText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 12,
+  historyAddText: { color: "#fff", fontWeight: "800", fontSize: 12 },
+
+  // Relacionados
+  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  chip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#1a1b2a",
   },
+  chipText: { color: "#E5E7EB", fontWeight: "800", fontSize: 12 },
+
+  // Eliminar actividad
+  btn: { padding: 12, borderRadius: 12, alignItems: "center" },
+  btnDanger: { backgroundColor: DANGER },
+  btnText: { color: "#fff", fontWeight: "900" },
 });
+
+
+// // app/tasks/[id].tsx
+// import {
+//   deleteActivity,
+//   getActivity,
+//   listActivities,
+//   updateActivity,
+//   type Activity,
+//   type ActivityStatus,
+// } from "@/src/api/activities";
+// import { listTenantMembers, type TenantMember } from "@/src/api/tenants";
+
+// import { listAccounts } from "@/src/api/accounts";
+// import { listContacts } from "@/src/api/contacts";
+// import { listDeals } from "@/src/api/deals";
+// import { listLeads } from "@/src/api/leads";
+
+// import Confirm from "@/src/ui/Confirm";
+// import AsyncStorage from "@react-native-async-storage/async-storage";
+// import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+// import { Link, router, Stack, useLocalSearchParams } from "expo-router";
+// import { useEffect, useMemo, useState } from "react";
+// import {
+//   ActivityIndicator,
+//   Pressable,
+//   ScrollView,
+//   StyleSheet,
+//   Text,
+//   TextInput,
+//   View,
+// } from "react-native";
+
+// /* 🎨 Paleta */
+// const PRIMARY = "#7C3AED";
+// const ACCENT = "#22D3EE";
+// const BG = "#0F1115";
+// const CARD = "#171923";
+// const BORDER = "#2B3140";
+// const TEXT = "#F3F4F6";
+// const SUBTLE = "#A4ADBD";
+// const DANGER = "#EF4444";
+// const SUCCESS = "#16a34a";
+
+// /** Estados permitidos */
+// type Status = ActivityStatus; // "open" | "done" | "canceled"
+
+// /** Activity enriquecida */
+// type ActivityWithCreator = Activity & {
+//   created_by_name?: string | null;
+//   created_by_email?: string | null;
+//   assigned_to_name?: string | null;
+//   assigned_to_2_name?: string | null;
+// };
+
+// /** Maestro global de completadas por UI */
+// const MASTER_COMPLETED_KEY = "completedActivities:v1:all";
+// const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
+
+// export default function TaskDetail() {
+//   const { id } = useLocalSearchParams<{ id: string }>();
+//   const qc = useQueryClient();
+
+//   const [showConfirm, setShowConfirm] = useState(false);
+//   const [completedMaster, setCompletedMaster] = useState<Set<string>>(new Set());
+//   const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(
+//     new Set()
+//   );
+
+//   // dropdown de estado
+//   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+
+//   // Estado local opcional (solo visual)
+//   const [localStatus, setLocalStatus] = useState<Status | null>(null);
+
+//   // 🆕 nota nueva para el historial
+//   const [newNoteBody, setNewNoteBody] = useState("");
+
+//   // Cargar maestro UI
+//   useEffect(() => {
+//     (async () => {
+//       try {
+//         const [rawCompleted, rawInProgress] = await Promise.all([
+//           AsyncStorage.getItem(MASTER_COMPLETED_KEY),
+//           AsyncStorage.getItem(MASTER_INPROGRESS_KEY),
+//         ]);
+
+//         setCompletedMaster(
+//           new Set(rawCompleted ? JSON.parse(rawCompleted) : [])
+//         );
+//         setInProgressMaster(
+//           new Set(rawInProgress ? JSON.parse(rawInProgress) : [])
+//         );
+//       } catch {
+//         setCompletedMaster(new Set());
+//         setInProgressMaster(new Set());
+//       }
+//     })();
+//   }, []);
+
+//   // Detalle
+//   const qAct = useQuery<ActivityWithCreator>({
+//     queryKey: ["activity", id],
+//     queryFn: () => getActivity(id!),
+//     enabled: !!id,
+//   });
+
+//   // Lista completa (cache opcional)
+//   useQuery<ActivityWithCreator[]>({
+//     queryKey: ["activities-all"],
+//     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
+//     enabled: false,
+//   });
+
+//   // Catálogos
+//   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
+//   const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+//   const qDeal = useQuery({ queryKey: ["deals"], queryFn: listDeals });
+//   const qLead = useQuery({ queryKey: ["leads"], queryFn: listLeads });
+
+//   // Miembros del workspace actual (para reasignar)
+//   const qMembers = useQuery<TenantMember[]>({
+//     queryKey: ["tenant-members"],
+//     queryFn: listTenantMembers,
+//   });
+
+//   // Helpers UI maestro: solo visual, sin tocar backend
+//   const markAsOpen = (actId: string) => {
+//     setCompletedMaster((prev) => {
+//       if (!prev.has(actId)) return prev;
+//       const next = new Set(prev);
+//       next.delete(actId);
+//       AsyncStorage.setItem(
+//         MASTER_COMPLETED_KEY,
+//         JSON.stringify(Array.from(next))
+//       ).catch(() => {});
+//       return next;
+//     });
+//     setInProgressMaster((prev) => {
+//       if (!prev.has(actId)) return prev;
+//       const next = new Set(prev);
+//       next.delete(actId);
+//       AsyncStorage.setItem(
+//         MASTER_INPROGRESS_KEY,
+//         JSON.stringify(Array.from(next))
+//       ).catch(() => {});
+//       return next;
+//     });
+//   };
+
+//   const markAsCompleted = (actId: string) => {
+//     setInProgressMaster((prev) => {
+//       if (!prev.has(actId)) return prev;
+//       const next = new Set(prev);
+//       next.delete(actId);
+//       AsyncStorage.setItem(
+//         MASTER_INPROGRESS_KEY,
+//         JSON.stringify(Array.from(next))
+//       ).catch(() => {});
+//       return next;
+//     });
+//     setCompletedMaster((prev) => {
+//       if (prev.has(actId)) return prev;
+//       const next = new Set(prev);
+//       next.add(actId);
+//       AsyncStorage.setItem(
+//         MASTER_COMPLETED_KEY,
+//         JSON.stringify(Array.from(next))
+//       ).catch(() => {});
+//       return next;
+//     });
+//   };
+
+//   const markInProgress = (actId: string) => {
+//     setCompletedMaster((prev) => {
+//       if (!prev.has(actId)) return prev;
+//       const next = new Set(prev);
+//       next.delete(actId);
+//       AsyncStorage.setItem(
+//         MASTER_COMPLETED_KEY,
+//         JSON.stringify(Array.from(next))
+//       ).catch(() => {});
+//       return next;
+//     });
+//     setInProgressMaster((prev) => {
+//       if (prev.has(actId)) return prev;
+//       const next = new Set(prev);
+//       next.add(actId);
+//       AsyncStorage.setItem(
+//         MASTER_INPROGRESS_KEY,
+//         JSON.stringify(Array.from(next))
+//       ).catch(() => {});
+//       return next;
+//     });
+//   };
+
+//   const mDelete = useMutation({
+//     mutationFn: async () => deleteActivity(id!),
+//     onSuccess: async () => {
+//       const next = new Set(completedMaster);
+//       if (next.delete(id!)) {
+//         setCompletedMaster(next);
+//         try {
+//           await AsyncStorage.setItem(
+//             MASTER_COMPLETED_KEY,
+//             JSON.stringify([...next])
+//           );
+//         } catch {}
+//       }
+//       await qc.invalidateQueries({ queryKey: ["activities-all"] });
+//       await qc.invalidateQueries({ queryKey: ["activities"] });
+//       router.back();
+//     },
+//     onError: () =>
+//       alert("No se pudo eliminar la actividad. Intenta nuevamente."),
+//   });
+
+//   // 🔁 Reasignar / actualizar (usamos esto también para actualizar notas)
+//   const mReassign = useMutation({
+//     mutationFn: async (payload: {
+//       assigned_to: string | null;
+//       assigned_to_2: string | null;
+//       title?: string | null;
+//       notes?: string | null;
+//       account_id?: string | null;
+//       contact_id?: string | null;
+//       deal_id?: string | null;
+//       lead_id?: string | null;
+//       status?: ActivityStatus | null;
+//       due_date?: number | null;
+//       type?: Activity["type"] | null;
+//     }) => {
+//       if (!id) throw new Error("Missing activity id");
+//       await updateActivity(id, payload as any);
+//     },
+//     onSuccess: async () => {
+//       await qc.invalidateQueries({ queryKey: ["activity", id] });
+//       await qc.invalidateQueries({ queryKey: ["activities"] });
+//       await qc.invalidateQueries({ queryKey: ["activities-all"] });
+//       setNewNoteBody("");
+//     },
+//     onError: (err) => {
+//       alert(
+//         "No se pudo actualizar la actividad. Intenta nuevamente.\n\n" +
+//           String((err as any)?.message ?? err)
+//       );
+//     },
+//   });
+
+//   // Buscar en cache de la lista para rellenar
+//   const listAll =
+//     (qc.getQueryData<ActivityWithCreator[]>(["activities-all"]) ?? []) as
+//       | ActivityWithCreator[]
+//       | [];
+//   const fromList = listAll.find((a) => a.id === id);
+
+//   const activity: ActivityWithCreator | undefined = qAct.data
+//     ? ({ ...(fromList || {}), ...qAct.data } as ActivityWithCreator)
+//     : fromList;
+
+//   // Toggle de asignación para un miembro (máx. 2 personas)
+//   const toggleAssignedMember = (memberId: string) => {
+//     if (!activity) return;
+
+//     let primary = activity.assigned_to ?? null;
+//     let secondary = (activity as any).assigned_to_2 ?? null;
+
+//     const isPrimary = primary === memberId;
+//     const isSecondary = secondary === memberId;
+
+//     if (isPrimary) {
+//       primary = null;
+//     } else if (isSecondary) {
+//       secondary = null;
+//     } else {
+//       if (!primary) primary = memberId;
+//       else if (!secondary) secondary = memberId;
+//       else secondary = memberId; // reemplaza el 2do si ya hay 2
+//     }
+
+//     mReassign.mutate({
+//       assigned_to: primary,
+//       assigned_to_2: secondary,
+//       title: activity.title ?? null,
+//       notes: activity.notes ?? null,
+//       account_id: (activity as any).account_id ?? null,
+//       contact_id: (activity as any).contact_id ?? null,
+//       deal_id: (activity as any).deal_id ?? null,
+//       lead_id: (activity as any).lead_id ?? null,
+//       status: activity.status ?? null,
+//       due_date: (activity as any).due_date ?? null,
+//       type: activity.type ?? null,
+//     });
+//   };
+
+//   // --- Notas: parse / add / delete ---
+//   const noteBlocks = useMemo(() => {
+//     const raw = (activity?.notes || "").trim();
+//     if (!raw) return [];
+//     return raw
+//       .split(/\n{2,}/)
+//       .map((b) => b.trim())
+//       .filter(Boolean);
+//   }, [activity?.notes]);
+
+//   const handleAddNote = () => {
+//     if (!activity) return;
+//     const body = newNoteBody.trim();
+//     if (!body) return;
+
+//     const prev = (activity.notes || "").trim();
+//     const timestamp = new Date().toLocaleString(); // fecha + hora
+//     const newBlock = `[${timestamp}] ${body}`;
+//     const merged = prev ? `${prev}\n\n${newBlock}` : newBlock;
+
+//     mReassign.mutate({
+//       assigned_to: activity.assigned_to ?? null,
+//       assigned_to_2: (activity as any).assigned_to_2 ?? null,
+//       title: activity.title ?? null,
+//       notes: merged,
+//       account_id: (activity as any).account_id ?? null,
+//       contact_id: (activity as any).contact_id ?? null,
+//       deal_id: (activity as any).deal_id ?? null,
+//       lead_id: (activity as any).lead_id ?? null,
+//       status: activity.status ?? null,
+//       due_date: (activity as any).due_date ?? null,
+//       type: activity.type ?? null,
+//     });
+//   };
+
+//   const handleDeleteNoteAt = (index: number) => {
+//     if (!activity) return;
+//     const nextBlocks = noteBlocks.filter((_, i) => i !== index);
+//     const merged = nextBlocks.join("\n\n"); // preservamos el formato
+
+//     mReassign.mutate({
+//       assigned_to: activity.assigned_to ?? null,
+//       assigned_to_2: (activity as any).assigned_to_2 ?? null,
+//       title: activity.title ?? null,
+//       notes: merged ? merged : null,
+//       account_id: (activity as any).account_id ?? null,
+//       contact_id: (activity as any).contact_id ?? null,
+//       deal_id: (activity as any).deal_id ?? null,
+//       lead_id: (activity as any).lead_id ?? null,
+//       status: activity.status ?? null,
+//       due_date: (activity as any).due_date ?? null,
+//       type: activity.type ?? null,
+//     });
+//   };
+
+//   // Chips “Relacionado con…”
+//   const contextChips = useMemo(() => {
+//     if (!activity) return [];
+//     const cs: { label: string; href: string }[] = [];
+//     if ((activity as any).account_id) {
+//       const name =
+//         (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)
+//           ?.name ?? (activity as any).account_id;
+//       cs.push({
+//         label: `Cuenta: ${name}`,
+//         href: `/accounts/${(activity as any).account_id}`,
+//       });
+//     }
+//     if ((activity as any).contact_id) {
+//       const name =
+//         (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)
+//           ?.name ?? (activity as any).contact_id;
+//       cs.push({
+//         label: `Contacto: ${name}`,
+//         href: `/contacts/${(activity as any).contact_id}`,
+//       });
+//     }
+//     if ((activity as any).deal_id) {
+//       const name =
+//         (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)
+//           ?.title ?? (activity as any).deal_id;
+//       cs.push({
+//         label: `Oportunidad: ${name}`,
+//         href: `/deals/${(activity as any).deal_id}`,
+//       });
+//     }
+//     if ((activity as any).lead_id) {
+//       const name =
+//         (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)
+//           ?.name ?? (activity as any).lead_id;
+//       cs.push({
+//         label: `Lead: ${name}`,
+//         href: `/leads/${(activity as any).lead_id}`,
+//       });
+//     }
+//     return cs;
+//   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
+
+//   const isDoneUI =
+//     activity?.status === "done" || completedMaster.has(activity?.id ?? "");
+
+//   const isInProgressUI =
+//     !isDoneUI && inProgressMaster.has(activity?.id ?? "");
+
+//   const statusLabel = isDoneUI
+//     ? "Realizada"
+//     : isInProgressUI
+//     ? "En proceso"
+//     : "Abierta";
+
+//   return (
+//     <>
+//       <Stack.Screen
+//         options={{
+//           title: "Detalle Actividad",
+//           headerStyle: { backgroundColor: BG },
+//           headerTintColor: TEXT,
+//           headerTitleStyle: { color: TEXT, fontWeight: "800" },
+//           headerRight: () => (
+//             <Pressable
+//               onPress={() => setShowConfirm(true)}
+//               hitSlop={8}
+//               style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+//             >
+//               <Text style={{ color: DANGER, fontWeight: "900" }}>Eliminar</Text>
+//             </Pressable>
+//           ),
+//         }}
+//       />
+
+//       <View style={styles.screen}>
+//         {qAct.isLoading && !activity ? (
+//           <View style={{ alignItems: "center", paddingTop: 12 }}>
+//             <ActivityIndicator color={PRIMARY} />
+//             <Text style={styles.subtle}>Cargando…</Text>
+//           </View>
+//         ) : qAct.isError && !activity ? (
+//           <Text style={styles.error}>
+//             Error: {String((qAct.error as any)?.message || qAct.error)}
+//           </Text>
+//         ) : !activity ? (
+//           <Text style={styles.subtle}>No encontrado</Text>
+//         ) : (
+//           <>
+//             <View style={[styles.card, isDoneUI && styles.cardDone]}>
+//               <Text style={[styles.title, isDoneUI && styles.titleDone]}>
+//                 {iconByType(activity.type)}{" "}
+//                 {activity.title && activity.title.length > 0
+//                   ? activity.title
+//                   : "Sin título"}
+//               </Text>
+
+//               {/* Resumen */}
+//               {(() => {
+//                 const a = activity;
+
+//                 const assignedNames: string[] = [];
+//                 if ((a as any).assigned_to_name) assignedNames.push((a as any).assigned_to_name);
+//                 else if ((a as any).assigned_to) assignedNames.push(String((a as any).assigned_to));
+
+//                 if ((a as any).assigned_to_2_name) assignedNames.push((a as any).assigned_to_2_name);
+//                 else if ((a as any).assigned_to_2) assignedNames.push(String((a as any).assigned_to_2));
+
+//                 const assignedInfo =
+//                   assignedNames.length === 0
+//                     ? " · sin asignar"
+//                     : assignedNames.length === 1
+//                     ? ` · asignada a ${assignedNames[0]}`
+//                     : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
+
+//                 const createdLabel = (a as any).created_at
+//                   ? ` · creada el ${formatDateShort((a as any).created_at)}`
+//                   : "";
+
+//                 return (
+//                   <Text style={[styles.summary, isDoneUI && styles.summaryDone]}>
+//                     {(a.type || "task")} · {statusLabel}
+//                     {(a as any).created_by_name ? ` · por ${(a as any).created_by_name}` : ""}
+//                     {assignedInfo}
+//                     {createdLabel}
+//                     {isDoneUI ? " · tarea completada" : ""}
+//                   </Text>
+//                 );
+//               })()}
+
+//               {/* Asignada a */}
+//               <Text style={styles.item}>
+//                 <Text style={styles.itemLabel}>Asignada a: </Text>
+//                 <Text style={styles.itemValue}>
+//                   {(() => {
+//                     const names: string[] = [];
+//                     if ((activity as any).assigned_to_name)
+//                       names.push((activity as any).assigned_to_name);
+//                     else if ((activity as any).assigned_to)
+//                       names.push(String((activity as any).assigned_to));
+
+//                     if ((activity as any).assigned_to_2_name)
+//                       names.push((activity as any).assigned_to_2_name);
+//                     else if ((activity as any).assigned_to_2)
+//                       names.push(String((activity as any).assigned_to_2));
+
+//                     if (names.length === 0) return "Sin asignar";
+//                     if (names.length === 1) return names[0];
+//                     return `${names[0]} y ${names[1]}`;
+//                   })()}
+//                 </Text>
+//               </Text>
+
+//               {/* Reasignar */}
+//               <View style={{ marginTop: 8, gap: 6 }}>
+//                 <Text style={styles.itemLabel}>Personas asignadas (máx. 2)</Text>
+
+//                 {qMembers.isLoading && (
+//                   <Text style={styles.subtle}>Cargando miembros…</Text>
+//                 )}
+//                 {qMembers.isError && (
+//                   <Text style={styles.error}>
+//                     No se pudieron cargar los miembros.
+//                   </Text>
+//                 )}
+
+//                 {qMembers.data && qMembers.data.length > 0 && (
+//                   <View style={styles.membersRow}>
+//                     {qMembers.data.map((m) => {
+//                       const isAssigned =
+//                         (activity as any).assigned_to === m.id ||
+//                         (activity as any).assigned_to_2 === m.id;
+
+//                       return (
+//                         <Pressable
+//                           key={m.id}
+//                           style={[
+//                             styles.memberChip,
+//                             isAssigned && styles.memberChipActive,
+//                           ]}
+//                           onPress={() => toggleAssignedMember(m.id)}
+//                           disabled={mReassign.isPending}
+//                         >
+//                           <Text style={styles.memberChipText}>
+//                             {m.name || m.email || m.id}
+//                           </Text>
+//                         </Pressable>
+//                       );
+//                     })}
+//                   </View>
+//                 )}
+
+//                 {mReassign.isPending && (
+//                   <Text style={styles.subtleSmall}>Actualizando…</Text>
+//                 )}
+//               </View>
+
+//               {/* Estado dropdown (solo front) */}
+//               <View style={styles.stateRow}>
+//                 <Text style={styles.itemLabel}>Estado: </Text>
+
+//                 <View>
+//                   <Pressable
+//                     style={[
+//                       styles.statusChip,
+//                       isDoneUI
+//                         ? styles.statusDone
+//                         : isInProgressUI
+//                         ? styles.statusInProgress
+//                         : styles.statusOpen,
+//                     ]}
+//                     onPress={() => setStatusMenuOpen((v) => !v)}
+//                   >
+//                     <Text style={styles.statusChipText}>{statusLabel}</Text>
+//                   </Pressable>
+
+//                   {statusMenuOpen && (
+//                     <View style={styles.statusList}>
+//                       <Pressable
+//                         style={styles.statusOption}
+//                         onPress={() => {
+//                           markAsOpen(activity.id);
+//                           setLocalStatus("open");
+//                           setStatusMenuOpen(false);
+//                         }}
+//                       >
+//                         <Text style={styles.statusOptionText}>Abierta</Text>
+//                       </Pressable>
+
+//                       <Pressable
+//                         style={styles.statusOption}
+//                         onPress={() => {
+//                           markInProgress(activity.id);
+//                           setLocalStatus("canceled");
+//                           setStatusMenuOpen(false);
+//                         }}
+//                       >
+//                         <Text style={styles.statusOptionText}>En proceso</Text>
+//                       </Pressable>
+
+//                       <Pressable
+//                         style={styles.statusOption}
+//                         onPress={() => {
+//                           markAsCompleted(activity.id);
+//                           setLocalStatus("done");
+//                           setStatusMenuOpen(false);
+//                         }}
+//                       >
+//                         <Text style={styles.statusOptionText}>Realizada</Text>
+//                       </Pressable>
+//                     </View>
+//                   )}
+//                 </View>
+//               </View>
+
+//               {/* Notas */}
+//               <View style={{ marginTop: 12 }}>
+//                 <Text style={styles.subSectionTitle}>Notas de la actividad</Text>
+//                 <Text style={styles.subSectionHint}>
+//                   Aquí puedes ir registrando avances, acuerdos o detalles. Cada
+//                   nota nueva se guarda con fecha y hora.
+//                 </Text>
+
+//                 {noteBlocks.length > 0 ? (
+//                   <View style={styles.notesHistoryWrapper}>
+//                     <ScrollView
+//                       style={styles.notesHistoryScroll}
+//                       nestedScrollEnabled
+//                       contentContainerStyle={styles.notesHistoryContent}
+//                     >
+//                       {noteBlocks.map((block, idx) => (
+//                         <View key={idx} style={styles.noteRow}>
+//                           <Text style={styles.notesHistoryText}>
+//                             {block}
+//                           </Text>
+
+//                           <Pressable
+//                             onPress={() => handleDeleteNoteAt(idx)}
+//                             disabled={mReassign.isPending}
+//                             style={[
+//                               styles.noteDeleteBtn,
+//                               mReassign.isPending && { opacity: 0.5 },
+//                             ]}
+//                             hitSlop={8}
+//                           >
+//                             <Text style={styles.noteDeleteText}>Borrar</Text>
+//                           </Pressable>
+//                         </View>
+//                       ))}
+//                     </ScrollView>
+//                   </View>
+//                 ) : (
+//                   <Text style={[styles.subtleSmall, { marginTop: 4 }]}>
+//                     Aún no hay notas en esta actividad.
+//                   </Text>
+//                 )}
+
+//                 {/* Input + Agregar */}
+//                 <View style={styles.historyInputRow}>
+//                   <TextInput
+//                     style={styles.historyInput}
+//                     placeholder="Escribe una nueva nota…"
+//                     placeholderTextColor={SUBTLE}
+//                     value={newNoteBody}
+//                     onChangeText={setNewNoteBody}
+//                     multiline
+//                   />
+//                   <Pressable
+//                     style={[
+//                       styles.historyAddBtn,
+//                       (!newNoteBody.trim() || mReassign.isPending) && {
+//                         opacity: 0.5,
+//                       },
+//                     ]}
+//                     onPress={handleAddNote}
+//                     disabled={!newNoteBody.trim() || mReassign.isPending}
+//                   >
+//                     <Text style={styles.historyAddText}>Agregar</Text>
+//                   </Pressable>
+//                 </View>
+//               </View>
+
+//               {/* Relacionados */}
+//               {contextChips.length > 0 && (
+//                 <View style={{ marginTop: 6, gap: 6 }}>
+//                   <Text style={[styles.itemLabel, { marginBottom: 2 }]}>
+//                     Relacionado con
+//                   </Text>
+//                   <View style={styles.chipsRow}>
+//                     {contextChips.map((c) => (
+//                       <Link key={c.href} href={c.href as any} asChild>
+//                         <Pressable
+//                           style={styles.chip}
+//                           accessibilityRole="link"
+//                           hitSlop={8}
+//                         >
+//                           <Text style={styles.chipText}>{c.label}</Text>
+//                         </Pressable>
+//                       </Link>
+//                     ))}
+//                   </View>
+//                 </View>
+//               )}
+//             </View>
+
+//             {/* Botón eliminar actividad */}
+//             <Pressable
+//               style={[
+//                 styles.btn,
+//                 styles.btnDanger,
+//                 mDelete.isPending && { opacity: 0.9 },
+//               ]}
+//               onPress={() => setShowConfirm(true)}
+//               disabled={mDelete.isPending}
+//             >
+//               <Text style={styles.btnText}>
+//                 {mDelete.isPending ? "Eliminando…" : "Eliminar"}
+//               </Text>
+//             </Pressable>
+//           </>
+//         )}
+//       </View>
+
+//       <Confirm
+//         visible={showConfirm}
+//         title="Eliminar actividad"
+//         message="¿Seguro que deseas eliminar esta actividad?"
+//         confirmText="Eliminar"
+//         cancelText="Cancelar"
+//         onCancel={() => setShowConfirm(false)}
+//         onConfirm={() => {
+//           setShowConfirm(false);
+//           mDelete.mutate();
+//         }}
+//       />
+//     </>
+//   );
+// }
+
+// /* ——— Helpers ——— */
+// function iconByType(t: "task" | "call" | "meeting" | "note") {
+//   if (t === "call") return "📞";
+//   if (t === "meeting") return "📅";
+//   if (t === "note") return "📝";
+//   return "✅";
+// }
+
+// function formatDateShort(value?: number | string | null): string {
+//   if (value == null) return "—";
+
+//   if (typeof value === "number" || /^\d+$/.test(String(value))) {
+//     const n = typeof value === "number" ? value : Number(value);
+//     if (!Number.isFinite(n)) return "—";
+//     const d = new Date(n);
+//     if (Number.isNaN(d.getTime())) return "—";
+//     return d.toLocaleDateString();
+//   }
+
+//   const d = new Date(value);
+//   if (Number.isNaN(d.getTime())) return "—";
+//   return d.toLocaleDateString();
+// }
+
+// /* ——— Estilos ——— */
+// const styles = StyleSheet.create({
+//   screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
+
+//   card: {
+//     backgroundColor: CARD,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     borderRadius: 14,
+//     padding: 14,
+//     gap: 8,
+//   },
+//   cardDone: {
+//     borderColor: SUCCESS,
+//     backgroundColor: "rgba(22,163,74,0.08)",
+//   },
+
+//   title: { fontSize: 20, fontWeight: "900", color: TEXT },
+//   titleDone: { color: SUCCESS },
+
+//   summary: { color: SUBTLE, fontSize: 12 },
+//   summaryDone: { color: SUCCESS },
+
+//   item: { color: SUBTLE },
+//   itemLabel: { color: SUBTLE, fontWeight: "700" },
+//   itemValue: { color: TEXT, fontWeight: "700" },
+
+//   stateRow: {
+//     flexDirection: "row",
+//     alignItems: "center",
+//     gap: 8,
+//     marginTop: 4,
+//   },
+
+//   statusChip: {
+//     borderRadius: 999,
+//     paddingHorizontal: 10,
+//     paddingVertical: 4,
+//     borderWidth: 1,
+//   },
+//   statusChipText: {
+//     fontSize: 11,
+//     fontWeight: "700",
+//     color: "#0F172A",
+//   },
+//   statusOpen: {
+//     backgroundColor: "#e5e7eb",
+//     borderColor: "#9ca3af",
+//   },
+//   statusInProgress: {
+//     backgroundColor: "#DBEAFE",
+//     borderColor: "#3b82f6",
+//   },
+//   statusDone: {
+//     backgroundColor: "#dcfce7",
+//     borderColor: "#22c55e",
+//   },
+//   statusList: {
+//     marginTop: 4,
+//     borderRadius: 8,
+//     borderWidth: 1,
+//     borderColor: "#CBD5E1",
+//     backgroundColor: "#fff",
+//     overflow: "hidden",
+//   },
+//   statusOption: {
+//     paddingVertical: 6,
+//     paddingHorizontal: 10,
+//     borderBottomWidth: 1,
+//     borderBottomColor: "#E2E8F0",
+//   },
+//   statusOptionText: {
+//     fontSize: 12,
+//     color: "#0F172A",
+//   },
+
+//   chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+//   chip: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 6,
+//     borderRadius: 999,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#1a1b2a",
+//   },
+//   chipText: { color: "#E5E7EB", fontWeight: "800", fontSize: 12 },
+
+//   btn: { padding: 12, borderRadius: 12, alignItems: "center" },
+//   btnDanger: { backgroundColor: DANGER },
+//   btnText: { color: "#fff", fontWeight: "900" },
+
+//   subtle: { color: SUBTLE },
+//   subtleSmall: { color: SUBTLE, fontSize: 11 },
+//   error: { color: "#fecaca" },
+
+//   membersRow: {
+//     flexDirection: "row",
+//     flexWrap: "wrap",
+//     gap: 8,
+//     marginTop: 4,
+//   },
+//   memberChip: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 6,
+//     borderRadius: 999,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#1F2937",
+//   },
+//   memberChipActive: {
+//     borderColor: PRIMARY,
+//     backgroundColor: "rgba(124,58,237,0.25)",
+//   },
+//   memberChipText: {
+//     color: TEXT,
+//     fontWeight: "700",
+//     fontSize: 12,
+//   },
+
+//   // Notas
+//   subSectionTitle: {
+//     color: TEXT,
+//     fontWeight: "800",
+//     fontSize: 15,
+//     marginBottom: 2,
+//   },
+//   subSectionHint: {
+//     color: SUBTLE,
+//     fontSize: 11,
+//     marginBottom: 6,
+//   },
+//   notesHistoryWrapper: {
+//     maxHeight: 220,
+//     borderRadius: 10,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#11121b",
+//     overflow: "hidden",
+//   },
+//   notesHistoryScroll: {
+//     maxHeight: 220,
+//   },
+//   notesHistoryContent: {
+//     paddingVertical: 4,
+//   },
+
+//   // ✅ NUEVO: fila de nota + botón sutil a la derecha
+//   noteRow: {
+//     flexDirection: "row",
+//     alignItems: "flex-start",
+//     justifyContent: "space-between",
+//     gap: 10,
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     borderBottomWidth: 1,
+//     borderBottomColor: "#1f2937",
+//   },
+//   notesHistoryText: {
+//     color: TEXT,
+//     fontSize: 13,
+//     flex: 1,
+//   },
+//   noteDeleteBtn: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     borderRadius: 10,
+//     backgroundColor: "rgba(239,68,68,0.18)", // rojo suave
+//     borderWidth: 1,
+//     borderColor: "rgba(239,68,68,0.35)",
+//     alignItems: "center",
+//     justifyContent: "center",
+//     alignSelf: "flex-start",
+//   },
+//   noteDeleteText: {
+//     color: "#fff",
+//     fontWeight: "800",
+//     fontSize: 12,
+//   },
+
+//   historyInputRow: {
+//     flexDirection: "row",
+//     gap: 8,
+//     alignItems: "flex-start",
+//     marginTop: 8,
+//   },
+//   historyInput: {
+//     flex: 1,
+//     borderRadius: 10,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#11121b",
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     color: TEXT,
+//     fontSize: 13,
+//     minHeight: 40,
+//     maxHeight: 80,
+//   },
+//   historyAddBtn: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     borderRadius: 10,
+//     backgroundColor: PRIMARY,
+//     alignItems: "center",
+//     justifyContent: "center",
+//   },
+//   historyAddText: {
+//     color: "#fff",
+//     fontWeight: "800",
+//     fontSize: 12,
+//   },
+// });
