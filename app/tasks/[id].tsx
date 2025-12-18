@@ -1,4 +1,3 @@
-
 // app/tasks/[id].tsx
 import {
   deleteActivity,
@@ -8,7 +7,11 @@ import {
   type Activity,
   type ActivityStatus,
 } from "@/src/api/activities";
-import { listTenantMembers, type TenantMember } from "@/src/api/tenants";
+import {
+  listWorkspaceMembers,
+  type WorkspaceMember,
+} from "@/src/api/workspaceMembers";
+
 
 import { listAccounts } from "@/src/api/accounts";
 import { listContacts } from "@/src/api/contacts";
@@ -19,7 +22,7 @@ import Confirm from "@/src/ui/Confirm";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, router, Stack, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -55,15 +58,21 @@ type ActivityWithCreator = Activity & {
 const MASTER_COMPLETED_KEY = "completedActivities:v1:all";
 const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 
+type Assignees = { assigned_to: string | null; assigned_to_2: string | null };
+
 export default function TaskDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
 
   const [showConfirm, setShowConfirm] = useState(false);
+
+  // ✅ confirmación única de reasignación (solo al guardar)
+  const [showReassignConfirm, setShowReassignConfirm] = useState(false);
+  const [pendingReassign, setPendingReassign] = useState<Assignees | null>(null);
+  const [pendingReassignMessage, setPendingReassignMessage] = useState("");
+
   const [completedMaster, setCompletedMaster] = useState<Set<string>>(new Set());
-  const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(
-    new Set()
-  );
+  const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(new Set());
 
   // dropdown de estado
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
@@ -72,8 +81,12 @@ export default function TaskDetail() {
   // 🆕 nota nueva
   const [newNoteBody, setNewNoteBody] = useState("");
 
-  // 🆕 dropdown asignación
+  // ✅ dropdown asignación (modo edición local + guardar)
   const [assigneesMenuOpen, setAssigneesMenuOpen] = useState(false);
+  const [draftAssignees, setDraftAssignees] = useState<Assignees>({
+    assigned_to: null,
+    assigned_to_2: null,
+  });
 
   // Cargar maestro UI
   useEffect(() => {
@@ -83,12 +96,8 @@ export default function TaskDetail() {
           AsyncStorage.getItem(MASTER_COMPLETED_KEY),
           AsyncStorage.getItem(MASTER_INPROGRESS_KEY),
         ]);
-        setCompletedMaster(
-          new Set<string>(rawCompleted ? JSON.parse(rawCompleted) : [])
-        );
-        setInProgressMaster(
-          new Set<string>(rawInProgress ? JSON.parse(rawInProgress) : [])
-        );
+        setCompletedMaster(new Set<string>(rawCompleted ? JSON.parse(rawCompleted) : []));
+        setInProgressMaster(new Set<string>(rawInProgress ? JSON.parse(rawInProgress) : []));
       } catch {
         setCompletedMaster(new Set());
         setInProgressMaster(new Set());
@@ -117,10 +126,83 @@ export default function TaskDetail() {
   const qLead = useQuery({ queryKey: ["leads"], queryFn: listLeads });
 
   // Miembros del workspace actual
-  const qMembers = useQuery<TenantMember[]>({
-    queryKey: ["tenant-members"],
-    queryFn: listTenantMembers,
-  });
+const qMembers = useQuery<WorkspaceMember[]>({
+  queryKey: ["workspaceMembers"],
+  queryFn: listWorkspaceMembers,
+});
+
+  const getMemberLabel = useCallback(
+    (memberId: string) => {
+      const m = (qMembers.data ?? []).find((x) => x.id === memberId);
+      return m?.name || m?.email || memberId;
+    },
+    [qMembers.data]
+  );
+
+  const describeAssignees = useCallback(
+    (a: Assignees) => {
+      const names: string[] = [];
+      if (a.assigned_to) names.push(getMemberLabel(a.assigned_to));
+      if (a.assigned_to_2) names.push(getMemberLabel(a.assigned_to_2));
+      if (names.length === 0) return "sin asignar";
+      if (names.length === 1) return names[0];
+      return `${names[0]} y ${names[1]}`;
+    },
+    [getMemberLabel]
+  );
+
+  const diffAssigneesMessage = useCallback(
+    (prev: Assignees, next: Assignees): string => {
+      const p = [prev.assigned_to, prev.assigned_to_2].filter(Boolean) as string[];
+      const n = [next.assigned_to, next.assigned_to_2].filter(Boolean) as string[];
+
+      const added = n.filter((x) => !p.includes(x));
+      const removed = p.filter((x) => !n.includes(x));
+
+      if (added.length === 0 && removed.length === 0) return `No hay cambios en la asignación.`;
+
+      if (n.length === 0 && removed.length > 0 && added.length === 0) {
+        const who =
+          removed.length === 1
+            ? getMemberLabel(removed[0])
+            : `${getMemberLabel(removed[0])} y ${getMemberLabel(removed[1])}`;
+        return `Vas a dejar la actividad sin asignar (se desasigna a ${who}).`;
+      }
+
+      if (p.length === 0 && added.length > 0 && removed.length === 0) {
+        const who =
+          added.length === 1
+            ? getMemberLabel(added[0])
+            : `${getMemberLabel(added[0])} y ${getMemberLabel(added[1])}`;
+        return `Vas a asignar la actividad a ${who}.`;
+      }
+
+      if (added.length === 1 && removed.length === 1) {
+        return `Vas a reasignar: se desasigna a ${getMemberLabel(
+          removed[0]
+        )} y se asigna a ${getMemberLabel(added[0])}.`;
+      }
+
+      if (added.length > 0 && removed.length === 0) {
+        const who =
+          added.length === 1
+            ? getMemberLabel(added[0])
+            : `${getMemberLabel(added[0])} y ${getMemberLabel(added[1])}`;
+        return `Vas a agregar a ${who} como responsable.`;
+      }
+
+      if (removed.length > 0 && added.length === 0) {
+        const who =
+          removed.length === 1
+            ? getMemberLabel(removed[0])
+            : `${getMemberLabel(removed[0])} y ${getMemberLabel(removed[1])}`;
+        return `Vas a desasignar a ${who}. La actividad quedará asignada a ${describeAssignees(next)}.`;
+      }
+
+      return `Vas a cambiar la asignación: quedará asignada a ${describeAssignees(next)}.`;
+    },
+    [describeAssignees, getMemberLabel]
+  );
 
   // Helpers UI estado (solo visual)
   const markAsOpen = (actId: string) => {
@@ -128,20 +210,16 @@ export default function TaskDetail() {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
       next.delete(actId);
-      AsyncStorage.setItem(
-        MASTER_COMPLETED_KEY,
-        JSON.stringify(Array.from(next))
-      ).catch(() => {});
+      AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify(Array.from(next))).catch(() => {});
       return next;
     });
     setInProgressMaster((prev) => {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
       next.delete(actId);
-      AsyncStorage.setItem(
-        MASTER_INPROGRESS_KEY,
-        JSON.stringify(Array.from(next))
-      ).catch(() => {});
+      AsyncStorage.setItem(MASTER_INPROGRESS_KEY, JSON.stringify(Array.from(next))).catch(
+        () => {}
+      );
       return next;
     });
   };
@@ -151,20 +229,18 @@ export default function TaskDetail() {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
       next.delete(actId);
-      AsyncStorage.setItem(
-        MASTER_INPROGRESS_KEY,
-        JSON.stringify(Array.from(next))
-      ).catch(() => {});
+      AsyncStorage.setItem(MASTER_INPROGRESS_KEY, JSON.stringify(Array.from(next))).catch(
+        () => {}
+      );
       return next;
     });
     setCompletedMaster((prev) => {
       if (prev.has(actId)) return prev;
       const next = new Set(prev);
       next.add(actId);
-      AsyncStorage.setItem(
-        MASTER_COMPLETED_KEY,
-        JSON.stringify(Array.from(next))
-      ).catch(() => {});
+      AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify(Array.from(next))).catch(
+        () => {}
+      );
       return next;
     });
   };
@@ -174,20 +250,18 @@ export default function TaskDetail() {
       if (!prev.has(actId)) return prev;
       const next = new Set(prev);
       next.delete(actId);
-      AsyncStorage.setItem(
-        MASTER_COMPLETED_KEY,
-        JSON.stringify(Array.from(next))
-      ).catch(() => {});
+      AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify(Array.from(next))).catch(
+        () => {}
+      );
       return next;
     });
     setInProgressMaster((prev) => {
       if (prev.has(actId)) return prev;
       const next = new Set(prev);
       next.add(actId);
-      AsyncStorage.setItem(
-        MASTER_INPROGRESS_KEY,
-        JSON.stringify(Array.from(next))
-      ).catch(() => {});
+      AsyncStorage.setItem(MASTER_INPROGRESS_KEY, JSON.stringify(Array.from(next))).catch(
+        () => {}
+      );
       return next;
     });
   };
@@ -199,18 +273,14 @@ export default function TaskDetail() {
       if (next.delete(id!)) {
         setCompletedMaster(next);
         try {
-          await AsyncStorage.setItem(
-            MASTER_COMPLETED_KEY,
-            JSON.stringify([...next])
-          );
+          await AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify([...next]));
         } catch {}
       }
       await qc.invalidateQueries({ queryKey: ["activities-all"] });
       await qc.invalidateQueries({ queryKey: ["activities"] });
       router.back();
     },
-    onError: () =>
-      alert("No se pudo eliminar la actividad. Intenta nuevamente."),
+    onError: () => alert("No se pudo eliminar la actividad. Intenta nuevamente."),
   });
 
   // 🔁 updateActivity (reasignación / notas)
@@ -227,6 +297,9 @@ export default function TaskDetail() {
       status?: ActivityStatus | null;
       due_date?: number | null;
       type?: Activity["type"] | null;
+
+      // ✅ NUEVO: solo se manda cuando el usuario confirma la reasignación
+      notify_assignees?: boolean;
     }) => {
       if (!id) throw new Error("Missing activity id");
       await updateActivity(id, payload as any);
@@ -256,27 +329,77 @@ export default function TaskDetail() {
     ? ({ ...(fromList || {}), ...qAct.data } as ActivityWithCreator)
     : fromList;
 
-  // Toggle asignación (máx 2)
-  const toggleAssignedMember = (memberId: string) => {
+  const currentAssignees: Assignees = useMemo(() => {
+    const a: any = activity;
+    return {
+      assigned_to: a?.assigned_to ?? null,
+      assigned_to_2: a?.assigned_to_2 ?? null,
+    };
+  }, [(activity as any)?.assigned_to, (activity as any)?.assigned_to_2]);
+
+  // ✅ FIX LOOP: al abrir menú, clonar SOLO si cambió realmente (y dependencias primitivas)
+  useEffect(() => {
+    if (!assigneesMenuOpen) return;
+    setDraftAssignees((prev) => {
+      if (
+        prev.assigned_to === currentAssignees.assigned_to &&
+        prev.assigned_to_2 === currentAssignees.assigned_to_2
+      ) {
+        return prev;
+      }
+      return {
+        assigned_to: currentAssignees.assigned_to,
+        assigned_to_2: currentAssignees.assigned_to_2,
+      };
+    });
+  }, [assigneesMenuOpen, currentAssignees.assigned_to, currentAssignees.assigned_to_2]);
+
+  const draftDirty = useMemo(() => {
+    return (
+      draftAssignees.assigned_to !== currentAssignees.assigned_to ||
+      draftAssignees.assigned_to_2 !== currentAssignees.assigned_to_2
+    );
+  }, [draftAssignees, currentAssignees]);
+
+  const draftSelectedCount = useMemo(() => {
+    return [draftAssignees.assigned_to, draftAssignees.assigned_to_2].filter(Boolean).length;
+  }, [draftAssignees]);
+
+  const toggleDraftMember = (memberId: string) => {
+    setDraftAssignees((prev) => {
+      let primary = prev.assigned_to;
+      let secondary = prev.assigned_to_2;
+
+      const isPrimary = primary === memberId;
+      const isSecondary = secondary === memberId;
+
+      if (isPrimary) primary = null;
+      else if (isSecondary) secondary = null;
+      else {
+        if (!primary) primary = memberId;
+        else if (!secondary) secondary = memberId;
+        else return prev; // max 2
+      }
+
+      return { assigned_to: primary, assigned_to_2: secondary };
+    });
+  };
+
+  const requestSaveAssignees = () => {
     if (!activity) return;
+    const msg = diffAssigneesMessage(currentAssignees, draftAssignees);
+    setPendingReassign(draftAssignees);
+    setPendingReassignMessage(msg);
+    setShowReassignConfirm(true);
+  };
 
-    let primary = (activity as any).assigned_to ?? null;
-    let secondary = (activity as any).assigned_to_2 ?? null;
+  const applyPendingReassign = () => {
+    if (!activity || !pendingReassign) return;
 
-    const isPrimary = primary === memberId;
-    const isSecondary = secondary === memberId;
-
-    if (isPrimary) primary = null;
-    else if (isSecondary) secondary = null;
-    else {
-      if (!primary) primary = memberId;
-      else if (!secondary) secondary = memberId;
-      else secondary = memberId; // reemplaza el 2do si ya hay 2
-    }
-
+    // ✅ CLAVE: aquí SÍ mandamos notify_assignees=true
     mReassign.mutate({
-      assigned_to: primary,
-      assigned_to_2: secondary,
+      assigned_to: pendingReassign.assigned_to,
+      assigned_to_2: pendingReassign.assigned_to_2,
       title: activity.title ?? null,
       notes: activity.notes ?? null,
       account_id: (activity as any).account_id ?? null,
@@ -286,10 +409,22 @@ export default function TaskDetail() {
       status: activity.status ?? null,
       due_date: (activity as any).due_date ?? null,
       type: activity.type ?? null,
+      notify_assignees: true,
     });
+
+    setShowReassignConfirm(false);
+    setPendingReassign(null);
+    setPendingReassignMessage("");
+    setAssigneesMenuOpen(false);
   };
 
-  // Notas
+  const cancelPendingReassign = () => {
+    setShowReassignConfirm(false);
+    setPendingReassign(null);
+    setPendingReassignMessage("");
+  };
+
+  // Notas (historial)
   const noteBlocks = useMemo(() => {
     const raw = (activity?.notes || "").trim();
     if (!raw) return [];
@@ -309,6 +444,7 @@ export default function TaskDetail() {
     const newBlock = `[${timestamp}] ${body}`;
     const merged = prev ? `${prev}\n\n${newBlock}` : newBlock;
 
+    // ✅ Importante: aquí NO mandamos notify_assignees (evita correos por notas)
     mReassign.mutate({
       assigned_to: (activity as any).assigned_to ?? null,
       assigned_to_2: (activity as any).assigned_to_2 ?? null,
@@ -329,6 +465,7 @@ export default function TaskDetail() {
     const nextBlocks = noteBlocks.filter((_, i) => i !== index);
     const merged = nextBlocks.join("\n\n");
 
+    // ✅ Importante: aquí NO mandamos notify_assignees
     mReassign.mutate({
       assigned_to: (activity as any).assigned_to ?? null,
       assigned_to_2: (activity as any).assigned_to_2 ?? null,
@@ -351,41 +488,37 @@ export default function TaskDetail() {
 
     if ((activity as any).account_id) {
       const name =
-        (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)
-          ?.name ?? (activity as any).account_id;
+        (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)?.name ??
+        (activity as any).account_id;
       cs.push({ label: `Cuenta: ${name}`, href: `/accounts/${(activity as any).account_id}` });
     }
     if ((activity as any).contact_id) {
       const name =
-        (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)
-          ?.name ?? (activity as any).contact_id;
+        (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)?.name ??
+        (activity as any).contact_id;
       cs.push({ label: `Contacto: ${name}`, href: `/contacts/${(activity as any).contact_id}` });
     }
     if ((activity as any).deal_id) {
       const name =
-        (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)
-          ?.title ?? (activity as any).deal_id;
+        (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)?.title ??
+        (activity as any).deal_id;
       cs.push({ label: `Oportunidad: ${name}`, href: `/deals/${(activity as any).deal_id}` });
     }
     if ((activity as any).lead_id) {
       const name =
-        (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)
-          ?.name ?? (activity as any).lead_id;
+        (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)?.name ??
+        (activity as any).lead_id;
       cs.push({ label: `Lead: ${name}`, href: `/leads/${(activity as any).lead_id}` });
     }
 
     return cs;
   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
 
-  const isDoneUI =
-    activity?.status === "done" || completedMaster.has(activity?.id ?? "");
-
-  const isInProgressUI =
-    !isDoneUI && inProgressMaster.has(activity?.id ?? "");
-
+  const isDoneUI = activity?.status === "done" || completedMaster.has(activity?.id ?? "");
+  const isInProgressUI = !isDoneUI && inProgressMaster.has(activity?.id ?? "");
   const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
 
-  // Label dropdown asignados
+  // Label dropdown asignados (de activity real)
   const assigneesLabel = useMemo(() => {
     if (!activity) return "Sin asignar";
 
@@ -401,27 +534,49 @@ export default function TaskDetail() {
     if (names.length === 0) return "Sin asignar";
     if (names.length === 1) return names[0];
     return `${names[0]} y ${names[1]}`;
-  }, [activity]);
+  }, [
+    activity?.assigned_to_name,
+    activity?.assigned_to_2_name,
+    (activity as any)?.assigned_to,
+    (activity as any)?.assigned_to_2,
+  ]);
+
+  // Label preview draft
+  const draftLabel = useMemo(() => {
+    const names: string[] = [];
+    if (draftAssignees.assigned_to) names.push(getMemberLabel(draftAssignees.assigned_to));
+    if (draftAssignees.assigned_to_2) names.push(getMemberLabel(draftAssignees.assigned_to_2));
+    if (names.length === 0) return "Sin asignar";
+    if (names.length === 1) return names[0];
+    return `${names[0]} y ${names[1]}`;
+  }, [draftAssignees, getMemberLabel]);
+
+  // ✅ Evitar loops en web con setOptions: memoizar options
+  const headerRight = useCallback(() => {
+    return (
+      <Pressable
+        onPress={() => setShowConfirm(true)}
+        hitSlop={8}
+        style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+      >
+        <Text style={{ color: DANGER, fontWeight: "900" }}>Eliminar</Text>
+      </Pressable>
+    );
+  }, []);
+
+  const screenOptions = useMemo(() => {
+    return {
+      title: "Detalle Actividad",
+      headerStyle: { backgroundColor: BG },
+      headerTintColor: TEXT,
+      headerTitleStyle: { color: TEXT, fontWeight: "800" as const },
+      headerRight,
+    };
+  }, [headerRight]);
 
   return (
     <>
-      <Stack.Screen
-        options={{
-          title: "Detalle Actividad",
-          headerStyle: { backgroundColor: BG },
-          headerTintColor: TEXT,
-          headerTitleStyle: { color: TEXT, fontWeight: "800" },
-          headerRight: () => (
-            <Pressable
-              onPress={() => setShowConfirm(true)}
-              hitSlop={8}
-              style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
-            >
-              <Text style={{ color: DANGER, fontWeight: "900" }}>Eliminar</Text>
-            </Pressable>
-          ),
-        }}
-      />
+      <Stack.Screen options={screenOptions} />
 
       <View style={styles.screen}>
         {qAct.isLoading && !activity ? (
@@ -440,9 +595,7 @@ export default function TaskDetail() {
             <View style={[styles.card, isDoneUI && styles.cardDone]}>
               <Text style={[styles.title, isDoneUI && styles.titleDone]}>
                 {iconByType(activity.type)}{" "}
-                {activity.title && activity.title.length > 0
-                  ? activity.title
-                  : "Sin título"}
+                {activity.title && activity.title.length > 0 ? activity.title : "Sin título"}
               </Text>
 
               {/* Resumen */}
@@ -478,7 +631,7 @@ export default function TaskDetail() {
                 );
               })()}
 
-              {/* ✅ Dropdown de asignación */}
+              {/* ✅ Dropdown de asignación (edición local + guardar) */}
               <View style={{ marginTop: 10, gap: 6 }}>
                 <Text style={styles.itemLabel}>Personas asignadas (máx. 2)</Text>
 
@@ -486,6 +639,7 @@ export default function TaskDetail() {
                   <Pressable
                     style={styles.dropdownTrigger}
                     onPress={() => setAssigneesMenuOpen((v) => !v)}
+                    disabled={mReassign.isPending}
                   >
                     <Text style={styles.dropdownText} numberOfLines={1}>
                       {assigneesLabel}
@@ -497,6 +651,17 @@ export default function TaskDetail() {
 
                   {assigneesMenuOpen && (
                     <View style={styles.dropdownMenu}>
+                      <View style={styles.dropdownHeader}>
+                        <Text style={styles.dropdownHeaderTitle} numberOfLines={1}>
+                          Selección: {draftLabel}
+                        </Text>
+                        {draftDirty ? (
+                          <Text style={styles.dropdownDirty}>Cambios sin guardar</Text>
+                        ) : (
+                          <Text style={styles.dropdownClean}>Sin cambios</Text>
+                        )}
+                      </View>
+
                       {qMembers.isLoading ? (
                         <View style={{ padding: 10 }}>
                           <Text style={styles.subtleSmall}>Cargando miembros…</Text>
@@ -511,40 +676,67 @@ export default function TaskDetail() {
                         </View>
                       ) : (
                         (qMembers.data ?? []).map((m) => {
-                          const a: any = activity;
-                          const isAssigned = a.assigned_to === m.id || a.assigned_to_2 === m.id;
+                          const isSelected =
+                            draftAssignees.assigned_to === m.id ||
+                            draftAssignees.assigned_to_2 === m.id;
+
+                          const disabled = !isSelected && draftSelectedCount >= 2;
 
                           return (
                             <Pressable
                               key={m.id}
                               style={[
                                 styles.dropdownOption,
-                                isAssigned && styles.dropdownOptionActive,
+                                isSelected && styles.dropdownOptionActive,
+                                disabled && { opacity: 0.45 },
                               ]}
-                              onPress={() => toggleAssignedMember(m.id)}
-                              disabled={mReassign.isPending}
+                              onPress={() => toggleDraftMember(m.id)}
+                              disabled={disabled || mReassign.isPending}
                             >
                               <Text
                                 style={[
                                   styles.dropdownOptionText,
-                                  isAssigned && styles.dropdownOptionTextActive,
+                                  isSelected && styles.dropdownOptionTextActive,
                                 ]}
                                 numberOfLines={1}
                               >
                                 {m.name || m.email || m.id}
-                                {isAssigned ? "  ✓" : ""}
+                                {isSelected ? "  ✓" : ""}
                               </Text>
                             </Pressable>
                           );
                         })
                       )}
+
+                      <View style={styles.dropdownFooter}>
+                        <Pressable
+                          style={[styles.footerBtn, styles.footerBtnGhost]}
+                          onPress={() => {
+                            setDraftAssignees(currentAssignees);
+                            setAssigneesMenuOpen(false);
+                          }}
+                          disabled={mReassign.isPending}
+                        >
+                          <Text style={styles.footerBtnText}>Cancelar</Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={[
+                            styles.footerBtn,
+                            styles.footerBtnPrimary,
+                            (!draftDirty || mReassign.isPending) && { opacity: 0.5 },
+                          ]}
+                          onPress={requestSaveAssignees}
+                          disabled={!draftDirty || mReassign.isPending}
+                        >
+                          <Text style={styles.footerBtnText}>Guardar cambios</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   )}
                 </View>
 
-                {mReassign.isPending && (
-                  <Text style={styles.subtleSmall}>Actualizando…</Text>
-                )}
+                {mReassign.isPending && <Text style={styles.subtleSmall}>Actualizando…</Text>}
               </View>
 
               {/* Estado dropdown (solo front) */}
@@ -623,10 +815,7 @@ export default function TaskDetail() {
                           <Pressable
                             onPress={() => handleDeleteNoteAt(idx)}
                             disabled={mReassign.isPending}
-                            style={[
-                              styles.noteDeleteBtn,
-                              mReassign.isPending && { opacity: 0.5 },
-                            ]}
+                            style={[styles.noteDeleteBtn, mReassign.isPending && { opacity: 0.5 }]}
                             hitSlop={8}
                           >
                             <Text style={styles.noteDeleteText}>Borrar</Text>
@@ -637,7 +826,6 @@ export default function TaskDetail() {
                   </View>
                 )}
 
-                {/* Input + Agregar */}
                 <View style={styles.historyInputRow}>
                   <TextInput
                     style={styles.historyInput}
@@ -650,9 +838,7 @@ export default function TaskDetail() {
                   <Pressable
                     style={[
                       styles.historyAddBtn,
-                      (!newNoteBody.trim() || mReassign.isPending) && {
-                        opacity: 0.5,
-                      },
+                      (!newNoteBody.trim() || mReassign.isPending) && { opacity: 0.5 },
                     ]}
                     onPress={handleAddNote}
                     disabled={!newNoteBody.trim() || mReassign.isPending}
@@ -665,17 +851,11 @@ export default function TaskDetail() {
               {/* Relacionados */}
               {contextChips.length > 0 && (
                 <View style={{ marginTop: 10, gap: 6 }}>
-                  <Text style={[styles.itemLabel, { marginBottom: 2 }]}>
-                    Relacionado con
-                  </Text>
+                  <Text style={[styles.itemLabel, { marginBottom: 2 }]}>Relacionado con</Text>
                   <View style={styles.chipsRow}>
                     {contextChips.map((c) => (
                       <Link key={c.href} href={c.href as any} asChild>
-                        <Pressable
-                          style={styles.chip}
-                          accessibilityRole="link"
-                          hitSlop={8}
-                        >
+                        <Pressable style={styles.chip} accessibilityRole="link" hitSlop={8}>
                           <Text style={styles.chipText}>{c.label}</Text>
                         </Pressable>
                       </Link>
@@ -687,17 +867,11 @@ export default function TaskDetail() {
 
             {/* Eliminar actividad */}
             <Pressable
-              style={[
-                styles.btn,
-                styles.btnDanger,
-                mDelete.isPending && { opacity: 0.9 },
-              ]}
+              style={[styles.btn, styles.btnDanger, mDelete.isPending && { opacity: 0.9 }]}
               onPress={() => setShowConfirm(true)}
               disabled={mDelete.isPending}
             >
-              <Text style={styles.btnText}>
-                {mDelete.isPending ? "Eliminando…" : "Eliminar"}
-              </Text>
+              <Text style={styles.btnText}>{mDelete.isPending ? "Eliminando…" : "Eliminar"}</Text>
             </Pressable>
           </>
         )}
@@ -714,6 +888,16 @@ export default function TaskDetail() {
           setShowConfirm(false);
           mDelete.mutate();
         }}
+      />
+
+      <Confirm
+        visible={showReassignConfirm}
+        title="Confirmar cambio de asignación"
+        message={pendingReassignMessage || "¿Confirmas este cambio de asignación?"}
+        confirmText="Confirmar"
+        cancelText="Cancelar"
+        onCancel={cancelPendingReassign}
+        onConfirm={applyPendingReassign}
       />
     </>
   );
@@ -773,7 +957,7 @@ const styles = StyleSheet.create({
   error: { color: "#fecaca" },
 
   // Dropdown (asignación)
-  dropdownWrapper: { alignSelf: "flex-start", minWidth: 220 },
+  dropdownWrapper: { alignSelf: "flex-start", minWidth: 240 },
   dropdownTrigger: {
     flexDirection: "row",
     alignItems: "center",
@@ -792,15 +976,28 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   dropdownArrow: { color: SUBTLE, fontSize: 10, marginLeft: 6 },
+
   dropdownMenu: {
-    marginTop: 4,
-    borderRadius: 10,
+    marginTop: 6,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: BORDER,
     backgroundColor: "#11121b",
     overflow: "hidden",
-    minWidth: 220,
+    minWidth: 240,
   },
+
+  dropdownHeader: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1f2933",
+    gap: 4,
+  },
+  dropdownHeaderTitle: { color: TEXT, fontWeight: "800", fontSize: 12 },
+  dropdownDirty: { color: "#FDE68A", fontWeight: "800", fontSize: 11 },
+  dropdownClean: { color: SUBTLE, fontWeight: "700", fontSize: 11 },
+
   dropdownOption: {
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -810,6 +1007,28 @@ const styles = StyleSheet.create({
   dropdownOptionActive: { backgroundColor: "#1f2937" },
   dropdownOptionText: { color: TEXT, fontSize: 12 },
   dropdownOptionTextActive: { color: "#E9D5FF", fontWeight: "800" },
+
+  dropdownFooter: {
+    flexDirection: "row",
+    gap: 10,
+    padding: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#1f2933",
+  },
+  footerBtn: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  footerBtnPrimary: { backgroundColor: PRIMARY },
+  footerBtnGhost: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  footerBtnText: { color: "#fff", fontWeight: "900", fontSize: 12 },
 
   // Estado
   stateRow: {
@@ -959,7 +1178,7 @@ const styles = StyleSheet.create({
 // import AsyncStorage from "@react-native-async-storage/async-storage";
 // import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 // import { Link, router, Stack, useLocalSearchParams } from "expo-router";
-// import { useEffect, useMemo, useState } from "react";
+// import { useCallback, useEffect, useMemo, useState } from "react";
 // import {
 //   ActivityIndicator,
 //   Pressable,
@@ -972,7 +1191,6 @@ const styles = StyleSheet.create({
 
 // /* 🎨 Paleta */
 // const PRIMARY = "#7C3AED";
-// const ACCENT = "#22D3EE";
 // const BG = "#0F1115";
 // const CARD = "#171923";
 // const BORDER = "#2B3140";
@@ -982,7 +1200,7 @@ const styles = StyleSheet.create({
 // const SUCCESS = "#16a34a";
 
 // /** Estados permitidos */
-// type Status = ActivityStatus; // "open" | "done" | "canceled"
+// type Status = ActivityStatus;
 
 // /** Activity enriquecida */
 // type ActivityWithCreator = Activity & {
@@ -992,28 +1210,39 @@ const styles = StyleSheet.create({
 //   assigned_to_2_name?: string | null;
 // };
 
-// /** Maestro global de completadas por UI */
+// /** Maestro global UI */
 // const MASTER_COMPLETED_KEY = "completedActivities:v1:all";
 // const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
+
+// type Assignees = { assigned_to: string | null; assigned_to_2: string | null };
 
 // export default function TaskDetail() {
 //   const { id } = useLocalSearchParams<{ id: string }>();
 //   const qc = useQueryClient();
 
 //   const [showConfirm, setShowConfirm] = useState(false);
+
+//   // ✅ confirmación única de reasignación (solo al guardar)
+//   const [showReassignConfirm, setShowReassignConfirm] = useState(false);
+//   const [pendingReassign, setPendingReassign] = useState<Assignees | null>(null);
+//   const [pendingReassignMessage, setPendingReassignMessage] = useState("");
+
 //   const [completedMaster, setCompletedMaster] = useState<Set<string>>(new Set());
-//   const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(
-//     new Set()
-//   );
+//   const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(new Set());
 
 //   // dropdown de estado
 //   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
-
-//   // Estado local opcional (solo visual)
 //   const [localStatus, setLocalStatus] = useState<Status | null>(null);
 
-//   // 🆕 nota nueva para el historial
+//   // 🆕 nota nueva
 //   const [newNoteBody, setNewNoteBody] = useState("");
+
+//   // ✅ dropdown asignación (modo edición local + guardar)
+//   const [assigneesMenuOpen, setAssigneesMenuOpen] = useState(false);
+//   const [draftAssignees, setDraftAssignees] = useState<Assignees>({
+//     assigned_to: null,
+//     assigned_to_2: null,
+//   });
 
 //   // Cargar maestro UI
 //   useEffect(() => {
@@ -1023,13 +1252,8 @@ const styles = StyleSheet.create({
 //           AsyncStorage.getItem(MASTER_COMPLETED_KEY),
 //           AsyncStorage.getItem(MASTER_INPROGRESS_KEY),
 //         ]);
-
-//         setCompletedMaster(
-//           new Set(rawCompleted ? JSON.parse(rawCompleted) : [])
-//         );
-//         setInProgressMaster(
-//           new Set(rawInProgress ? JSON.parse(rawInProgress) : [])
-//         );
+//         setCompletedMaster(new Set<string>(rawCompleted ? JSON.parse(rawCompleted) : []));
+//         setInProgressMaster(new Set<string>(rawInProgress ? JSON.parse(rawInProgress) : []));
 //       } catch {
 //         setCompletedMaster(new Set());
 //         setInProgressMaster(new Set());
@@ -1044,7 +1268,7 @@ const styles = StyleSheet.create({
 //     enabled: !!id,
 //   });
 
-//   // Lista completa (cache opcional)
+//   // Cache lista (opcional)
 //   useQuery<ActivityWithCreator[]>({
 //     queryKey: ["activities-all"],
 //     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
@@ -1057,32 +1281,99 @@ const styles = StyleSheet.create({
 //   const qDeal = useQuery({ queryKey: ["deals"], queryFn: listDeals });
 //   const qLead = useQuery({ queryKey: ["leads"], queryFn: listLeads });
 
-//   // Miembros del workspace actual (para reasignar)
+//   // Miembros del workspace actual
 //   const qMembers = useQuery<TenantMember[]>({
 //     queryKey: ["tenant-members"],
 //     queryFn: listTenantMembers,
 //   });
 
-//   // Helpers UI maestro: solo visual, sin tocar backend
+//   const getMemberLabel = useCallback(
+//     (memberId: string) => {
+//       const m = (qMembers.data ?? []).find((x) => x.id === memberId);
+//       return m?.name || m?.email || memberId;
+//     },
+//     [qMembers.data]
+//   );
+
+//   const describeAssignees = useCallback(
+//     (a: Assignees) => {
+//       const names: string[] = [];
+//       if (a.assigned_to) names.push(getMemberLabel(a.assigned_to));
+//       if (a.assigned_to_2) names.push(getMemberLabel(a.assigned_to_2));
+//       if (names.length === 0) return "sin asignar";
+//       if (names.length === 1) return names[0];
+//       return `${names[0]} y ${names[1]}`;
+//     },
+//     [getMemberLabel]
+//   );
+
+//   const diffAssigneesMessage = useCallback(
+//     (prev: Assignees, next: Assignees): string => {
+//       const p = [prev.assigned_to, prev.assigned_to_2].filter(Boolean) as string[];
+//       const n = [next.assigned_to, next.assigned_to_2].filter(Boolean) as string[];
+
+//       const added = n.filter((x) => !p.includes(x));
+//       const removed = p.filter((x) => !n.includes(x));
+
+//       if (added.length === 0 && removed.length === 0) return `No hay cambios en la asignación.`;
+
+//       if (n.length === 0 && removed.length > 0 && added.length === 0) {
+//         const who =
+//           removed.length === 1
+//             ? getMemberLabel(removed[0])
+//             : `${getMemberLabel(removed[0])} y ${getMemberLabel(removed[1])}`;
+//         return `Vas a dejar la actividad sin asignar (se desasigna a ${who}).`;
+//       }
+
+//       if (p.length === 0 && added.length > 0 && removed.length === 0) {
+//         const who =
+//           added.length === 1
+//             ? getMemberLabel(added[0])
+//             : `${getMemberLabel(added[0])} y ${getMemberLabel(added[1])}`;
+//         return `Vas a asignar la actividad a ${who}.`;
+//       }
+
+//       if (added.length === 1 && removed.length === 1) {
+//         return `Vas a reasignar: se desasigna a ${getMemberLabel(
+//           removed[0]
+//         )} y se asigna a ${getMemberLabel(added[0])}.`;
+//       }
+
+//       if (added.length > 0 && removed.length === 0) {
+//         const who =
+//           added.length === 1
+//             ? getMemberLabel(added[0])
+//             : `${getMemberLabel(added[0])} y ${getMemberLabel(added[1])}`;
+//         return `Vas a agregar a ${who} como responsable.`;
+//       }
+
+//       if (removed.length > 0 && added.length === 0) {
+//         const who =
+//           removed.length === 1
+//             ? getMemberLabel(removed[0])
+//             : `${getMemberLabel(removed[0])} y ${getMemberLabel(removed[1])}`;
+//         return `Vas a desasignar a ${who}. La actividad quedará asignada a ${describeAssignees(next)}.`;
+//       }
+
+//       return `Vas a cambiar la asignación: quedará asignada a ${describeAssignees(next)}.`;
+//     },
+//     [describeAssignees, getMemberLabel]
+//   );
+
+//   // Helpers UI estado (solo visual)
 //   const markAsOpen = (actId: string) => {
 //     setCompletedMaster((prev) => {
 //       if (!prev.has(actId)) return prev;
 //       const next = new Set(prev);
 //       next.delete(actId);
-//       AsyncStorage.setItem(
-//         MASTER_COMPLETED_KEY,
-//         JSON.stringify(Array.from(next))
-//       ).catch(() => {});
+//       AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify(Array.from(next))).catch(() => {});
 //       return next;
 //     });
 //     setInProgressMaster((prev) => {
 //       if (!prev.has(actId)) return prev;
 //       const next = new Set(prev);
 //       next.delete(actId);
-//       AsyncStorage.setItem(
-//         MASTER_INPROGRESS_KEY,
-//         JSON.stringify(Array.from(next))
-//       ).catch(() => {});
+//       AsyncStorage.setItem(MASTER_INPROGRESS_KEY, JSON.stringify(Array.from(next))).catch(() => {});
 //       return next;
 //     });
 //   };
@@ -1092,20 +1383,14 @@ const styles = StyleSheet.create({
 //       if (!prev.has(actId)) return prev;
 //       const next = new Set(prev);
 //       next.delete(actId);
-//       AsyncStorage.setItem(
-//         MASTER_INPROGRESS_KEY,
-//         JSON.stringify(Array.from(next))
-//       ).catch(() => {});
+//       AsyncStorage.setItem(MASTER_INPROGRESS_KEY, JSON.stringify(Array.from(next))).catch(() => {});
 //       return next;
 //     });
 //     setCompletedMaster((prev) => {
 //       if (prev.has(actId)) return prev;
 //       const next = new Set(prev);
 //       next.add(actId);
-//       AsyncStorage.setItem(
-//         MASTER_COMPLETED_KEY,
-//         JSON.stringify(Array.from(next))
-//       ).catch(() => {});
+//       AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify(Array.from(next))).catch(() => {});
 //       return next;
 //     });
 //   };
@@ -1115,20 +1400,14 @@ const styles = StyleSheet.create({
 //       if (!prev.has(actId)) return prev;
 //       const next = new Set(prev);
 //       next.delete(actId);
-//       AsyncStorage.setItem(
-//         MASTER_COMPLETED_KEY,
-//         JSON.stringify(Array.from(next))
-//       ).catch(() => {});
+//       AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify(Array.from(next))).catch(() => {});
 //       return next;
 //     });
 //     setInProgressMaster((prev) => {
 //       if (prev.has(actId)) return prev;
 //       const next = new Set(prev);
 //       next.add(actId);
-//       AsyncStorage.setItem(
-//         MASTER_INPROGRESS_KEY,
-//         JSON.stringify(Array.from(next))
-//       ).catch(() => {});
+//       AsyncStorage.setItem(MASTER_INPROGRESS_KEY, JSON.stringify(Array.from(next))).catch(() => {});
 //       return next;
 //     });
 //   };
@@ -1140,21 +1419,17 @@ const styles = StyleSheet.create({
 //       if (next.delete(id!)) {
 //         setCompletedMaster(next);
 //         try {
-//           await AsyncStorage.setItem(
-//             MASTER_COMPLETED_KEY,
-//             JSON.stringify([...next])
-//           );
+//           await AsyncStorage.setItem(MASTER_COMPLETED_KEY, JSON.stringify([...next]));
 //         } catch {}
 //       }
 //       await qc.invalidateQueries({ queryKey: ["activities-all"] });
 //       await qc.invalidateQueries({ queryKey: ["activities"] });
 //       router.back();
 //     },
-//     onError: () =>
-//       alert("No se pudo eliminar la actividad. Intenta nuevamente."),
+//     onError: () => alert("No se pudo eliminar la actividad. Intenta nuevamente."),
 //   });
 
-//   // 🔁 Reasignar / actualizar (usamos esto también para actualizar notas)
+//   // 🔁 updateActivity (reasignación / notas)
 //   const mReassign = useMutation({
 //     mutationFn: async (payload: {
 //       assigned_to: string | null;
@@ -1186,40 +1461,91 @@ const styles = StyleSheet.create({
 //     },
 //   });
 
-//   // Buscar en cache de la lista para rellenar
+//   // Rellenar desde cache lista
 //   const listAll =
 //     (qc.getQueryData<ActivityWithCreator[]>(["activities-all"]) ?? []) as
 //       | ActivityWithCreator[]
 //       | [];
 //   const fromList = listAll.find((a) => a.id === id);
 
+//   // ✅ ojo: activity puede ser “nuevo objeto” en cada render, así que NO lo usamos como dependencia en effects
 //   const activity: ActivityWithCreator | undefined = qAct.data
 //     ? ({ ...(fromList || {}), ...qAct.data } as ActivityWithCreator)
 //     : fromList;
 
-//   // Toggle de asignación para un miembro (máx. 2 personas)
-//   const toggleAssignedMember = (memberId: string) => {
+//   const currentAssignees: Assignees = useMemo(() => {
+//     const a: any = activity;
+//     return {
+//       assigned_to: a?.assigned_to ?? null,
+//       assigned_to_2: a?.assigned_to_2 ?? null,
+//     };
+//   }, [
+//     (activity as any)?.assigned_to,
+//     (activity as any)?.assigned_to_2,
+//   ]);
+
+//   // ✅ FIX LOOP: al abrir menú, clonar SOLO si cambió realmente (y dependencias primitivas)
+//   useEffect(() => {
+//     if (!assigneesMenuOpen) return;
+//     setDraftAssignees((prev) => {
+//       if (
+//         prev.assigned_to === currentAssignees.assigned_to &&
+//         prev.assigned_to_2 === currentAssignees.assigned_to_2
+//       ) {
+//         return prev;
+//       }
+//       return {
+//         assigned_to: currentAssignees.assigned_to,
+//         assigned_to_2: currentAssignees.assigned_to_2,
+//       };
+//     });
+//   }, [assigneesMenuOpen, currentAssignees.assigned_to, currentAssignees.assigned_to_2]);
+
+//   const draftDirty = useMemo(() => {
+//     return (
+//       draftAssignees.assigned_to !== currentAssignees.assigned_to ||
+//       draftAssignees.assigned_to_2 !== currentAssignees.assigned_to_2
+//     );
+//   }, [draftAssignees, currentAssignees]);
+
+//   const draftSelectedCount = useMemo(() => {
+//     return [draftAssignees.assigned_to, draftAssignees.assigned_to_2].filter(Boolean).length;
+//   }, [draftAssignees]);
+
+//   const toggleDraftMember = (memberId: string) => {
+//     setDraftAssignees((prev) => {
+//       let primary = prev.assigned_to;
+//       let secondary = prev.assigned_to_2;
+
+//       const isPrimary = primary === memberId;
+//       const isSecondary = secondary === memberId;
+
+//       if (isPrimary) primary = null;
+//       else if (isSecondary) secondary = null;
+//       else {
+//         if (!primary) primary = memberId;
+//         else if (!secondary) secondary = memberId;
+//         else return prev; // max 2
+//       }
+
+//       return { assigned_to: primary, assigned_to_2: secondary };
+//     });
+//   };
+
+//   const requestSaveAssignees = () => {
 //     if (!activity) return;
+//     const msg = diffAssigneesMessage(currentAssignees, draftAssignees);
+//     setPendingReassign(draftAssignees);
+//     setPendingReassignMessage(msg);
+//     setShowReassignConfirm(true);
+//   };
 
-//     let primary = activity.assigned_to ?? null;
-//     let secondary = (activity as any).assigned_to_2 ?? null;
-
-//     const isPrimary = primary === memberId;
-//     const isSecondary = secondary === memberId;
-
-//     if (isPrimary) {
-//       primary = null;
-//     } else if (isSecondary) {
-//       secondary = null;
-//     } else {
-//       if (!primary) primary = memberId;
-//       else if (!secondary) secondary = memberId;
-//       else secondary = memberId; // reemplaza el 2do si ya hay 2
-//     }
+//   const applyPendingReassign = () => {
+//     if (!activity || !pendingReassign) return;
 
 //     mReassign.mutate({
-//       assigned_to: primary,
-//       assigned_to_2: secondary,
+//       assigned_to: pendingReassign.assigned_to,
+//       assigned_to_2: pendingReassign.assigned_to_2,
 //       title: activity.title ?? null,
 //       notes: activity.notes ?? null,
 //       account_id: (activity as any).account_id ?? null,
@@ -1230,9 +1556,20 @@ const styles = StyleSheet.create({
 //       due_date: (activity as any).due_date ?? null,
 //       type: activity.type ?? null,
 //     });
+
+//     setShowReassignConfirm(false);
+//     setPendingReassign(null);
+//     setPendingReassignMessage("");
+//     setAssigneesMenuOpen(false);
 //   };
 
-//   // --- Notas: parse / add / delete ---
+//   const cancelPendingReassign = () => {
+//     setShowReassignConfirm(false);
+//     setPendingReassign(null);
+//     setPendingReassignMessage("");
+//   };
+
+//   // Notas
 //   const noteBlocks = useMemo(() => {
 //     const raw = (activity?.notes || "").trim();
 //     if (!raw) return [];
@@ -1248,12 +1585,12 @@ const styles = StyleSheet.create({
 //     if (!body) return;
 
 //     const prev = (activity.notes || "").trim();
-//     const timestamp = new Date().toLocaleString(); // fecha + hora
+//     const timestamp = new Date().toLocaleString();
 //     const newBlock = `[${timestamp}] ${body}`;
 //     const merged = prev ? `${prev}\n\n${newBlock}` : newBlock;
 
 //     mReassign.mutate({
-//       assigned_to: activity.assigned_to ?? null,
+//       assigned_to: (activity as any).assigned_to ?? null,
 //       assigned_to_2: (activity as any).assigned_to_2 ?? null,
 //       title: activity.title ?? null,
 //       notes: merged,
@@ -1270,10 +1607,10 @@ const styles = StyleSheet.create({
 //   const handleDeleteNoteAt = (index: number) => {
 //     if (!activity) return;
 //     const nextBlocks = noteBlocks.filter((_, i) => i !== index);
-//     const merged = nextBlocks.join("\n\n"); // preservamos el formato
+//     const merged = nextBlocks.join("\n\n");
 
 //     mReassign.mutate({
-//       assigned_to: activity.assigned_to ?? null,
+//       assigned_to: (activity as any).assigned_to ?? null,
 //       assigned_to_2: (activity as any).assigned_to_2 ?? null,
 //       title: activity.title ?? null,
 //       notes: merged ? merged : null,
@@ -1287,80 +1624,100 @@ const styles = StyleSheet.create({
 //     });
 //   };
 
-//   // Chips “Relacionado con…”
+//   // Relacionados
 //   const contextChips = useMemo(() => {
 //     if (!activity) return [];
 //     const cs: { label: string; href: string }[] = [];
+
 //     if ((activity as any).account_id) {
 //       const name =
-//         (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)
-//           ?.name ?? (activity as any).account_id;
-//       cs.push({
-//         label: `Cuenta: ${name}`,
-//         href: `/accounts/${(activity as any).account_id}`,
-//       });
+//         (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)?.name ??
+//         (activity as any).account_id;
+//       cs.push({ label: `Cuenta: ${name}`, href: `/accounts/${(activity as any).account_id}` });
 //     }
 //     if ((activity as any).contact_id) {
 //       const name =
-//         (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)
-//           ?.name ?? (activity as any).contact_id;
-//       cs.push({
-//         label: `Contacto: ${name}`,
-//         href: `/contacts/${(activity as any).contact_id}`,
-//       });
+//         (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)?.name ??
+//         (activity as any).contact_id;
+//       cs.push({ label: `Contacto: ${name}`, href: `/contacts/${(activity as any).contact_id}` });
 //     }
 //     if ((activity as any).deal_id) {
 //       const name =
-//         (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)
-//           ?.title ?? (activity as any).deal_id;
-//       cs.push({
-//         label: `Oportunidad: ${name}`,
-//         href: `/deals/${(activity as any).deal_id}`,
-//       });
+//         (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)?.title ??
+//         (activity as any).deal_id;
+//       cs.push({ label: `Oportunidad: ${name}`, href: `/deals/${(activity as any).deal_id}` });
 //     }
 //     if ((activity as any).lead_id) {
 //       const name =
-//         (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)
-//           ?.name ?? (activity as any).lead_id;
-//       cs.push({
-//         label: `Lead: ${name}`,
-//         href: `/leads/${(activity as any).lead_id}`,
-//       });
+//         (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)?.name ??
+//         (activity as any).lead_id;
+//       cs.push({ label: `Lead: ${name}`, href: `/leads/${(activity as any).lead_id}` });
 //     }
+
 //     return cs;
 //   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
 
 //   const isDoneUI =
 //     activity?.status === "done" || completedMaster.has(activity?.id ?? "");
 
-//   const isInProgressUI =
-//     !isDoneUI && inProgressMaster.has(activity?.id ?? "");
+//   const isInProgressUI = !isDoneUI && inProgressMaster.has(activity?.id ?? "");
 
-//   const statusLabel = isDoneUI
-//     ? "Realizada"
-//     : isInProgressUI
-//     ? "En proceso"
-//     : "Abierta";
+//   const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
+
+//   // Label dropdown asignados (de activity real)
+//   const assigneesLabel = useMemo(() => {
+//     if (!activity) return "Sin asignar";
+
+//     const names: string[] = [];
+//     const a: any = activity;
+
+//     if (a.assigned_to_name) names.push(a.assigned_to_name);
+//     else if (a.assigned_to) names.push(String(a.assigned_to));
+
+//     if (a.assigned_to_2_name) names.push(a.assigned_to_2_name);
+//     else if (a.assigned_to_2) names.push(String(a.assigned_to_2));
+
+//     if (names.length === 0) return "Sin asignar";
+//     if (names.length === 1) return names[0];
+//     return `${names[0]} y ${names[1]}`;
+//   }, [activity?.assigned_to_name, activity?.assigned_to_2_name, (activity as any)?.assigned_to, (activity as any)?.assigned_to_2]);
+
+//   // Label preview draft
+//   const draftLabel = useMemo(() => {
+//     const names: string[] = [];
+//     if (draftAssignees.assigned_to) names.push(getMemberLabel(draftAssignees.assigned_to));
+//     if (draftAssignees.assigned_to_2) names.push(getMemberLabel(draftAssignees.assigned_to_2));
+//     if (names.length === 0) return "Sin asignar";
+//     if (names.length === 1) return names[0];
+//     return `${names[0]} y ${names[1]}`;
+//   }, [draftAssignees, getMemberLabel]);
+
+//   // ✅ Evitar loops en web con setOptions: memoizar options
+//   const headerRight = useCallback(() => {
+//     return (
+//       <Pressable
+//         onPress={() => setShowConfirm(true)}
+//         hitSlop={8}
+//         style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
+//       >
+//         <Text style={{ color: DANGER, fontWeight: "900" }}>Eliminar</Text>
+//       </Pressable>
+//     );
+//   }, []);
+
+//   const screenOptions = useMemo(() => {
+//     return {
+//       title: "Detalle Actividad",
+//       headerStyle: { backgroundColor: BG },
+//       headerTintColor: TEXT,
+//       headerTitleStyle: { color: TEXT, fontWeight: "800" as const },
+//       headerRight,
+//     };
+//   }, [headerRight]);
 
 //   return (
 //     <>
-//       <Stack.Screen
-//         options={{
-//           title: "Detalle Actividad",
-//           headerStyle: { backgroundColor: BG },
-//           headerTintColor: TEXT,
-//           headerTitleStyle: { color: TEXT, fontWeight: "800" },
-//           headerRight: () => (
-//             <Pressable
-//               onPress={() => setShowConfirm(true)}
-//               hitSlop={8}
-//               style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}
-//             >
-//               <Text style={{ color: DANGER, fontWeight: "900" }}>Eliminar</Text>
-//             </Pressable>
-//           ),
-//         }}
-//       />
+//       <Stack.Screen options={screenOptions} />
 
 //       <View style={styles.screen}>
 //         {qAct.isLoading && !activity ? (
@@ -1379,21 +1736,19 @@ const styles = StyleSheet.create({
 //             <View style={[styles.card, isDoneUI && styles.cardDone]}>
 //               <Text style={[styles.title, isDoneUI && styles.titleDone]}>
 //                 {iconByType(activity.type)}{" "}
-//                 {activity.title && activity.title.length > 0
-//                   ? activity.title
-//                   : "Sin título"}
+//                 {activity.title && activity.title.length > 0 ? activity.title : "Sin título"}
 //               </Text>
 
 //               {/* Resumen */}
 //               {(() => {
-//                 const a = activity;
+//                 const a: any = activity;
 
 //                 const assignedNames: string[] = [];
-//                 if ((a as any).assigned_to_name) assignedNames.push((a as any).assigned_to_name);
-//                 else if ((a as any).assigned_to) assignedNames.push(String((a as any).assigned_to));
+//                 if (a.assigned_to_name) assignedNames.push(a.assigned_to_name);
+//                 else if (a.assigned_to) assignedNames.push(String(a.assigned_to));
 
-//                 if ((a as any).assigned_to_2_name) assignedNames.push((a as any).assigned_to_2_name);
-//                 else if ((a as any).assigned_to_2) assignedNames.push(String((a as any).assigned_to_2));
+//                 if (a.assigned_to_2_name) assignedNames.push(a.assigned_to_2_name);
+//                 else if (a.assigned_to_2) assignedNames.push(String(a.assigned_to_2));
 
 //                 const assignedInfo =
 //                   assignedNames.length === 0
@@ -1402,14 +1757,12 @@ const styles = StyleSheet.create({
 //                     ? ` · asignada a ${assignedNames[0]}`
 //                     : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
 
-//                 const createdLabel = (a as any).created_at
-//                   ? ` · creada el ${formatDateShort((a as any).created_at)}`
-//                   : "";
+//                 const createdLabel = a.created_at ? ` · creada el ${formatDateShort(a.created_at)}` : "";
 
 //                 return (
 //                   <Text style={[styles.summary, isDoneUI && styles.summaryDone]}>
 //                     {(a.type || "task")} · {statusLabel}
-//                     {(a as any).created_by_name ? ` · por ${(a as any).created_by_name}` : ""}
+//                     {a.created_by_name ? ` · por ${a.created_by_name}` : ""}
 //                     {assignedInfo}
 //                     {createdLabel}
 //                     {isDoneUI ? " · tarea completada" : ""}
@@ -1417,71 +1770,109 @@ const styles = StyleSheet.create({
 //                 );
 //               })()}
 
-//               {/* Asignada a */}
-//               <Text style={styles.item}>
-//                 <Text style={styles.itemLabel}>Asignada a: </Text>
-//                 <Text style={styles.itemValue}>
-//                   {(() => {
-//                     const names: string[] = [];
-//                     if ((activity as any).assigned_to_name)
-//                       names.push((activity as any).assigned_to_name);
-//                     else if ((activity as any).assigned_to)
-//                       names.push(String((activity as any).assigned_to));
-
-//                     if ((activity as any).assigned_to_2_name)
-//                       names.push((activity as any).assigned_to_2_name);
-//                     else if ((activity as any).assigned_to_2)
-//                       names.push(String((activity as any).assigned_to_2));
-
-//                     if (names.length === 0) return "Sin asignar";
-//                     if (names.length === 1) return names[0];
-//                     return `${names[0]} y ${names[1]}`;
-//                   })()}
-//                 </Text>
-//               </Text>
-
-//               {/* Reasignar */}
-//               <View style={{ marginTop: 8, gap: 6 }}>
+//               {/* ✅ Dropdown de asignación (edición local + guardar) */}
+//               <View style={{ marginTop: 10, gap: 6 }}>
 //                 <Text style={styles.itemLabel}>Personas asignadas (máx. 2)</Text>
 
-//                 {qMembers.isLoading && (
-//                   <Text style={styles.subtle}>Cargando miembros…</Text>
-//                 )}
-//                 {qMembers.isError && (
-//                   <Text style={styles.error}>
-//                     No se pudieron cargar los miembros.
-//                   </Text>
-//                 )}
+//                 <View style={styles.dropdownWrapper}>
+//                   <Pressable
+//                     style={styles.dropdownTrigger}
+//                     onPress={() => setAssigneesMenuOpen((v) => !v)}
+//                     disabled={mReassign.isPending}
+//                   >
+//                     <Text style={styles.dropdownText} numberOfLines={1}>
+//                       {assigneesLabel}
+//                     </Text>
+//                     <Text style={styles.dropdownArrow}>{assigneesMenuOpen ? "▲" : "▼"}</Text>
+//                   </Pressable>
 
-//                 {qMembers.data && qMembers.data.length > 0 && (
-//                   <View style={styles.membersRow}>
-//                     {qMembers.data.map((m) => {
-//                       const isAssigned =
-//                         (activity as any).assigned_to === m.id ||
-//                         (activity as any).assigned_to_2 === m.id;
+//                   {assigneesMenuOpen && (
+//                     <View style={styles.dropdownMenu}>
+//                       <View style={styles.dropdownHeader}>
+//                         <Text style={styles.dropdownHeaderTitle} numberOfLines={1}>
+//                           Selección: {draftLabel}
+//                         </Text>
+//                         {draftDirty ? (
+//                           <Text style={styles.dropdownDirty}>Cambios sin guardar</Text>
+//                         ) : (
+//                           <Text style={styles.dropdownClean}>Sin cambios</Text>
+//                         )}
+//                       </View>
 
-//                       return (
+//                       {qMembers.isLoading ? (
+//                         <View style={{ padding: 10 }}>
+//                           <Text style={styles.subtleSmall}>Cargando miembros…</Text>
+//                         </View>
+//                       ) : qMembers.isError ? (
+//                         <View style={{ padding: 10 }}>
+//                           <Text style={styles.error}>No se pudieron cargar los miembros.</Text>
+//                         </View>
+//                       ) : (qMembers.data ?? []).length === 0 ? (
+//                         <View style={{ padding: 10 }}>
+//                           <Text style={styles.subtleSmall}>No hay miembros.</Text>
+//                         </View>
+//                       ) : (
+//                         (qMembers.data ?? []).map((m) => {
+//                           const isSelected =
+//                             draftAssignees.assigned_to === m.id || draftAssignees.assigned_to_2 === m.id;
+
+//                           const disabled = !isSelected && draftSelectedCount >= 2;
+
+//                           return (
+//                             <Pressable
+//                               key={m.id}
+//                               style={[
+//                                 styles.dropdownOption,
+//                                 isSelected && styles.dropdownOptionActive,
+//                                 disabled && { opacity: 0.45 },
+//                               ]}
+//                               onPress={() => toggleDraftMember(m.id)}
+//                               disabled={disabled || mReassign.isPending}
+//                             >
+//                               <Text
+//                                 style={[
+//                                   styles.dropdownOptionText,
+//                                   isSelected && styles.dropdownOptionTextActive,
+//                                 ]}
+//                                 numberOfLines={1}
+//                               >
+//                                 {m.name || m.email || m.id}
+//                                 {isSelected ? "  ✓" : ""}
+//                               </Text>
+//                             </Pressable>
+//                           );
+//                         })
+//                       )}
+
+//                       <View style={styles.dropdownFooter}>
 //                         <Pressable
-//                           key={m.id}
-//                           style={[
-//                             styles.memberChip,
-//                             isAssigned && styles.memberChipActive,
-//                           ]}
-//                           onPress={() => toggleAssignedMember(m.id)}
+//                           style={[styles.footerBtn, styles.footerBtnGhost]}
+//                           onPress={() => {
+//                             setDraftAssignees(currentAssignees);
+//                             setAssigneesMenuOpen(false);
+//                           }}
 //                           disabled={mReassign.isPending}
 //                         >
-//                           <Text style={styles.memberChipText}>
-//                             {m.name || m.email || m.id}
-//                           </Text>
+//                           <Text style={styles.footerBtnText}>Cancelar</Text>
 //                         </Pressable>
-//                       );
-//                     })}
-//                   </View>
-//                 )}
 
-//                 {mReassign.isPending && (
-//                   <Text style={styles.subtleSmall}>Actualizando…</Text>
-//                 )}
+//                         <Pressable
+//                           style={[
+//                             styles.footerBtn,
+//                             styles.footerBtnPrimary,
+//                             (!draftDirty || mReassign.isPending) && { opacity: 0.5 },
+//                           ]}
+//                           onPress={requestSaveAssignees}
+//                           disabled={!draftDirty || mReassign.isPending}
+//                         >
+//                           <Text style={styles.footerBtnText}>Guardar cambios</Text>
+//                         </Pressable>
+//                       </View>
+//                     </View>
+//                   )}
+//                 </View>
+
+//                 {mReassign.isPending && <Text style={styles.subtleSmall}>Actualizando…</Text>}
 //               </View>
 
 //               {/* Estado dropdown (solo front) */}
@@ -1545,12 +1936,8 @@ const styles = StyleSheet.create({
 //               {/* Notas */}
 //               <View style={{ marginTop: 12 }}>
 //                 <Text style={styles.subSectionTitle}>Notas de la actividad</Text>
-//                 <Text style={styles.subSectionHint}>
-//                   Aquí puedes ir registrando avances, acuerdos o detalles. Cada
-//                   nota nueva se guarda con fecha y hora.
-//                 </Text>
 
-//                 {noteBlocks.length > 0 ? (
+//                 {noteBlocks.length > 0 && (
 //                   <View style={styles.notesHistoryWrapper}>
 //                     <ScrollView
 //                       style={styles.notesHistoryScroll}
@@ -1559,17 +1946,12 @@ const styles = StyleSheet.create({
 //                     >
 //                       {noteBlocks.map((block, idx) => (
 //                         <View key={idx} style={styles.noteRow}>
-//                           <Text style={styles.notesHistoryText}>
-//                             {block}
-//                           </Text>
+//                           <Text style={styles.notesHistoryText}>{block}</Text>
 
 //                           <Pressable
 //                             onPress={() => handleDeleteNoteAt(idx)}
 //                             disabled={mReassign.isPending}
-//                             style={[
-//                               styles.noteDeleteBtn,
-//                               mReassign.isPending && { opacity: 0.5 },
-//                             ]}
+//                             style={[styles.noteDeleteBtn, mReassign.isPending && { opacity: 0.5 }]}
 //                             hitSlop={8}
 //                           >
 //                             <Text style={styles.noteDeleteText}>Borrar</Text>
@@ -1578,13 +1960,8 @@ const styles = StyleSheet.create({
 //                       ))}
 //                     </ScrollView>
 //                   </View>
-//                 ) : (
-//                   <Text style={[styles.subtleSmall, { marginTop: 4 }]}>
-//                     Aún no hay notas en esta actividad.
-//                   </Text>
 //                 )}
 
-//                 {/* Input + Agregar */}
 //                 <View style={styles.historyInputRow}>
 //                   <TextInput
 //                     style={styles.historyInput}
@@ -1597,9 +1974,7 @@ const styles = StyleSheet.create({
 //                   <Pressable
 //                     style={[
 //                       styles.historyAddBtn,
-//                       (!newNoteBody.trim() || mReassign.isPending) && {
-//                         opacity: 0.5,
-//                       },
+//                       (!newNoteBody.trim() || mReassign.isPending) && { opacity: 0.5 },
 //                     ]}
 //                     onPress={handleAddNote}
 //                     disabled={!newNoteBody.trim() || mReassign.isPending}
@@ -1611,18 +1986,12 @@ const styles = StyleSheet.create({
 
 //               {/* Relacionados */}
 //               {contextChips.length > 0 && (
-//                 <View style={{ marginTop: 6, gap: 6 }}>
-//                   <Text style={[styles.itemLabel, { marginBottom: 2 }]}>
-//                     Relacionado con
-//                   </Text>
+//                 <View style={{ marginTop: 10, gap: 6 }}>
+//                   <Text style={[styles.itemLabel, { marginBottom: 2 }]}>Relacionado con</Text>
 //                   <View style={styles.chipsRow}>
 //                     {contextChips.map((c) => (
 //                       <Link key={c.href} href={c.href as any} asChild>
-//                         <Pressable
-//                           style={styles.chip}
-//                           accessibilityRole="link"
-//                           hitSlop={8}
-//                         >
+//                         <Pressable style={styles.chip} accessibilityRole="link" hitSlop={8}>
 //                           <Text style={styles.chipText}>{c.label}</Text>
 //                         </Pressable>
 //                       </Link>
@@ -1632,19 +2001,13 @@ const styles = StyleSheet.create({
 //               )}
 //             </View>
 
-//             {/* Botón eliminar actividad */}
+//             {/* Eliminar actividad */}
 //             <Pressable
-//               style={[
-//                 styles.btn,
-//                 styles.btnDanger,
-//                 mDelete.isPending && { opacity: 0.9 },
-//               ]}
+//               style={[styles.btn, styles.btnDanger, mDelete.isPending && { opacity: 0.9 }]}
 //               onPress={() => setShowConfirm(true)}
 //               disabled={mDelete.isPending}
 //             >
-//               <Text style={styles.btnText}>
-//                 {mDelete.isPending ? "Eliminando…" : "Eliminar"}
-//               </Text>
+//               <Text style={styles.btnText}>{mDelete.isPending ? "Eliminando…" : "Eliminar"}</Text>
 //             </Pressable>
 //           </>
 //         )}
@@ -1661,6 +2024,16 @@ const styles = StyleSheet.create({
 //           setShowConfirm(false);
 //           mDelete.mutate();
 //         }}
+//       />
+
+//       <Confirm
+//         visible={showReassignConfirm}
+//         title="Confirmar cambio de asignación"
+//         message={pendingReassignMessage || "¿Confirmas este cambio de asignación?"}
+//         confirmText="Confirmar"
+//         cancelText="Cancelar"
+//         onCancel={cancelPendingReassign}
+//         onConfirm={applyPendingReassign}
 //       />
 //     </>
 //   );
@@ -1713,17 +2086,93 @@ const styles = StyleSheet.create({
 //   summary: { color: SUBTLE, fontSize: 12 },
 //   summaryDone: { color: SUCCESS },
 
-//   item: { color: SUBTLE },
 //   itemLabel: { color: SUBTLE, fontWeight: "700" },
-//   itemValue: { color: TEXT, fontWeight: "700" },
 
+//   subtle: { color: SUBTLE },
+//   subtleSmall: { color: SUBTLE, fontSize: 11 },
+//   error: { color: "#fecaca" },
+
+//   // Dropdown (asignación)
+//   dropdownWrapper: { alignSelf: "flex-start", minWidth: 240 },
+//   dropdownTrigger: {
+//     flexDirection: "row",
+//     alignItems: "center",
+//     justifyContent: "space-between",
+//     borderRadius: 999,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#11121b",
+//     paddingHorizontal: 12,
+//     paddingVertical: 8,
+//   },
+//   dropdownText: {
+//     color: TEXT,
+//     fontSize: 12,
+//     fontWeight: "700",
+//     flexShrink: 1,
+//   },
+//   dropdownArrow: { color: SUBTLE, fontSize: 10, marginLeft: 6 },
+
+//   dropdownMenu: {
+//     marginTop: 6,
+//     borderRadius: 12,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#11121b",
+//     overflow: "hidden",
+//     minWidth: 240,
+//   },
+
+//   dropdownHeader: {
+//     paddingHorizontal: 12,
+//     paddingVertical: 10,
+//     borderBottomWidth: 1,
+//     borderBottomColor: "#1f2933",
+//     gap: 4,
+//   },
+//   dropdownHeaderTitle: { color: TEXT, fontWeight: "800", fontSize: 12 },
+//   dropdownDirty: { color: "#FDE68A", fontWeight: "800", fontSize: 11 },
+//   dropdownClean: { color: SUBTLE, fontWeight: "700", fontSize: 11 },
+
+//   dropdownOption: {
+//     paddingHorizontal: 12,
+//     paddingVertical: 10,
+//     borderBottomWidth: 1,
+//     borderBottomColor: "#1f2933",
+//   },
+//   dropdownOptionActive: { backgroundColor: "#1f2937" },
+//   dropdownOptionText: { color: TEXT, fontSize: 12 },
+//   dropdownOptionTextActive: { color: "#E9D5FF", fontWeight: "800" },
+
+//   dropdownFooter: {
+//     flexDirection: "row",
+//     gap: 10,
+//     padding: 10,
+//     borderTopWidth: 1,
+//     borderTopColor: "#1f2933",
+//   },
+//   footerBtn: {
+//     flex: 1,
+//     borderRadius: 10,
+//     paddingVertical: 10,
+//     alignItems: "center",
+//     justifyContent: "center",
+//   },
+//   footerBtnPrimary: { backgroundColor: PRIMARY },
+//   footerBtnGhost: {
+//     backgroundColor: "rgba(255,255,255,0.06)",
+//     borderWidth: 1,
+//     borderColor: "rgba(255,255,255,0.12)",
+//   },
+//   footerBtnText: { color: "#fff", fontWeight: "900", fontSize: 12 },
+
+//   // Estado
 //   stateRow: {
 //     flexDirection: "row",
 //     alignItems: "center",
 //     gap: 8,
-//     marginTop: 4,
+//     marginTop: 6,
 //   },
-
 //   statusChip: {
 //     borderRadius: 999,
 //     paddingHorizontal: 10,
@@ -1735,18 +2184,9 @@ const styles = StyleSheet.create({
 //     fontWeight: "700",
 //     color: "#0F172A",
 //   },
-//   statusOpen: {
-//     backgroundColor: "#e5e7eb",
-//     borderColor: "#9ca3af",
-//   },
-//   statusInProgress: {
-//     backgroundColor: "#DBEAFE",
-//     borderColor: "#3b82f6",
-//   },
-//   statusDone: {
-//     backgroundColor: "#dcfce7",
-//     borderColor: "#22c55e",
-//   },
+//   statusOpen: { backgroundColor: "#e5e7eb", borderColor: "#9ca3af" },
+//   statusInProgress: { backgroundColor: "#DBEAFE", borderColor: "#3b82f6" },
+//   statusDone: { backgroundColor: "#dcfce7", borderColor: "#22c55e" },
 //   statusList: {
 //     marginTop: 4,
 //     borderRadius: 8,
@@ -1761,65 +2201,14 @@ const styles = StyleSheet.create({
 //     borderBottomWidth: 1,
 //     borderBottomColor: "#E2E8F0",
 //   },
-//   statusOptionText: {
-//     fontSize: 12,
-//     color: "#0F172A",
-//   },
-
-//   chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-//   chip: {
-//     paddingHorizontal: 10,
-//     paddingVertical: 6,
-//     borderRadius: 999,
-//     borderWidth: 1,
-//     borderColor: BORDER,
-//     backgroundColor: "#1a1b2a",
-//   },
-//   chipText: { color: "#E5E7EB", fontWeight: "800", fontSize: 12 },
-
-//   btn: { padding: 12, borderRadius: 12, alignItems: "center" },
-//   btnDanger: { backgroundColor: DANGER },
-//   btnText: { color: "#fff", fontWeight: "900" },
-
-//   subtle: { color: SUBTLE },
-//   subtleSmall: { color: SUBTLE, fontSize: 11 },
-//   error: { color: "#fecaca" },
-
-//   membersRow: {
-//     flexDirection: "row",
-//     flexWrap: "wrap",
-//     gap: 8,
-//     marginTop: 4,
-//   },
-//   memberChip: {
-//     paddingHorizontal: 10,
-//     paddingVertical: 6,
-//     borderRadius: 999,
-//     borderWidth: 1,
-//     borderColor: BORDER,
-//     backgroundColor: "#1F2937",
-//   },
-//   memberChipActive: {
-//     borderColor: PRIMARY,
-//     backgroundColor: "rgba(124,58,237,0.25)",
-//   },
-//   memberChipText: {
-//     color: TEXT,
-//     fontWeight: "700",
-//     fontSize: 12,
-//   },
+//   statusOptionText: { fontSize: 12, color: "#0F172A" },
 
 //   // Notas
 //   subSectionTitle: {
 //     color: TEXT,
 //     fontWeight: "800",
 //     fontSize: 15,
-//     marginBottom: 2,
-//   },
-//   subSectionHint: {
-//     color: SUBTLE,
-//     fontSize: 11,
-//     marginBottom: 6,
+//     marginBottom: 4,
 //   },
 //   notesHistoryWrapper: {
 //     maxHeight: 220,
@@ -1828,15 +2217,11 @@ const styles = StyleSheet.create({
 //     borderColor: BORDER,
 //     backgroundColor: "#11121b",
 //     overflow: "hidden",
+//     marginTop: 6,
 //   },
-//   notesHistoryScroll: {
-//     maxHeight: 220,
-//   },
-//   notesHistoryContent: {
-//     paddingVertical: 4,
-//   },
+//   notesHistoryScroll: { maxHeight: 220 },
+//   notesHistoryContent: { paddingVertical: 4 },
 
-//   // ✅ NUEVO: fila de nota + botón sutil a la derecha
 //   noteRow: {
 //     flexDirection: "row",
 //     alignItems: "flex-start",
@@ -1847,33 +2232,25 @@ const styles = StyleSheet.create({
 //     borderBottomWidth: 1,
 //     borderBottomColor: "#1f2937",
 //   },
-//   notesHistoryText: {
-//     color: TEXT,
-//     fontSize: 13,
-//     flex: 1,
-//   },
+//   notesHistoryText: { color: TEXT, fontSize: 13, flex: 1 },
 //   noteDeleteBtn: {
 //     paddingHorizontal: 10,
 //     paddingVertical: 8,
 //     borderRadius: 10,
-//     backgroundColor: "rgba(239,68,68,0.18)", // rojo suave
+//     backgroundColor: "rgba(239,68,68,0.18)",
 //     borderWidth: 1,
 //     borderColor: "rgba(239,68,68,0.35)",
 //     alignItems: "center",
 //     justifyContent: "center",
 //     alignSelf: "flex-start",
 //   },
-//   noteDeleteText: {
-//     color: "#fff",
-//     fontWeight: "800",
-//     fontSize: 12,
-//   },
+//   noteDeleteText: { color: "#fff", fontWeight: "800", fontSize: 12 },
 
 //   historyInputRow: {
 //     flexDirection: "row",
 //     gap: 8,
 //     alignItems: "flex-start",
-//     marginTop: 8,
+//     marginTop: 10,
 //   },
 //   historyInput: {
 //     flex: 1,
@@ -1896,9 +2273,22 @@ const styles = StyleSheet.create({
 //     alignItems: "center",
 //     justifyContent: "center",
 //   },
-//   historyAddText: {
-//     color: "#fff",
-//     fontWeight: "800",
-//     fontSize: 12,
+//   historyAddText: { color: "#fff", fontWeight: "800", fontSize: 12 },
+
+//   // Relacionados
+//   chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+//   chip: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 6,
+//     borderRadius: 999,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#1a1b2a",
 //   },
+//   chipText: { color: "#E5E7EB", fontWeight: "800", fontSize: 12 },
+
+//   // Eliminar actividad
+//   btn: { padding: 12, borderRadius: 12, alignItems: "center" },
+//   btnDanger: { backgroundColor: DANGER },
+//   btnText: { color: "#fff", fontWeight: "900" },
 // });
