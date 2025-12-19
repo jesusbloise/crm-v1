@@ -210,25 +210,38 @@ router.get("/auth/me", (req, res) => {
     if (!m) return res.status(401).json({ error: "missing_bearer" });
 
     const decoded = jwt.verify(m[1], JWT_SECRET);
-    const requestedTenant = req.get("x-tenant-id") || null; // info útil para la UI
     const activeTenant = decoded.active_tenant || DEFAULT_TENANT;
 
-    const user =
+    let user =
       db
-        .prepare(`SELECT id, name, email, created_at, updated_at FROM users WHERE id = ?`)
-        .get(decoded.sub) || null;
+        .prepare(`SELECT id, name, email FROM users WHERE id = ?`)
+        .get(decoded.sub);
+
+    // ✅ FALLBACK LIMPIO PARA DEMO
+    if (!user) {
+      user = {
+        id: decoded.sub,
+        name: decoded.email?.split("@")[0] || "Usuario",
+        email: decoded.email || "demo@local",
+      };
+    }
+
+    const tenant =
+      db
+        .prepare(`SELECT id, name FROM tenants WHERE id = ?`)
+        .get(activeTenant) || { id: activeTenant, name: activeTenant };
 
     return res.json({
       ok: true,
       user,
-      token_payload: decoded,
-      active_tenant: activeTenant,
-      requested_tenant: requestedTenant,
+      tenant,
+      role: decoded.role,
     });
   } catch (e) {
     return res.status(401).json({ error: "invalid_token", message: e.message });
   }
 });
+
 
 module.exports = router;
 

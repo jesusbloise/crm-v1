@@ -7,6 +7,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
  * ========================= */
 const TOKEN_KEY = "auth.token";
 const TENANT_KEY = "auth.tenant";
+const ME_KEY = "auth.me";
 const DEFAULT_TENANT = "demo";
 
 export type LoginBody = { email: string; password: string };
@@ -37,6 +38,45 @@ export async function setActiveTenant(tenantId: string) {
 export async function getActiveTenant() {
   return (await AsyncStorage.getItem(TENANT_KEY)) || DEFAULT_TENANT;
 }
+export async function clearActiveTenant() {
+  await AsyncStorage.removeItem(TENANT_KEY);
+}
+
+/** Cachea el usuario actual para UI (header pill) */
+export async function setMeCached(me: {
+  id?: string;
+  name?: string;
+  email?: string;
+  role?: string;
+} | null) {
+  if (!me) {
+    await AsyncStorage.removeItem(ME_KEY);
+    return;
+  }
+  await AsyncStorage.setItem(ME_KEY, JSON.stringify(me));
+}
+
+export async function getMeCached(): Promise<{
+  id?: string;
+  name?: string;
+  email?: string;
+  role?: string;
+} | null> {
+  try {
+    const raw = await AsyncStorage.getItem(ME_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearMeCached() {
+  await AsyncStorage.removeItem(ME_KEY);
+}
+
 export async function getActiveTenantDetails() {
   try {
     const response = await authFetch<{
@@ -52,9 +92,6 @@ export async function getActiveTenantDetails() {
     const tenantId = await getActiveTenant();
     return { id: tenantId };
   }
-}
-export async function clearActiveTenant() {
-  await AsyncStorage.removeItem(TENANT_KEY);
 }
 
 /* =========
@@ -75,10 +112,7 @@ export async function authHeaders(extra: HeadersInit = {}) {
 /* =======================================================
    authFetch — centraliza headers y manejo de errores
 ======================================================= */
-export async function authFetch<T = Json>(
-  path: string,
-  init: RequestInit = {}
-) {
+export async function authFetch<T = Json>(path: string, init: RequestInit = {}) {
   const headers = await authHeaders(init.headers || {});
   const res = await fetch(`${base()}${path}`, { ...init, headers });
 
@@ -92,6 +126,8 @@ export async function authFetch<T = Json>(
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       await clearToken().catch(() => {});
+      await clearActiveTenant().catch(() => {});
+      await clearMeCached().catch(() => {});
     }
     const msg =
       (typeof data?.message === "string" && data.message) ||
@@ -118,6 +154,14 @@ export async function login(body: LoginBody) {
   if (data?.token) await setToken(data.token);
   if (data?.active_tenant) await setActiveTenant(data.active_tenant);
 
+  // ✅ Cache user para UI (fallback del header)
+  await setMeCached({
+    id: data?.id,
+    name: data?.name,
+    email: data?.email || body.email,
+    role: data?.role,
+  });
+
   return data;
 }
 
@@ -133,16 +177,38 @@ export async function register(body: RegisterBody) {
   if (data?.token) await setToken(data.token);
   if (data?.active_tenant) await setActiveTenant(data.active_tenant);
 
+  // ✅ Cache user para UI (fallback del header)
+  await setMeCached({
+    id: data?.id,
+    name: data?.name || body.name,
+    email: data?.email || body.email,
+    role: data?.role,
+  });
+
   return data;
 }
 
 export async function me() {
-  return authFetch<Json>("/auth/me", { method: "GET" });
+  const info = await authFetch<Json>("/auth/me", { method: "GET" });
+
+  // ✅ Si backend entrega user, lo cacheamos
+  const u = (info as any)?.user;
+  if (u && typeof u === "object") {
+    await setMeCached({
+      id: u?.id,
+      name: u?.name,
+      email: u?.email,
+      role: (info as any)?.role || u?.role,
+    }).catch(() => {});
+  }
+
+  return info;
 }
 
 export async function logout() {
   await clearToken();
   await clearActiveTenant();
+  await clearMeCached();
 }
 
 export async function isAuthenticated() {
@@ -153,15 +219,12 @@ export async function isAuthenticated() {
 /* =======================
    Workspaces helpers
 ======================= */
-
-/** Carga token/tenant si ya estaban guardados al abrir la app. */
 export async function bootstrapAuth() {
   const token = await getToken();
   const tenant = await getActiveTenant();
   return { token, tenant };
 }
 
-/** Lista de tenants del usuario (incluye cuál está activo). */
 export async function fetchTenants() {
   return authFetch<{
     items: Array<{
@@ -183,7 +246,6 @@ export type WorkspaceMember = {
   role: string | null;
 };
 
-/** Lista los miembros del workspace ACTIVO usando GET /tenants/members */
 export async function fetchWorkspaceMembers(): Promise<WorkspaceMember[]> {
   const res = await authFetch<{
     ok?: boolean;
@@ -193,7 +255,6 @@ export async function fetchWorkspaceMembers(): Promise<WorkspaceMember[]> {
   return res?.items ?? [];
 }
 
-/** Cambia de workspace (valida membresía y devuelve nuevo JWT). */
 export async function switchTenant(tenant_id: string) {
   const res = await authFetch<{
     token: string;
@@ -208,7 +269,6 @@ export async function switchTenant(tenant_id: string) {
   return res;
 }
 
-/** Elimina un workspace */
 export async function deleteTenant(tenant_id: string) {
   return authFetch<{
     ok: boolean;
@@ -234,20 +294,17 @@ export async function getRoleNow(): Promise<"owner" | "admin" | "member" | null>
   }
 }
 
-/** Fallback: deduce el rol leyendo /me/tenants. */
 export async function getCurrentUserRole() {
   try {
     const tenants = await fetchTenants();
     const activeTenant = await getActiveTenant();
     const current = tenants.items?.find((t) => t.id === activeTenant);
     return (current?.role || null) as string | null;
-  } catch (error) {
-    console.warn("Error getting user role:", error);
+  } catch {
     return null;
   }
 }
 
-/** Verifica si el usuario actual es admin u owner. */
 export async function isAdmin() {
   const roleNow = await getRoleNow();
   if (roleNow) return roleNow === "admin" || roleNow === "owner";
@@ -366,6 +423,59 @@ export async function apiPut<T = Json>(path: string, body: Json) {
 }
 export async function apiDelete<T = Json>(path: string) {
   return authFetch<T>(path, { method: "DELETE" });
+}
+// =======================
+// JWT decode (solo UI)
+// =======================
+function base64UrlDecode(input: string) {
+  const pad = "=".repeat((4 - (input.length % 4)) % 4);
+  const base64 = (input + pad).replace(/-/g, "+").replace(/_/g, "/");
+
+  // RN / web safe
+  if (typeof atob === "function") {
+    return decodeURIComponent(
+      Array.prototype.map
+        .call(atob(base64), (c: string) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+  }
+
+  // Fallback Node-like
+  // @ts-ignore
+  return Buffer.from(base64, "base64").toString("utf-8");
+}
+
+export async function getSessionFromToken(): Promise<{
+  me: { id?: string; name?: string; email?: string; role?: string } | null;
+  tenant: { id: string; name?: string } | null;
+}> {
+  const token = await getToken();
+  if (!token) return { me: null, tenant: null };
+
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return { me: null, tenant: null };
+
+    const payloadRaw = base64UrlDecode(parts[1]);
+    const payload = JSON.parse(payloadRaw);
+
+    const email = typeof payload?.email === "string" ? payload.email : undefined;
+    const role = typeof payload?.role === "string" ? payload.role : undefined;
+    const activeTenant =
+      typeof payload?.active_tenant === "string" ? payload.active_tenant : undefined;
+
+    const me = {
+      id: typeof payload?.sub === "string" ? payload.sub : undefined,
+      email,
+      role,
+    };
+
+    const tenant = activeTenant ? { id: activeTenant, name: activeTenant } : null;
+
+    return { me, tenant };
+  } catch {
+    return { me: null, tenant: null };
+  }
 }
 
 

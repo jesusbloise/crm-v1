@@ -70,8 +70,10 @@ export async function listActivitiesByDeal(dealId: string): Promise<Activity[]> 
  *  - assigned_to
  *  - assigned_to_2
  */
-export async function createActivity(input: Partial<Activity>): Promise<void> {
-  await api.post("/activities", input);
+export async function createActivity(
+  input: Partial<Activity>
+): Promise<Activity> {
+  return api.post("/activities", input);
 }
 
 /** ✅ Patch extra flags (solo backend) */

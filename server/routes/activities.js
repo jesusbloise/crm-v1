@@ -26,7 +26,6 @@ const VALID_STATUS = new Set(["open", "done", "canceled"]);
 // Nuevo enfoque: resolver SIEMPRE row aunque el driver sea sync/async o venga envuelto
 async function resolveRow(maybe) {
   const v = await Promise.resolve(maybe);
-
   if (!v) return null;
 
   // Caso: drivers/wrappers que devuelven { rows: [...] }
@@ -255,7 +254,9 @@ router.post(
       if (!value) return;
       const exists = await resolveRow(
         db
-          .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+          .prepare(
+            `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
+          )
           .get(value, req.tenantId)
       );
       if (!exists) throw new Error(`invalid_${field}`);
@@ -354,15 +355,6 @@ router.patch(
     if (!found) return res.status(404).json({ error: "not_found" });
 
     const body = req.body || {};
-    console.log("PATCH /activities/:id body keys:", Object.keys(body));
-    console.log(
-      "notify_assignees raw:",
-      body.notify_assignees,
-      "type:",
-      typeof body.notify_assignees
-    );
-    console.log("assigned_to raw:", body.assigned_to);
-    console.log("assigned_to_2 raw:", body.assigned_to_2);
 
     const hasProp = (name) => Object.prototype.hasOwnProperty.call(body, name);
 
@@ -396,17 +388,14 @@ router.patch(
       const t = coerceStr(body.type);
       if (t) final.type = t;
     }
-
     if (hasProp("title")) {
       const t = coerceStr(body.title);
       if (t && t.length > 0) final.title = t;
     }
-
     if (hasProp("status")) {
       const s = coerceStr(body.status);
       if (s && VALID_STATUS.has(s)) final.status = s;
     }
-
     if (hasProp("notes")) final.notes = coerceStr(body.notes);
 
     if (hasProp("account_id")) final.account_id = coerceStr(body.account_id);
@@ -429,7 +418,9 @@ router.patch(
       if (!value) return;
       const exists = await resolveRow(
         db
-          .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+          .prepare(
+            `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
+          )
           .get(value, req.tenantId)
       );
       if (!exists) throw new Error(`invalid_${field}`);
@@ -498,20 +489,9 @@ router.patch(
     );
 
     const afterNorm = normalizeAssignees(final.assigned_to, final.assigned_to_2);
+    const assignmentChanged = !setsEqual(assigneeSet(beforeNorm), assigneeSet(afterNorm));
 
-    const beforeSet = assigneeSet(beforeNorm);
-    const afterSet = assigneeSet(afterNorm);
-    const assignmentChanged = !setsEqual(beforeSet, afterSet);
-
-    console.log("assignmentChanged:", assignmentChanged, {
-      before: beforeNorm,
-      after: afterNorm,
-      beforeSet: Array.from(beforeSet),
-      afterSet: Array.from(afterSet),
-      notifyAssignees,
-    });
-
-    // Notificar reasignación (correo) con snapshot real y resuelto
+    // Notificar reasignación (correo)
     if (
       assignmentChanged &&
       notifyAssignees &&
@@ -541,7 +521,6 @@ router.patch(
           .get(req.params.id, req.tenantId)
       );
 
-      // Fallbacks seguros (por si el SELECT fallara por alguna razón)
       const safeEmailRow =
         emailActivity || unwrapRow(updated) || unwrapRow(found) || null;
 
@@ -550,16 +529,6 @@ router.patch(
         id: safeEmailRow?.id ?? req.params.id,
         tenant_id: req.tenantId,
       };
-
-      console.log("Reassign mail activity snapshot (RESOLVED):", {
-        id: activityForEmail.id,
-        title: activityForEmail.title,
-        contact_id: activityForEmail.contact_id,
-        created_at: activityForEmail.created_at,
-        due_date: activityForEmail.due_date,
-        assigned_to: activityForEmail.assigned_to,
-        assigned_to_2: activityForEmail.assigned_to_2,
-      });
 
       notifyActivityReassigned({
         tenant_id: req.tenantId,
@@ -576,8 +545,6 @@ router.patch(
   })
 );
 
-// Si tienes DELETE en este archivo, lo dejo intacto (si ya existe en tu repo)
-// Si no existe, puedes ignorar esta parte.
 router.delete(
   "/activities/:id",
   canDelete("activities"),
@@ -600,7 +567,6 @@ router.delete(
 module.exports = router;
 
 
-
 // // server/routes/activities.js
 // const { Router } = require("express");
 // const db = require("../db/connection");
@@ -613,10 +579,10 @@ module.exports = router;
 // } = require("../lib/authorize");
 // const crypto = require("crypto");
 
-// // 👉 import simple para enviar correos
+// // mailers
 // const {
 //   notifyActivityCreated,
-//   notifyActivityReassigned, // ✅ nuevo
+//   notifyActivityReassigned,
 // } = require("../lib/activityNotifications");
 
 // const router = Router();
@@ -626,7 +592,31 @@ module.exports = router;
 //   v === null || v === undefined || v === "" ? null : Number(v);
 // const VALID_STATUS = new Set(["open", "done", "canceled"]);
 
-// // ✅ normaliza asignación (evita duplicados, huecos, swaps)
+// // Nuevo enfoque: resolver SIEMPRE row aunque el driver sea sync/async o venga envuelto
+// async function resolveRow(maybe) {
+//   const v = await Promise.resolve(maybe);
+
+//   if (!v) return null;
+
+//   // Caso: drivers/wrappers que devuelven { rows: [...] }
+//   if (Array.isArray(v.rows)) return v.rows[0] ?? null;
+
+//   // Caso: drivers/wrappers que devuelven { row: {...} }
+//   if (v.row && typeof v.row === "object") return v.row;
+
+//   // Caso: row plano
+//   return v;
+// }
+
+// // Mantengo tu unwrapRow (por si ya lo usabas), pero el flujo principal usa resolveRow
+// function unwrapRow(x) {
+//   if (!x) return null;
+//   if (Array.isArray(x?.rows)) return x.rows[0] ?? null;
+//   if (x?.row) return x.row;
+//   return x;
+// }
+
+// // Normaliza asignación (evita duplicados, huecos, swaps)
 // function normalizeAssignees(assigned_to, assigned_to_2) {
 //   let a1 = assigned_to ? String(assigned_to).trim() : null;
 //   let a2 = assigned_to_2 ? String(assigned_to_2).trim() : null;
@@ -634,10 +624,8 @@ module.exports = router;
 //   if (a1 === "") a1 = null;
 //   if (a2 === "") a2 = null;
 
-//   // si ambos iguales -> dejar solo 1
 //   if (a1 && a2 && a1 === a2) a2 = null;
 
-//   // si a1 vacío pero a2 viene -> subir a2 a a1
 //   if (!a1 && a2) {
 //     a1 = a2;
 //     a2 = null;
@@ -659,14 +647,6 @@ module.exports = router;
 //   return true;
 // }
 
-// function unwrapRow(x) {
-//   if (!x) return null;
-//   if (Array.isArray(x?.rows)) return x.rows[0] ?? null;
-//   if (x?.row) return x.row;
-//   return x; // ya era row plano
-// }
-
-
 // /** GET /activities (filtros opcionales) */
 // router.get(
 //   "/activities",
@@ -681,18 +661,15 @@ module.exports = router;
 //     } = req.query || {};
 //     const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
 
-//     // 👇 quién es el usuario actual
 //     const userId = resolveUserId(req);
 
-//     // 👇 rol GLOBAL del usuario (owner | admin | member)
+//     // rol global
 //     let userRole = "member";
 //     if (userId) {
-//       const row = await db
-//         .prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`)
-//         .get(userId);
-//       if (row?.role) {
-//         userRole = String(row.role).toLowerCase();
-//       }
+//       const roleRow = await resolveRow(
+//         db.prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`).get(userId)
+//       );
+//       if (roleRow?.role) userRole = String(roleRow.role).toLowerCase();
 //     }
 
 //     const clauses = ["a.tenant_id = ?"];
@@ -723,7 +700,7 @@ module.exports = router;
 //       params.push(Number(remind_after));
 //     }
 
-//     // 🔒 Si es MEMBER → solo sus actividades
+//     // member: solo sus actividades
 //     if (userRole === "member" && userId) {
 //       clauses.push(
 //         "(a.created_by = ? OR a.assigned_to = ? OR a.assigned_to_2 = ?)"
@@ -752,7 +729,7 @@ module.exports = router;
 //     const rows = await db.prepare(sql).all(...params, limit);
 
 //     console.log(
-//       "📤 GET /activities -> role:",
+//       "GET /activities -> role:",
 //       userRole,
 //       "user:",
 //       userId,
@@ -775,25 +752,27 @@ module.exports = router;
 //   "/activities/:id",
 //   canRead("activities"),
 //   wrap(async (req, res) => {
-//     const row = db
-//       .prepare(
+//     const row = await resolveRow(
+//       db
+//         .prepare(
+//           `
+//           SELECT 
+//             a.*,
+//             cu.name  AS created_by_name,
+//             cu.email AS created_by_email,
+//             au.name  AS assigned_to_name,
+//             au.email AS assigned_to_email,
+//             au2.name  AS assigned_to_2_name,
+//             au2.email AS assigned_to_2_email
+//           FROM activities a
+//           LEFT JOIN users cu  ON cu.id  = a.created_by
+//           LEFT JOIN users au  ON au.id  = a.assigned_to
+//           LEFT JOIN users au2 ON au2.id = a.assigned_to_2
+//           WHERE a.id = ? AND a.tenant_id = ?
 //         `
-//         SELECT 
-//           a.*,
-//           cu.name  AS created_by_name,
-//           cu.email AS created_by_email,
-//           au.name  AS assigned_to_name,
-//           au.email AS assigned_to_email,
-//           au2.name  AS assigned_to_2_name,
-//           au2.email AS assigned_to_2_email
-//         FROM activities a
-//         LEFT JOIN users cu  ON cu.id  = a.created_by
-//         LEFT JOIN users au  ON au.id  = a.assigned_to
-//         LEFT JOIN users au2 ON au2.id = a.assigned_to_2
-//         WHERE a.id = ? AND a.tenant_id = ?
-//       `
-//       )
-//       .get(req.params.id, req.tenantId);
+//         )
+//         .get(req.params.id, req.tenantId)
+//     );
 
 //     if (!row) return res.status(404).json({ error: "not_found" });
 //     res.json(row);
@@ -805,6 +784,7 @@ module.exports = router;
 //   "/activities",
 //   wrap(async (req, res) => {
 //     console.log("POST /activities body:", req.body, "tenant:", req.tenantId);
+
 //     let {
 //       type,
 //       title,
@@ -840,21 +820,21 @@ module.exports = router;
 
 //     const id = crypto.randomUUID();
 
-//     const checkFk = (table, value, field) => {
+//     const checkFk = async (table, value, field) => {
 //       if (!value) return;
-//       const exists = db
-//         .prepare(
-//           `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
-//         )
-//         .get(value, req.tenantId);
+//       const exists = await resolveRow(
+//         db
+//           .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+//           .get(value, req.tenantId)
+//       );
 //       if (!exists) throw new Error(`invalid_${field}`);
 //     };
 
 //     try {
-//       checkFk("accounts", account_id, "account_id");
-//       checkFk("contacts", contact_id, "contact_id");
-//       checkFk("leads", lead_id, "lead_id");
-//       checkFk("deals", deal_id, "deal_id");
+//       await checkFk("accounts", account_id, "account_id");
+//       await checkFk("contacts", contact_id, "contact_id");
+//       await checkFk("leads", lead_id, "lead_id");
+//       await checkFk("deals", deal_id, "deal_id");
 //     } catch (e) {
 //       return res.status(400).json({ error: e.message });
 //     }
@@ -922,7 +902,7 @@ module.exports = router;
 //     });
 
 //     notifyActivityCreated(created).catch((err) => {
-//       console.error("❌ Error enviando emails de actividad:", err);
+//       console.error("Error enviando emails de actividad:", err);
 //     });
 
 //     res.status(201).json(created);
@@ -934,36 +914,38 @@ module.exports = router;
 //   "/activities/:id",
 //   canWrite("activities"),
 //   wrap(async (req, res) => {
-// const found = await db
-//   .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
-//   .get(req.params.id, req.tenantId);
+//     const found = await resolveRow(
+//       db
+//         .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
+//         .get(req.params.id, req.tenantId)
+//     );
 
 //     if (!found) return res.status(404).json({ error: "not_found" });
 
 //     const body = req.body || {};
-//     console.log("🧩 PATCH /activities/:id body keys:", Object.keys(body));
-// console.log("🧩 notify_assignees raw:", body.notify_assignees, "type:", typeof body.notify_assignees);
-// console.log("🧩 assigned_to raw:", body.assigned_to);
-// console.log("🧩 assigned_to_2 raw:", body.assigned_to_2);
-
+//     console.log("PATCH /activities/:id body keys:", Object.keys(body));
+//     console.log(
+//       "notify_assignees raw:",
+//       body.notify_assignees,
+//       "type:",
+//       typeof body.notify_assignees
+//     );
+//     console.log("assigned_to raw:", body.assigned_to);
+//     console.log("assigned_to_2 raw:", body.assigned_to_2);
 
 //     const hasProp = (name) => Object.prototype.hasOwnProperty.call(body, name);
 
-//     // ✅ flag para controlar notificación de reasignación (solo cuando el user confirma)
-//    const notifyAssignees =
-//   body?.notify_assignees === true ||
-//   body?.notify_assignees === "true" ||
-//   body?.notify_assignees === 1 ||
-//   body?.notify_assignees === "1";
+//     const notifyAssignees =
+//       body?.notify_assignees === true ||
+//       body?.notify_assignees === "true" ||
+//       body?.notify_assignees === 1 ||
+//       body?.notify_assignees === "1";
 
-
-//     // BEFORE (normalizado) para comparar real
 //     const beforeNorm = normalizeAssignees(
 //       found.assigned_to ?? null,
 //       found.assigned_to_2 ?? null
 //     );
 
-//     // Partimos SIEMPRE del registro actual en DB
 //     const final = {
 //       type: found.type || "task",
 //       title: found.title || "Sin título",
@@ -1005,7 +987,6 @@ module.exports = router;
 //     if (hasProp("assigned_to_2"))
 //       final.assigned_to_2 = coerceStr(body.assigned_to_2);
 
-//     // ✅ normalizamos lo final antes de guardar
 //     const finalNorm = normalizeAssignees(final.assigned_to, final.assigned_to_2);
 //     final.assigned_to = finalNorm.assigned_to;
 //     final.assigned_to_2 = finalNorm.assigned_to_2;
@@ -1013,22 +994,21 @@ module.exports = router;
 //     if (hasProp("due_date")) final.due_date = coerceNum(body.due_date);
 //     if (hasProp("remind_at_ms")) final.remind_at_ms = coerceNum(body.remind_at_ms);
 
-//     // Validaciones FK
-//     const checkFk = (table, value, field) => {
+//     const checkFk = async (table, value, field) => {
 //       if (!value) return;
-//       const exists = db
-//         .prepare(
-//           `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
-//         )
-//         .get(value, req.tenantId);
+//       const exists = await resolveRow(
+//         db
+//           .prepare(`SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`)
+//           .get(value, req.tenantId)
+//       );
 //       if (!exists) throw new Error(`invalid_${field}`);
 //     };
 
 //     try {
-//       checkFk("accounts", final.account_id, "account_id");
-//       checkFk("contacts", final.contact_id, "contact_id");
-//       checkFk("leads", final.lead_id, "lead_id");
-//       checkFk("deals", final.deal_id, "deal_id");
+//       await checkFk("accounts", final.account_id, "account_id");
+//       await checkFk("contacts", final.contact_id, "contact_id");
+//       await checkFk("leads", final.lead_id, "lead_id");
+//       await checkFk("deals", final.deal_id, "deal_id");
 //     } catch (e) {
 //       return res.status(400).json({ error: e.message });
 //     }
@@ -1038,12 +1018,12 @@ module.exports = router;
 //     await db
 //       .prepare(
 //         `
-//       UPDATE activities SET
-//         type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
-//         account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?,
-//         assigned_to = ?, assigned_to_2 = ?, updated_at = ?
-//       WHERE id = ? AND tenant_id = ?
-//     `
+//         UPDATE activities SET
+//           type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
+//           account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?,
+//           assigned_to = ?, assigned_to_2 = ?, updated_at = ?
+//         WHERE id = ? AND tenant_id = ?
+//       `
 //       )
 //       .run(
 //         final.type,
@@ -1063,99 +1043,129 @@ module.exports = router;
 //         req.tenantId
 //       );
 
-//     const updated = await db
-//   .prepare(
-//     `
-//     SELECT 
-//       a.*,
-//       cu.name  AS created_by_name,
-//       cu.email AS created_by_email,
-//       au.name  AS assigned_to_name,
-//       au.email AS assigned_to_email,
-//       au2.name  AS assigned_to_2_name,
-//       au2.email AS assigned_to_2_email
-//     FROM activities a
-//     LEFT JOIN users cu  ON cu.id  = a.created_by
-//     LEFT JOIN users au  ON au.id  = a.assigned_to
-//     LEFT JOIN users au2 ON au2.id = a.assigned_to_2
-//     WHERE a.id = ? AND a.tenant_id = ?
-//     `
-//   )
-//   .get(req.params.id, req.tenantId);
+//     // Traer el registro actualizado con joins (para UI)
+//     const updated = await resolveRow(
+//       db
+//         .prepare(
+//           `
+//           SELECT 
+//             a.*,
+//             cu.name  AS created_by_name,
+//             cu.email AS created_by_email,
+//             au.name  AS assigned_to_name,
+//             au.email AS assigned_to_email,
+//             au2.name  AS assigned_to_2_name,
+//             au2.email AS assigned_to_2_email
+//           FROM activities a
+//           LEFT JOIN users cu  ON cu.id  = a.created_by
+//           LEFT JOIN users au  ON au.id  = a.assigned_to
+//           LEFT JOIN users au2 ON au2.id = a.assigned_to_2
+//           WHERE a.id = ? AND a.tenant_id = ?
+//         `
+//         )
+//         .get(req.params.id, req.tenantId)
+//     );
 
-//   // AFTER debe ser lo que efectivamente queremos guardar (finalNorm),
-// // no lo que devuelva el SELECT "updated" (que en tu caso está viniendo null)
-// const afterNorm = normalizeAssignees(final.assigned_to, final.assigned_to_2);
+//     const afterNorm = normalizeAssignees(final.assigned_to, final.assigned_to_2);
 
-// const beforeSet = assigneeSet(beforeNorm);
-// const afterSet = assigneeSet(afterNorm);
-// const assignmentChanged = !setsEqual(beforeSet, afterSet);
+//     const beforeSet = assigneeSet(beforeNorm);
+//     const afterSet = assigneeSet(afterNorm);
+//     const assignmentChanged = !setsEqual(beforeSet, afterSet);
+
+//     console.log("assignmentChanged:", assignmentChanged, {
+//       before: beforeNorm,
+//       after: afterNorm,
+//       beforeSet: Array.from(beforeSet),
+//       afterSet: Array.from(afterSet),
+//       notifyAssignees,
+//     });
+
+//     // Notificar reasignación (correo) con snapshot real y resuelto
+//     if (
+//       assignmentChanged &&
+//       notifyAssignees &&
+//       typeof notifyActivityReassigned === "function"
+//     ) {
+//       const changedBy = resolveUserId(req);
+
+//       const emailActivity = await resolveRow(
+//         db
+//           .prepare(
+//             `
+//             SELECT 
+//               a.*,
+//               cu.name  AS created_by_name,
+//               cu.email AS created_by_email,
+//               au.name  AS assigned_to_name,
+//               au.email AS assigned_to_email,
+//               au2.name  AS assigned_to_2_name,
+//               au2.email AS assigned_to_2_email
+//             FROM activities a
+//             LEFT JOIN users cu  ON cu.id  = a.created_by
+//             LEFT JOIN users au  ON au.id  = a.assigned_to
+//             LEFT JOIN users au2 ON au2.id = a.assigned_to_2
+//             WHERE a.id = ? AND a.tenant_id = ?
+//           `
+//           )
+//           .get(req.params.id, req.tenantId)
+//       );
+
+//       // Fallbacks seguros (por si el SELECT fallara por alguna razón)
+//       const safeEmailRow =
+//         emailActivity || unwrapRow(updated) || unwrapRow(found) || null;
+
+//       const activityForEmail = {
+//         ...(safeEmailRow || {}),
+//         id: safeEmailRow?.id ?? req.params.id,
+//         tenant_id: req.tenantId,
+//       };
+
+//       console.log("Reassign mail activity snapshot (RESOLVED):", {
+//         id: activityForEmail.id,
+//         title: activityForEmail.title,
+//         contact_id: activityForEmail.contact_id,
+//         created_at: activityForEmail.created_at,
+//         due_date: activityForEmail.due_date,
+//         assigned_to: activityForEmail.assigned_to,
+//         assigned_to_2: activityForEmail.assigned_to_2,
+//       });
+
+//       notifyActivityReassigned({
+//         tenant_id: req.tenantId,
+//         activity: activityForEmail,
+//         before: beforeNorm,
+//         after: afterNorm,
+//         changed_by: changedBy,
+//       }).catch((err) => {
+//         console.error("Error enviando correo de reasignación:", err);
+//       });
+//     }
+
+//     res.json(updated || { ...found, ...final, updated_at });
+//   })
+// );
+
+// // Si tienes DELETE en este archivo, lo dejo intacto (si ya existe en tu repo)
+// // Si no existe, puedes ignorar esta parte.
+// router.delete(
+//   "/activities/:id",
+//   canDelete("activities"),
+//   wrap(async (req, res) => {
+//     const row = await resolveRow(
+//       db
+//         .prepare(`SELECT id FROM activities WHERE id = ? AND tenant_id = ?`)
+//         .get(req.params.id, req.tenantId)
+//     );
+//     if (!row) return res.status(404).json({ error: "not_found" });
+
+//     await db
+//       .prepare(`DELETE FROM activities WHERE id = ? AND tenant_id = ?`)
+//       .run(req.params.id, req.tenantId);
+
+//     res.json({ ok: true });
+//   })
+// );
+
+// module.exports = router;
 
 
-//     console.log("🧩 assignmentChanged:", assignmentChanged, {
-//   before: beforeNorm,
-//   after: afterNorm,
-//   beforeSet: Array.from(beforeSet),
-//   afterSet: Array.from(afterSet),
-//   notifyAssignees,
-// });
-
-// console.log("🧩 BEFORE norm:", beforeNorm);
-// console.log("🧩 AFTER norm:", afterNorm);
-// console.log("🧩 assignmentChanged:", assignmentChanged);
-
-
-// if (assignmentChanged && notifyAssignees && typeof notifyActivityReassigned === "function") {
-//   const changedBy = resolveUserId(req);
-
-//   // ✅ SIEMPRE buscar snapshot real desde DB para el email
-//  const rawEmailActivity = db
-//   .prepare(
-//     `
-//     SELECT 
-//       a.*,
-//       cu.name  AS created_by_name,
-//       cu.email AS created_by_email,
-//       au.name  AS assigned_to_name,
-//       au.email AS assigned_to_email,
-//       au2.name  AS assigned_to_2_name,
-//       au2.email AS assigned_to_2_email
-//     FROM activities a
-//     LEFT JOIN users cu  ON cu.id  = a.created_by
-//     LEFT JOIN users au  ON au.id  = a.assigned_to
-//     LEFT JOIN users au2 ON au2.id = a.assigned_to_2
-//     WHERE a.id = ? AND a.tenant_id = ?
-//     `
-//   )
-//   .get(req.params.id, req.tenantId);
-
-// const emailActivity = unwrapRow(rawEmailActivity) || unwrapRow(updated) || unwrapRow(found);
-
-// const activityForEmail = {
-//   ...(emailActivity || {}),
-//   id: emailActivity?.id ?? req.params.id,
-//   tenant_id: req.tenantId,
-// };
-
-// console.log("📩 Reassign mail activity snapshot (UNWRAPPED):", {
-//   id: activityForEmail.id,
-//   title: activityForEmail.title,
-//   contact_id: activityForEmail.contact_id,
-//   created_at: activityForEmail.created_at,
-//   due_date: activityForEmail.due_date,
-//   assigned_to: activityForEmail.assigned_to,
-//   assigned_to_2: activityForEmail.assigned_to_2,
-// });
-
-//   notifyActivityReassigned({
-//     tenant_id: req.tenantId,
-//     activity: activityForEmail,
-//     before: beforeNorm,
-//     after: afterNorm,
-//     changed_by: changedBy,
-//   }).catch((err) => {
-//     console.error("❌ Error enviando correo de reasignación:", err);
-//   });
-// }
-
-//   }))

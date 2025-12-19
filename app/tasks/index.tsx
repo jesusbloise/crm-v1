@@ -1,15 +1,8 @@
 // app/tasks/index.tsx
 import { listActivities, type Activity } from "@/src/api/activities";
-import {
-  fetchTenants,
-  getActiveTenant,
-  switchTenant,
-} from "@/src/api/auth";
+import { fetchTenants, getActiveTenant, switchTenant } from "@/src/api/auth";
 import { api } from "@/src/api/http";
-import {
-  listTenantMembers,
-  type TenantMember,
-} from "@/src/api/tenants";
+import { listTenantMembers, type TenantMember } from "@/src/api/tenants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Stack, useFocusEffect } from "expo-router";
@@ -25,7 +18,7 @@ import {
   View,
 } from "react-native";
 
-/* 🎨 Paleta */
+/* Paleta */
 const BG = "#0F1115";
 const CARD = "#171923";
 const BORDER = "#2B3140";
@@ -39,6 +32,9 @@ const MASTER_COMPLETED_KEY = "completedActivities:v1:all";
 /* Maestro de EN PROCESO locales */
 const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 
+/* ✅ evento local fallback */
+const LOCAL_EVENT_MAP_KEY = "activityEventLocal:v1";
+
 type Filter = "all" | "open" | "done" | "canceled";
 
 type ActivityWithCreator = Activity & {
@@ -48,6 +44,20 @@ type ActivityWithCreator = Activity & {
   assigned_to_name?: string | null;
   assigned_to_2?: string | null;
   assigned_to_2_name?: string | null;
+
+  // Contacto relacionado
+  contact_id?: string | null;
+  contact_name?: string | null;
+  contact_title?: string | null;
+
+  // Fecha evento (si existe)
+  event_at?: number | string | null;
+  event_start?: number | string | null;
+  calendar_start?: number | string | null;
+
+  // por si tu API lo manda
+  due_date?: number | string | null;
+  time_str?: string | null;
 };
 
 type MemberChip = {
@@ -67,25 +77,22 @@ export default function TasksList() {
   const [search, setSearch] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
 
-  const [completedMaster, setCompletedMaster] = useState<Set<string>>(
-    new Set()
-  );
-  const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(
-    new Set()
-  );
+  const [completedMaster, setCompletedMaster] = useState<Set<string>>(new Set());
+  const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(new Set());
+
+  // ✅ mapa local de eventos
+  const [localEventMap, setLocalEventMap] = useState<Record<string, number>>({});
 
   // Filtros por persona / workspace (dropdowns)
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
 
-  // 🔹 Filtro de tiempo
+  // Filtro de tiempo
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
   const [timeFilterDateStr, setTimeFilterDateStr] = useState("");
 
   // Rol global + workspaces
-  const [currentRole, setCurrentRole] = useState<
-    "owner" | "admin" | "member" | null
-  >(null);
+  const [currentRole, setCurrentRole] = useState<"owner" | "admin" | "member" | null>(null);
   const [loadingRole, setLoadingRole] = useState(true);
   const [tenants, setTenants] = useState<TenantItem[]>([]);
   const [activeTenant, setActiveTenant] = useState<string | null>(null);
@@ -93,7 +100,6 @@ export default function TasksList() {
 
   const isAdminOrOwner = currentRole === "owner" || currentRole === "admin";
 
-  // 🔹 Helpers fecha
   const parseDateStr = (s: string): Date | null => {
     const trimmed = s.trim();
     if (!trimmed) return null;
@@ -105,13 +111,14 @@ export default function TasksList() {
 
   const getRefDateMs = (a: ActivityWithCreator): number | null => {
     const raw = (a as any).due_date ?? a.created_at ?? a.updated_at;
-    if (raw == null) return null;
+    const ms = parseEventDateToMs(raw);
+    if (ms != null) return ms;
+
     const n = typeof raw === "string" ? Number(raw) : raw;
     if (!Number.isFinite(n)) return null;
-    return n;
+    return n as number;
   };
 
-  // Carga maestro completadas
   const loadCompletedMaster = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(MASTER_COMPLETED_KEY);
@@ -121,7 +128,6 @@ export default function TasksList() {
     }
   }, []);
 
-  // Carga maestro en proceso
   const loadInProgressMaster = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(MASTER_INPROGRESS_KEY);
@@ -131,19 +137,23 @@ export default function TasksList() {
     }
   }, []);
 
-  // Rol y workspaces
+  const loadLocalEventMap = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(LOCAL_EVENT_MAP_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+      setLocalEventMap(map || {});
+      console.log("🟦 [TASKS] localEventMap cargado:", map);
+    } catch (e) {
+      console.warn("No se pudo leer evento local:", e);
+      setLocalEventMap({});
+    }
+  }, []);
+
   const loadRoleAndTenants = useCallback(async () => {
     setLoadingRole(true);
     try {
-      const resRole = await api.get<{
-        tenant_id: string | null;
-        role: string | null;
-      }>("/tenants/role");
-      const r = (resRole?.role || "").toLowerCase() as
-        | "owner"
-        | "admin"
-        | "member"
-        | "";
+      const resRole = await api.get<{ tenant_id: string | null; role: string | null }>("/tenants/role");
+      const r = (resRole?.role || "").toLowerCase() as "owner" | "admin" | "member" | "";
       setCurrentRole(r || null);
     } catch (e) {
       console.warn("No se pudo obtener rol actual:", e);
@@ -173,23 +183,22 @@ export default function TasksList() {
     }
   }, []);
 
-  // Carga inicial
   useEffect(() => {
     loadCompletedMaster();
     loadInProgressMaster();
+    loadLocalEventMap();
     loadRoleAndTenants();
-  }, [loadCompletedMaster, loadInProgressMaster, loadRoleAndTenants]);
+  }, [loadCompletedMaster, loadInProgressMaster, loadLocalEventMap, loadRoleAndTenants]);
 
-  // Al enfocar pantalla
   useFocusEffect(
     useCallback(() => {
       loadCompletedMaster();
       loadInProgressMaster();
+      loadLocalEventMap();
       loadRoleAndTenants();
-    }, [loadCompletedMaster, loadInProgressMaster, loadRoleAndTenants])
+    }, [loadCompletedMaster, loadInProgressMaster, loadLocalEventMap, loadRoleAndTenants])
   );
 
-  // Actividades
   const q = useQuery<ActivityWithCreator[]>({
     queryKey: ["activities-all"],
     queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
@@ -197,7 +206,6 @@ export default function TasksList() {
     refetchOnWindowFocus: true,
   });
 
-  // Miembros
   const qMembers = useQuery<TenantMember[]>({
     queryKey: ["tenant-members"],
     queryFn: listTenantMembers,
@@ -223,8 +231,9 @@ export default function TasksList() {
   const onRefresh = useCallback(() => {
     loadCompletedMaster();
     loadInProgressMaster();
+    loadLocalEventMap();
     q.refetch();
-  }, [q, loadCompletedMaster, loadInProgressMaster]);
+  }, [q, loadCompletedMaster, loadInProgressMaster, loadLocalEventMap]);
 
   const data = useMemo(() => {
     let items: ActivityWithCreator[] = (q.data ?? [])
@@ -237,9 +246,8 @@ export default function TasksList() {
       if (timeFilterDateStr.trim()) {
         baseDate = parseDateStr(timeFilterDateStr);
       }
-      if (!baseDate) {
-        baseDate = new Date(); // hoy
-      }
+      if (!baseDate) baseDate = new Date(); // hoy
+
       const start = new Date(baseDate);
       start.setHours(0, 0, 0, 0);
       const end = new Date(start);
@@ -269,8 +277,7 @@ export default function TasksList() {
 
     // 1) Filtro por estado
     items = items.filter((a) => {
-      const isDoneUI =
-        a.status === "done" || completedMaster.has(a.id as string);
+      const isDoneUI = a.status === "done" || completedMaster.has(a.id as string);
       const isInProgressUI = !isDoneUI && inProgressMaster.has(a.id as string);
 
       switch (filter) {
@@ -297,11 +304,7 @@ export default function TasksList() {
           const assigned1 = (a.assigned_to_name || "").toLowerCase();
           const assigned2 = (a.assigned_to_2_name || "").toLowerCase();
 
-          return (
-            created.includes(term) ||
-            assigned1.includes(term) ||
-            assigned2.includes(term)
-          );
+          return created.includes(term) || assigned1.includes(term) || assigned2.includes(term);
         });
       }
     }
@@ -315,13 +318,22 @@ export default function TasksList() {
         const created = (a.created_by_name || "").toLowerCase();
         const assigned1 = (a.assigned_to_name || "").toLowerCase();
         const assigned2 = (a.assigned_to_2_name || "").toLowerCase();
+        const contact = (
+          (a as any).contact_name ||
+          (a as any).contact_title ||
+          (a as any).contact?.name ||
+          ""
+        )
+          .toString()
+          .toLowerCase();
 
         return (
           title.includes(termText) ||
           type.includes(termText) ||
           created.includes(termText) ||
           assigned1.includes(termText) ||
-          assigned2.includes(termText)
+          assigned2.includes(termText) ||
+          contact.includes(termText)
         );
       });
     }
@@ -340,7 +352,6 @@ export default function TasksList() {
     timeFilterDateStr,
   ]);
 
-  // Cambiar de workspace
   const onSelectWorkspace = useCallback(
     async (tenantId: string) => {
       if (!isAdminOrOwner) return;
@@ -361,7 +372,6 @@ export default function TasksList() {
     [isAdminOrOwner, busyWs, activeTenant, q]
   );
 
-  // Labels dropdowns
   const assigneeActiveLabel = useMemo(() => {
     const opt = memberChips.find((m) => m.id === assigneeFilter);
     if (!opt) return "Todas las personas";
@@ -384,19 +394,10 @@ export default function TasksList() {
           headerStyle: { backgroundColor: BG },
           headerTintColor: TEXT,
           headerTitleStyle: { color: TEXT, fontWeight: "800" },
-
-          // Si en algún momento pusiste un botón aquí, lo dejamos comentado:
-          // headerRight: () => (
-          //   <Link href="/tasks/new" asChild>
-          //     <Pressable style={{ paddingHorizontal: 12, paddingVertical: 6 }}>
-          //       <Text style={{ color: PRIMARY, fontWeight: "900" }}>Nueva</Text>
-          //     </Pressable>
-          //   </Link>
-          // ),
         }}
       />
+
       <View style={styles.screen}>
-        {/* Filtros de estado */}
         <View style={styles.filters}>
           {(["all", "open", "done", "canceled"] as Filter[]).map((f) => {
             const active = filter === f;
@@ -407,55 +408,25 @@ export default function TasksList() {
                 style={[styles.chip, active && styles.chipActive]}
                 accessibilityRole="button"
               >
-                <Text
-                  style={[styles.chipText, active && styles.chipTextActive]}
-                >
-                  {labelFilter(f)}
-                </Text>
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{labelFilter(f)}</Text>
               </Pressable>
             );
           })}
-
-          {/* Botón nueva actividad comentado */}
-          {/*
-          <Link href="/tasks/new" asChild>
-            <Pressable style={styles.newBtn} accessibilityRole="button">
-              <Text style={styles.newBtnText}>＋ Nueva</Text>
-            </Pressable>
-          </Link>
-          */}
         </View>
 
-        {/* Filtro de tiempo */}
         <View style={styles.timeFiltersRow}>
           {(["all", "day", "week", "month"] as TimeFilter[]).map((tf) => {
             const active = timeFilter === tf;
             return (
-              <Pressable
-                key={tf}
-                onPress={() => setTimeFilter(tf)}
-                style={[styles.timeChip, active && styles.timeChipActive]}
-              >
-                <Text
-                  style={[
-                    styles.timeChipText,
-                    active && styles.timeChipTextActive,
-                  ]}
-                >
-                  {tf === "all"
-                    ? "Todas"
-                    : tf === "day"
-                    ? "Día"
-                    : tf === "week"
-                    ? "Semana"
-                    : "Mes"}
+              <Pressable key={tf} onPress={() => setTimeFilter(tf)} style={[styles.timeChip, active && styles.timeChipActive]}>
+                <Text style={[styles.timeChipText, active && styles.timeChipTextActive]}>
+                  {tf === "all" ? "Todas" : tf === "day" ? "Día" : tf === "week" ? "Semana" : "Mes"}
                 </Text>
               </Pressable>
             );
           })}
         </View>
 
-        {/* Fecha base filtro tiempo */}
         {timeFilter !== "all" && (
           <TextInput
             value={timeFilterDateStr}
@@ -468,7 +439,6 @@ export default function TasksList() {
           />
         )}
 
-        {/* Buscador */}
         <TextInput
           value={search}
           onChangeText={setSearch}
@@ -479,20 +449,14 @@ export default function TasksList() {
           autoCorrect={false}
         />
 
-        {/* Dropdown persona (solo admin/owner) */}
         {isAdminOrOwner && memberChips.length > 0 && (
           <View style={styles.dropdownRow}>
             <View style={styles.dropdownWrapper}>
-              <Pressable
-                style={styles.dropdownTrigger}
-                onPress={() => setAssigneeMenuOpen((v) => !v)}
-              >
+              <Pressable style={styles.dropdownTrigger} onPress={() => setAssigneeMenuOpen((v) => !v)}>
                 <Text style={styles.dropdownText} numberOfLines={1}>
                   {assigneeActiveLabel}
                 </Text>
-                <Text style={styles.dropdownArrow}>
-                  {assigneeMenuOpen ? "▲" : "▼"}
-                </Text>
+                <Text style={styles.dropdownArrow}>{assigneeMenuOpen ? "▲" : "▼"}</Text>
               </Pressable>
 
               {assigneeMenuOpen && (
@@ -502,22 +466,13 @@ export default function TasksList() {
                     return (
                       <Pressable
                         key={m.id}
-                        style={[
-                          styles.dropdownOption,
-                          active && styles.dropdownOptionActive,
-                        ]}
+                        style={[styles.dropdownOption, active && styles.dropdownOptionActive]}
                         onPress={() => {
                           setAssigneeFilter(m.id);
                           setAssigneeMenuOpen(false);
                         }}
                       >
-                        <Text
-                          style={[
-                            styles.dropdownOptionText,
-                            active && styles.dropdownOptionTextActive,
-                          ]}
-                          numberOfLines={1}
-                        >
+                        <Text style={[styles.dropdownOptionText, active && styles.dropdownOptionTextActive]} numberOfLines={1}>
                           {m.id === "all" ? "Todas las personas" : m.label}
                         </Text>
                       </Pressable>
@@ -529,20 +484,14 @@ export default function TasksList() {
           </View>
         )}
 
-        {/* Dropdown workspaces (solo admin/owner) */}
         {isAdminOrOwner && tenants.length > 0 && (
           <View style={styles.dropdownRow}>
             <View style={styles.dropdownWrapper}>
-              <Pressable
-                style={styles.dropdownTrigger}
-                onPress={() => setWsMenuOpen((v) => !v)}
-              >
+              <Pressable style={styles.dropdownTrigger} onPress={() => setWsMenuOpen((v) => !v)}>
                 <Text style={styles.dropdownText} numberOfLines={1}>
                   {wsActiveLabel}
                 </Text>
-                <Text style={styles.dropdownArrow}>
-                  {wsMenuOpen ? "▲" : "▼"}
-                </Text>
+                <Text style={styles.dropdownArrow}>{wsMenuOpen ? "▲" : "▼"}</Text>
               </Pressable>
 
               {wsMenuOpen && (
@@ -553,23 +502,13 @@ export default function TasksList() {
                     return (
                       <Pressable
                         key={t.id}
-                        style={[
-                          styles.dropdownOption,
-                          active && styles.dropdownOptionActive,
-                          busy && { opacity: 0.5 },
-                        ]}
+                        style={[styles.dropdownOption, active && styles.dropdownOptionActive, busy && { opacity: 0.5 }]}
                         onPress={async () => {
                           await onSelectWorkspace(t.id);
                           setWsMenuOpen(false);
                         }}
                       >
-                        <Text
-                          style={[
-                            styles.dropdownOptionText,
-                            active && styles.dropdownOptionTextActive,
-                          ]}
-                          numberOfLines={1}
-                        >
+                        <Text style={[styles.dropdownOptionText, active && styles.dropdownOptionTextActive]} numberOfLines={1}>
                           {t.name || t.id}
                         </Text>
                       </Pressable>
@@ -583,40 +522,29 @@ export default function TasksList() {
 
         {loadingRole && (
           <View style={{ marginTop: 6 }}>
-            <Text style={{ color: SUBTLE, fontSize: 11 }}>
-              Verificando permisos…
-            </Text>
+            <Text style={{ color: SUBTLE, fontSize: 11 }}>Verificando permisos…</Text>
           </View>
         )}
 
-        {/* Lista de actividades */}
         {q.isLoading ? (
           <View style={styles.center}>
             <ActivityIndicator color={PRIMARY} />
             <Text style={styles.subtle}>Cargando actividades…</Text>
           </View>
         ) : q.isError ? (
-          <Text style={{ color: "#fecaca" }}>
-            Error: {String((q.error as any)?.message || q.error)}
-          </Text>
+          <Text style={{ color: "#fecaca" }}>Error: {String((q.error as any)?.message || q.error)}</Text>
         ) : (
           <FlatList
             data={data}
             keyExtractor={(item) => item.id}
-            refreshControl={
-              <RefreshControl
-                refreshing={q.isFetching}
-                onRefresh={onRefresh}
-              />
-            }
-            ListEmptyComponent={
-              <Text style={styles.subtle}>No hay actividades</Text>
-            }
+            refreshControl={<RefreshControl refreshing={q.isFetching} onRefresh={onRefresh} />}
+            ListEmptyComponent={<Text style={styles.subtle}>No hay actividades</Text>}
             renderItem={({ item }) => (
               <TaskCard
                 item={item}
                 completedMaster={completedMaster}
                 inProgressMaster={inProgressMaster}
+                localEventMap={localEventMap}
               />
             )}
             contentContainerStyle={{ gap: 10, paddingBottom: 16 }}
@@ -627,7 +555,6 @@ export default function TasksList() {
   );
 }
 
-/** 🆕 helper para obtener el último bloque de notas */
 function getLastNoteBlock(notes?: string | null): string | null {
   if (!notes) return null;
 
@@ -640,41 +567,96 @@ function getLastNoteBlock(notes?: string | null): string | null {
   return blocks[blocks.length - 1];
 }
 
+function getContactLabel(a: ActivityWithCreator): string | null {
+  const name = (a as any).contact_name || (a as any).contact_title || (a as any).contact?.name || null;
+  if (name && String(name).trim()) return String(name).trim();
+  return null;
+}
+
+function parseEventDateToMs(raw: any): number | null {
+  if (raw == null) return null;
+
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return raw < 1e12 ? raw * 1000 : raw;
+  }
+
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s) return null;
+
+    const asNum = Number(s);
+    if (Number.isFinite(asNum)) {
+      return asNum < 1e12 ? asNum * 1000 : asNum;
+    }
+
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
+      return Number.isNaN(d.getTime()) ? null : d.getTime();
+    }
+
+    const t = Date.parse(s);
+    if (!Number.isNaN(t)) return t;
+
+    return null;
+  }
+
+  return null;
+}
+
+function formatEventLabelFromMs(ms: number): string {
+  const dt = new Date(ms);
+  const hasTime = !(dt.getHours() === 0 && dt.getMinutes() === 0 && dt.getSeconds() === 0);
+
+  return hasTime
+    ? dt.toLocaleString("es-CL", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : dt.toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function getEventDateLabel(a: ActivityWithCreator): string | null {
+  const raw =
+    (a as any).event_at ??
+    (a as any).event_start ??
+    (a as any).calendar_start ??
+    (a as any).calendar_event_start ??
+    (a as any).due_date ??
+    null;
+
+  const ms = parseEventDateToMs(raw);
+  if (!ms) return null;
+  return formatEventLabelFromMs(ms);
+}
+
 function TaskCard({
   item,
   completedMaster,
   inProgressMaster,
+  localEventMap,
 }: {
   item: ActivityWithCreator;
   completedMaster: Set<string>;
   inProgressMaster: Set<string>;
+  localEventMap: Record<string, number>;
 }) {
   const isDoneUI = item.status === "done" || completedMaster.has(item.id);
   const isInProgressUI = !isDoneUI && inProgressMaster.has(item.id);
 
-  const statusLabel = isDoneUI
-    ? "Realizada"
-    : isInProgressUI
-    ? "En proceso"
-    : "Abierta";
-
-  const createdByLabel = item.created_by_name
-    ? `por ${item.created_by_name}`
-    : "";
+  const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
+  const createdByLabel = item.created_by_name ? `por ${item.created_by_name}` : "";
 
   const assignedNames: string[] = [];
 
-  if (item.assigned_to_name) {
-    assignedNames.push(item.assigned_to_name);
-  } else if (item.assigned_to) {
-    assignedNames.push(String(item.assigned_to));
-  }
+  if ((item as any).assigned_to_name) assignedNames.push((item as any).assigned_to_name);
+  else if ((item as any).assigned_to) assignedNames.push(String((item as any).assigned_to));
 
-  if (item.assigned_to_2_name) {
-    assignedNames.push(item.assigned_to_2_name);
-  } else if ((item as any).assigned_to_2) {
-    assignedNames.push(String((item as any).assigned_to_2));
-  }
+  if ((item as any).assigned_to_2_name) assignedNames.push((item as any).assigned_to_2_name);
+  else if ((item as any).assigned_to_2) assignedNames.push(String((item as any).assigned_to_2));
 
   const assignedInfo =
     assignedNames.length === 0
@@ -683,42 +665,48 @@ function TaskCard({
       ? ` · asignada a ${assignedNames[0]}`
       : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
 
-  const createdLabel =
-    item.created_at != null
-      ? ` · creada el ${formatDate(item.created_at as any)}`
-      : "";
+  const createdLabel = item.created_at != null ? ` · creada el ${formatDate(item.created_at as any)}` : "";
 
-  const lastNoteBlock = getLastNoteBlock(item.notes as any);
+  const lastNoteBlock = getLastNoteBlock((item as any).notes);
+  const contactLabel = getContactLabel(item);
+
+  // ✅ Primero intenta backend; si no hay, usa fallback local
+  const eventDateLabel =
+    getEventDateLabel(item) ||
+    (localEventMap?.[item.id] ? formatEventLabelFromMs(localEventMap[item.id]) : null);
 
   return (
     <Link href={{ pathname: "/tasks/[id]", params: { id: item.id } }} asChild>
       <Pressable accessibilityRole="link" hitSlop={8}>
-        <View
-          style={[
-            styles.row,
-            isDoneUI && styles.rowDone,
-            !isDoneUI && isInProgressUI && styles.rowInProgress,
-          ]}
-        >
-          <Text
-            style={[
-              styles.title,
-              isDoneUI && styles.titleDone,
-              !isDoneUI && isInProgressUI && styles.titleInProgress,
-            ]}
-            numberOfLines={2}
-          >
-            {iconByType(item.type)} {item.title}
-          </Text>
+        <View style={[styles.row, isDoneUI && styles.rowDone, !isDoneUI && isInProgressUI && styles.rowInProgress]}>
+          <View style={styles.titleRow}>
+            <Text
+              style={[styles.title, isDoneUI && styles.titleDone, !isDoneUI && isInProgressUI && styles.titleInProgress]}
+              numberOfLines={1}
+            >
+              {iconByType(item.type)} {item.title}
+            </Text>
 
-          <Text
-            style={[
-              styles.sub,
-              isDoneUI && styles.subDone,
-              !isDoneUI && isInProgressUI && styles.subInProgress,
-            ]}
-            numberOfLines={3}
-          >
+            <View style={styles.rightMeta}>
+              {contactLabel && (
+                <View style={styles.contactChip}>
+                  <Text style={styles.contactChipText} numberOfLines={1}>
+                    Contacto: {contactLabel}
+                  </Text>
+                </View>
+              )}
+
+              {eventDateLabel && (
+                <View style={styles.eventChip}>
+                  <Text style={styles.eventChipText} numberOfLines={1}>
+                    Evento para: {eventDateLabel}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+
+          <Text style={[styles.sub, isDoneUI && styles.subDone, !isDoneUI && isInProgressUI && styles.subInProgress]} numberOfLines={3}>
             {(item.type || "task") +
               " · " +
               statusLabel +
@@ -767,26 +755,17 @@ function iconByType(t: Activity["type"]) {
 
 function formatDate(value: number | string | null | undefined): string {
   if (value == null) return "—";
-  const n = typeof value === "string" ? Number(value) : value;
-  if (!Number.isFinite(n)) return "—";
-  const dt = new Date(n);
+  const ms = parseEventDateToMs(value);
+  if (ms == null) return "—";
+  const dt = new Date(ms);
   if (Number.isNaN(dt.getTime())) return "—";
-  return dt.toLocaleDateString();
+  return dt.toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: BG,
-    padding: 16,
-    gap: 12,
-  },
-  filters: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
-  },
+  screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
+
+  filters: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
   chip: {
     paddingHorizontal: 10,
     paddingVertical: 8,
@@ -795,28 +774,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
-  chipActive: {
-    backgroundColor: "rgba(124,58,237,0.20)",
-    borderColor: PRIMARY,
-  },
+  chipActive: { backgroundColor: "rgba(124,58,237,0.20)", borderColor: PRIMARY },
   chipText: { color: SUBTLE, fontWeight: "700", fontSize: 12 },
   chipTextActive: { color: "#E9D5FF" },
-  newBtn: {
-    marginLeft: "auto",
-    backgroundColor: PRIMARY,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  newBtnText: { color: "#fff", fontWeight: "900" },
 
-  // Filtro de tiempo
-  timeFiltersRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 6,
-  },
+  timeFiltersRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
   timeChip: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -825,18 +787,10 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     backgroundColor: "#11121b",
   },
-  timeChipActive: {
-    backgroundColor: "rgba(124,58,237,0.20)",
-    borderColor: PRIMARY,
-  },
-  timeChipText: {
-    color: SUBTLE,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  timeChipTextActive: {
-    color: "#E9D5FF",
-  },
+  timeChipActive: { backgroundColor: "rgba(124,58,237,0.20)", borderColor: PRIMARY },
+  timeChipText: { color: SUBTLE, fontSize: 11, fontWeight: "700" },
+  timeChipTextActive: { color: "#E9D5FF" },
+
   dateFilterInput: {
     marginBottom: 8,
     borderRadius: 10,
@@ -849,7 +803,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
 
-  // buscador
   searchInput: {
     marginBottom: 8,
     borderRadius: 10,
@@ -862,14 +815,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 
-  // dropdown genérico
-  dropdownRow: {
-    marginBottom: 6,
-  },
-  dropdownWrapper: {
-    alignSelf: "flex-start",
-    minWidth: 180,
-  },
+  dropdownRow: { marginBottom: 6 },
+  dropdownWrapper: { alignSelf: "flex-start", minWidth: 180 },
   dropdownTrigger: {
     flexDirection: "row",
     alignItems: "center",
@@ -881,17 +828,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  dropdownText: {
-    color: TEXT,
-    fontSize: 12,
-    fontWeight: "700",
-    flexShrink: 1,
-  },
-  dropdownArrow: {
-    color: SUBTLE,
-    fontSize: 10,
-    marginLeft: 6,
-  },
+  dropdownText: { color: TEXT, fontSize: 12, fontWeight: "700", flexShrink: 1 },
+  dropdownArrow: { color: SUBTLE, fontSize: 10, marginLeft: 6 },
   dropdownMenu: {
     marginTop: 4,
     borderRadius: 10,
@@ -906,17 +844,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#1f2933",
   },
-  dropdownOptionActive: {
-    backgroundColor: "#1f2937",
-  },
-  dropdownOptionText: {
-    color: TEXT,
-    fontSize: 12,
-  },
-  dropdownOptionTextActive: {
-    color: "#E9D5FF",
-    fontWeight: "700",
-  },
+  dropdownOptionActive: { backgroundColor: "#1f2937" },
+  dropdownOptionText: { color: TEXT, fontSize: 12 },
+  dropdownOptionTextActive: { color: "#E9D5FF", fontWeight: "700" },
 
   row: {
     backgroundColor: CARD,
@@ -928,22 +858,51 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 6,
   },
-  rowDone: {
-    borderColor: SUCCESS,
-    backgroundColor: "rgba(22,163,74,0.08)",
+  rowDone: { borderColor: SUCCESS, backgroundColor: "rgba(22,163,74,0.08)" },
+  rowInProgress: { borderColor: "#3b82f6", backgroundColor: "rgba(37,99,235,0.12)" },
+
+  titleRow: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    flexWrap: "wrap",
   },
-  rowInProgress: {
-    borderColor: "#3b82f6",
-    backgroundColor: "rgba(37,99,235,0.12)",
-  },
-  title: { color: TEXT, fontWeight: "800", fontSize: 15 },
+  title: { color: TEXT, fontWeight: "800", fontSize: 15, flexShrink: 1, minWidth: 0 },
   titleDone: { color: SUCCESS },
   titleInProgress: { color: "#60a5fa" },
+
+  rightMeta: { marginLeft: "auto", alignItems: "flex-end", gap: 6, maxWidth: "100%" },
+
+  contactChip: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#11121b",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    maxWidth: "100%",
+  },
+  contactChipText: { color: TEXT, fontSize: 12, fontWeight: "800" },
+
+  eventChip: {
+    borderWidth: 1,
+    borderColor: "rgba(124,58,237,0.35)",
+    backgroundColor: "rgba(124,58,237,0.12)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    maxWidth: "100%",
+  },
+  eventChipText: { color: "#E9D5FF", fontSize: 12, fontWeight: "800" },
+
   sub: { color: SUBTLE, fontSize: 12, marginTop: 0 },
   subDone: { color: SUCCESS },
   subInProgress: { color: "#60a5fa" },
+
   subtle: { color: SUBTLE, textAlign: "center", marginTop: 8 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8 },
+
   badgeDone: {
     alignSelf: "flex-start",
     marginTop: 2,
@@ -952,17 +911,8 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     paddingHorizontal: 8,
   },
-  badgeDoneText: {
-    color: "#fff",
-    fontWeight: "900",
-    fontSize: 11,
-    letterSpacing: 0.3,
-  },
+  badgeDoneText: { color: "#fff", fontWeight: "900", fontSize: 11, letterSpacing: 0.3 },
 
-  // 🆕 estilos última nota
-  lastNoteText: {
-    color: SUBTLE,
-    fontSize: 12,
-    marginTop: 2,
-  },
+  lastNoteText: { color: SUBTLE, fontSize: 12, marginTop: 2 },
 });
+
