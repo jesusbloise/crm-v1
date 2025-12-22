@@ -142,9 +142,7 @@ export default function TasksList() {
       const raw = await AsyncStorage.getItem(LOCAL_EVENT_MAP_KEY);
       const map = raw ? (JSON.parse(raw) as Record<string, number>) : {};
       setLocalEventMap(map || {});
-      console.log("🟦 [TASKS] localEventMap cargado:", map);
-    } catch (e) {
-      console.warn("No se pudo leer evento local:", e);
+    } catch {
       setLocalEventMap({});
     }
   }, []);
@@ -155,8 +153,7 @@ export default function TasksList() {
       const resRole = await api.get<{ tenant_id: string | null; role: string | null }>("/tenants/role");
       const r = (resRole?.role || "").toLowerCase() as "owner" | "admin" | "member" | "";
       setCurrentRole(r || null);
-    } catch (e) {
-      console.warn("No se pudo obtener rol actual:", e);
+    } catch {
       setCurrentRole(null);
     } finally {
       setLoadingRole(false);
@@ -178,9 +175,7 @@ export default function TasksList() {
       if (data?.active_tenant) {
         setActiveTenant(data.active_tenant);
       }
-    } catch (e) {
-      console.warn("No se pudo obtener lista de workspaces:", e);
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -322,6 +317,7 @@ export default function TasksList() {
           (a as any).contact_name ||
           (a as any).contact_title ||
           (a as any).contact?.name ||
+          (a as any).contact_id ||
           ""
         )
           .toString()
@@ -363,8 +359,7 @@ export default function TasksList() {
         const confirmed = (res as any)?.active_tenant || tenantId;
         setActiveTenant(confirmed);
         await q.refetch();
-      } catch (e) {
-        console.warn("Error al cambiar de workspace:", e);
+      } catch {
       } finally {
         setBusyWs(null);
       }
@@ -408,7 +403,9 @@ export default function TasksList() {
                 style={[styles.chip, active && styles.chipActive]}
                 accessibilityRole="button"
               >
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>{labelFilter(f)}</Text>
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                  {labelFilter(f)}
+                </Text>
               </Pressable>
             );
           })}
@@ -418,7 +415,11 @@ export default function TasksList() {
           {(["all", "day", "week", "month"] as TimeFilter[]).map((tf) => {
             const active = timeFilter === tf;
             return (
-              <Pressable key={tf} onPress={() => setTimeFilter(tf)} style={[styles.timeChip, active && styles.timeChipActive]}>
+              <Pressable
+                key={tf}
+                onPress={() => setTimeFilter(tf)}
+                style={[styles.timeChip, active && styles.timeChipActive]}
+              >
                 <Text style={[styles.timeChipText, active && styles.timeChipTextActive]}>
                   {tf === "all" ? "Todas" : tf === "day" ? "Día" : tf === "week" ? "Semana" : "Mes"}
                 </Text>
@@ -567,11 +568,23 @@ function getLastNoteBlock(notes?: string | null): string | null {
   return blocks[blocks.length - 1];
 }
 
+/**
+ * - Si NO viene contact_name/contact_title/contact.name,
+ *   mostramos el contact_id para que nunca desaparezca.
+ */
 function getContactLabel(a: ActivityWithCreator): string | null {
-  const name = (a as any).contact_name || (a as any).contact_title || (a as any).contact?.name || null;
+  const name =
+    (a as any).contact_name ||
+    (a as any).contact_title ||
+    (a as any).contact?.name ||
+    null;
+
   if (name && String(name).trim()) return String(name).trim();
+
   return null;
 }
+
+
 
 function parseEventDateToMs(raw: any): number | null {
   if (raw == null) return null;
@@ -670,7 +683,6 @@ function TaskCard({
   const lastNoteBlock = getLastNoteBlock((item as any).notes);
   const contactLabel = getContactLabel(item);
 
-  // ✅ Primero intenta backend; si no hay, usa fallback local
   const eventDateLabel =
     getEventDateLabel(item) ||
     (localEventMap?.[item.id] ? formatEventLabelFromMs(localEventMap[item.id]) : null);
@@ -684,7 +696,7 @@ function TaskCard({
               style={[styles.title, isDoneUI && styles.titleDone, !isDoneUI && isInProgressUI && styles.titleInProgress]}
               numberOfLines={1}
             >
-              {iconByType(item.type)} {item.title}
+              {item.title}
             </Text>
 
             <View style={styles.rightMeta}>
@@ -706,7 +718,10 @@ function TaskCard({
             </View>
           </View>
 
-          <Text style={[styles.sub, isDoneUI && styles.subDone, !isDoneUI && isInProgressUI && styles.subInProgress]} numberOfLines={3}>
+          <Text
+            style={[styles.sub, isDoneUI && styles.subDone, !isDoneUI && isInProgressUI && styles.subInProgress]}
+            numberOfLines={3}
+          >
             {(item.type || "task") +
               " · " +
               statusLabel +
@@ -744,13 +759,6 @@ function labelFilter(f: Filter) {
     case "canceled":
       return "Canceladas";
   }
-}
-
-function iconByType(t: Activity["type"]) {
-  if (t === "call") return "📞";
-  if (t === "meeting") return "📅";
-  if (t === "note") return "📝";
-  return "✅";
 }
 
 function formatDate(value: number | string | null | undefined): string {
@@ -856,7 +864,7 @@ const styles = StyleSheet.create({
     padding: 14,
     flexDirection: "column",
     alignItems: "flex-start",
-    gap: 6,
+    gap: 4, // ✅ antes 6 (reduce el espacio interno)
   },
   rowDone: { borderColor: SUCCESS, backgroundColor: "rgba(22,163,74,0.08)" },
   rowInProgress: { borderColor: "#3b82f6", backgroundColor: "rgba(37,99,235,0.12)" },
@@ -865,10 +873,11 @@ const styles = StyleSheet.create({
     width: "100%",
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 8,
+    gap: 6, // ✅ antes 8
     flexWrap: "wrap",
   },
   title: { color: TEXT, fontWeight: "800", fontSize: 15, flexShrink: 1, minWidth: 0 },
+
   titleDone: { color: SUCCESS },
   titleInProgress: { color: "#60a5fa" },
 
@@ -896,7 +905,11 @@ const styles = StyleSheet.create({
   },
   eventChipText: { color: "#E9D5FF", fontSize: 12, fontWeight: "800" },
 
-  sub: { color: SUBTLE, fontSize: 12, marginTop: 0 },
+  sub: {
+    color: SUBTLE,
+    fontSize: 12,
+    marginTop: -2, // ✅ pega el detalle al título
+  },
   subDone: { color: SUCCESS },
   subInProgress: { color: "#60a5fa" },
 
@@ -915,4 +928,5 @@ const styles = StyleSheet.create({
 
   lastNoteText: { color: SUBTLE, fontSize: 12, marginTop: 2 },
 });
+
 
