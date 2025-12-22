@@ -13,23 +13,50 @@ const {
 
 const router = Router();
 
+/** helpers */
+const coerceStr = (v) => (typeof v === "string" ? v.trim() : null);
+const normalizeEmail = (v) => {
+  const s = coerceStr(v);
+  if (!s) return null;
+  return s.toLowerCase();
+};
+const safeClientType = (v) => {
+  const s = coerceStr(v);
+  if (!s) return null;
+  const x = s.toLowerCase();
+  const allowed = ["productora", "agencia", "directo"];
+  return allowed.includes(x) ? x : null;
+};
+const makeContactId = () => {
+  // compatible con /^[a-zA-Z0-9_-]+$/
+  const rnd = Math.random().toString(36).slice(2, 10);
+  return `c_${Date.now().toString(36)}_${rnd}`;
+};
+
+async function getGlobalRole(userId) {
+  if (!userId) return "member";
+  const row = await Promise.resolve(
+    db.prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`).get(userId)
+  );
+  return (row?.role || "member").toLowerCase();
+}
+
 /**
  * GET /contacts
  * Lista contactos del tenant actual.
  *
  * Soporta:
- *  - ?limit=100
  *  - ?workspaceId=xxx  → filtra contactos cuyo account pertenece a ese workspace
  *
- * Estrategia:
- *  - Sin workspaceId: devuelve TODOS los contactos del tenant (como antes).
- *  - Con workspaceId: filtra por workspace usando la tabla accounts.
+ * ✅ IMPORTANTE:
+ * - YA NO LIMITAMOS, porque estabas perdiendo contactos en el front.
+ * - Más adelante hacemos paginación real con cursor (pro), pero por ahora: TODOS.
  */
 router.get(
   "/contacts",
   canRead("contacts"),
   wrap(async (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
+    // const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200); // ❌ ya no
     const workspaceId =
       typeof req.query.workspaceId === "string"
         ? req.query.workspaceId.trim()
@@ -38,7 +65,6 @@ router.get(
     let rows;
 
     if (workspaceId) {
-      // 👇 Vista "por workspace": usamos accounts.workspace_id
       rows = await db
         .prepare(
           `
@@ -47,18 +73,16 @@ router.get(
             u.name  AS created_by_name,
             u.email AS created_by_email
           FROM contacts c
-          LEFT JOIN users u   ON c.created_by = u.id
+          LEFT JOIN users u    ON c.created_by = u.id
           LEFT JOIN accounts a ON c.account_id = a.id
           WHERE 
             c.tenant_id = ?
             AND a.workspace_id = ?
           ORDER BY c.updated_at DESC, c.id ASC
-          LIMIT ?
         `
         )
-        .all(req.tenantId, workspaceId, limit);
+        .all(req.tenantId, workspaceId);
     } else {
-      // 👇 Vista "todos los contactos de todos los workspaces"
       rows = await db
         .prepare(
           `
@@ -70,21 +94,17 @@ router.get(
           LEFT JOIN users u ON c.created_by = u.id
           WHERE c.tenant_id = ?
           ORDER BY c.updated_at DESC, c.id ASC
-          LIMIT ?
         `
         )
-        .all(req.tenantId, limit);
+        .all(req.tenantId);
     }
 
     res.json(rows);
   })
 );
 
-
 /**
  * GET /contacts/:id
- * Detalle por id dentro del tenant.
- * Cualquier usuario del tenant puede verlo (admin, owner, member).
  */
 router.get(
   "/contacts/:id",
@@ -103,9 +123,7 @@ router.get(
       )
       .get(req.params.id, req.tenantId);
 
-    if (!row) {
-      return res.status(404).json({ error: "not_found" });
-    }
+    if (!row) return res.status(404).json({ error: "not_found" });
 
     res.json(row);
   })
@@ -113,7 +131,8 @@ router.get(
 
 /**
  * GET /contacts-all
- * Devuelve TODOS los contactos de la tabla contacts, sin filtro de tenant.
+ * TODOS los contactos sin filtro de tenant
+ * (esto sí lo limitamos porque puede ser gigante)
  */
 router.get(
   "/contacts-all",
@@ -136,31 +155,194 @@ router.get(
       )
       .all(limit);
 
-    console.log("[contacts-all] rows:", rows.length); // 👈 para que veas cuántos trae
+    console.log("[contacts-all] rows:", rows.length);
 
     res.json(rows);
   })
 );
 
+/**
+ * POST /contacts/import
+ * Import batch (desde CSV parseado en frontend)
+ */
+router.post(
+  "/contacts/import",
+  canWrite("contacts"),
+  wrap(async (req, res) => {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+    if (!rows) return res.status(400).json({ error: "rows_required" });
+
+    const userId = resolveUserId(req);
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+    // 🔒 Solo admin/owner
+    const role = await getGlobalRole(userId);
+    if (role !== "admin" && role !== "owner") {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const now = Date.now();
+
+    const results = {
+      received: rows.length,
+      created: 0,
+      skipped: 0,
+      errors: 0,
+      items: [],
+    };
+
+    const incomingEmails = rows
+      .map((r) => normalizeEmail(r?.email))
+      .filter(Boolean);
+
+    const existingEmailSet = new Set();
+
+    if (incomingEmails.length > 0) {
+      const uniq = Array.from(new Set(incomingEmails));
+      const chunkSize = 200;
+
+      for (let i = 0; i < uniq.length; i += chunkSize) {
+        const chunk = uniq.slice(i, i + chunkSize);
+        const placeholders = chunk.map(() => "?").join(",");
+
+        const found = await db
+          .prepare(
+            `
+            SELECT email
+            FROM contacts
+            WHERE tenant_id = ?
+              AND email IN (${placeholders})
+          `
+          )
+          .all(req.tenantId, ...chunk);
+
+        for (const f of found) {
+          const em = normalizeEmail(f?.email);
+          if (em) existingEmailSet.add(em);
+        }
+      }
+    }
+
+    const seenInBatch = new Set();
+
+    const accountExists = (accountId) => {
+      if (!accountId) return false;
+      const row = db
+        .prepare(
+          `SELECT 1 AS one FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`
+        )
+        .get(accountId, req.tenantId);
+      return !!row;
+    };
+
+    for (let idx = 0; idx < rows.length; idx++) {
+      try {
+        const raw = rows[idx] || {};
+
+        const name = coerceStr(raw.name);
+        if (!name) {
+          results.skipped++;
+          results.items.push({ index: idx, ok: false, reason: "missing_name" });
+          continue;
+        }
+
+        const email = normalizeEmail(raw.email);
+        const phone = coerceStr(raw.phone);
+        const company = coerceStr(raw.company);
+        const position = coerceStr(raw.position);
+        const client_type = safeClientType(raw.client_type);
+        let account_id = coerceStr(raw.account_id);
+
+        if (account_id && !accountExists(account_id)) account_id = null;
+
+        if (email && existingEmailSet.has(email)) {
+          results.skipped++;
+          results.items.push({
+            index: idx,
+            ok: false,
+            reason: "duplicate_email_db",
+            email,
+          });
+          continue;
+        }
+
+        if (email) {
+          if (seenInBatch.has(email)) {
+            results.skipped++;
+            results.items.push({
+              index: idx,
+              ok: false,
+              reason: "duplicate_email_csv",
+              email,
+            });
+            continue;
+          }
+          seenInBatch.add(email);
+        }
+
+        let id = coerceStr(raw.id);
+        if (!id) id = makeContactId();
+
+        if (!/^[a-zA-Z0-9_-]+$/.test(id)) id = makeContactId();
+
+        const existsById = db
+          .prepare(
+            `SELECT 1 AS one FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`
+          )
+          .get(id, req.tenantId);
+
+        if (existsById) id = makeContactId();
+
+        db.prepare(
+          `
+          INSERT INTO contacts
+            (id, name, email, phone, company, position, account_id, client_type, tenant_id, created_by, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        `
+        ).run(
+          id,
+          name,
+          email ?? null,
+          phone ?? null,
+          company ?? null,
+          position ?? null,
+          account_id ?? null,
+          client_type ?? null,
+          req.tenantId,
+          userId,
+          now,
+          now
+        );
+
+        if (email) existingEmailSet.add(email);
+
+        results.created++;
+        results.items.push({ index: idx, ok: true, id, name, email });
+      } catch (e) {
+        results.errors++;
+        results.items.push({
+          index: idx,
+          ok: false,
+          reason: "insert_failed",
+          message: String(e?.message || e),
+        });
+      }
+    }
+
+    return res.status(200).json({ ok: true, ...results });
+  })
+);
 
 /**
  * POST /contacts
- * Crear contacto (incluye client_type)
+ * Crear contacto
  */
 router.post(
   "/contacts",
   canWrite("contacts"),
   wrap(async (req, res) => {
-    let {
-      id,
-      name,
-      email,
-      phone,
-      company,
-      position,
-      account_id,
-      client_type, // 👈 NUEVO
-    } = req.body || {};
+    let { id, name, email, phone, company, position, account_id, client_type } =
+      req.body || {};
 
     id = typeof id === "string" ? id.trim() : "";
     name = typeof name === "string" ? name.trim() : "";
@@ -171,9 +353,7 @@ router.post(
     account_id = typeof account_id === "string" ? account_id.trim() : null;
     client_type = typeof client_type === "string" ? client_type.trim() : null;
 
-    // Validar valores del client_type
     const allowed = ["productora", "agencia", "directo", null];
-
     if (!allowed.includes(client_type)) client_type = null;
 
     if (!id || !name)
@@ -183,7 +363,6 @@ router.post(
       return res.status(400).json({ error: "invalid_contact_id" });
     }
 
-    // Validar que ese id no exista
     const existing = await db
       .prepare(
         `SELECT 1 AS one FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`
@@ -192,12 +371,9 @@ router.post(
 
     if (existing) return res.status(409).json({ error: "contact_exists" });
 
-    // Validar cuenta si viene
     if (account_id) {
       const acc = await db
-        .prepare(
-          `SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`
-        )
+        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
         .get(account_id, req.tenantId);
       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
     }
@@ -243,7 +419,6 @@ router.post(
 
 /**
  * PATCH /contacts/:id
- * Actualiza contacto (incluye client_type)
  */
 router.patch(
   "/contacts/:id",
@@ -262,33 +437,25 @@ router.patch(
       company = found.company,
       position = found.position,
       account_id = found.account_id,
-      client_type = found.client_type, // 👈 NUEVO
+      client_type = found.client_type,
     } = req.body || {};
 
     name = typeof name === "string" ? name.trim() : found.name;
     email = typeof email === "string" ? email.trim() : found.email;
     phone = typeof phone === "string" ? phone.trim() : found.phone;
     company = typeof company === "string" ? company.trim() : found.company;
-    position =
-      typeof position === "string" ? position.trim() : found.position;
+    position = typeof position === "string" ? position.trim() : found.position;
     account_id =
       typeof account_id === "string" ? account_id.trim() : found.account_id;
     client_type =
-      typeof client_type === "string"
-        ? client_type.trim()
-        : found.client_type;
+      typeof client_type === "string" ? client_type.trim() : found.client_type;
 
-    // Validar tipo
- const allowed = ["productora", "agencia", "directo", null];
-
+    const allowed = ["productora", "agencia", "directo", null];
     if (!allowed.includes(client_type)) client_type = found.client_type;
 
-    // Validar cuenta si viene
     if (account_id) {
       const acc = await db
-        .prepare(
-          `SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`
-        )
+        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
         .get(account_id, req.tenantId);
       if (!acc) return res.status(400).json({ error: "invalid_account_id" });
     }
@@ -346,20 +513,14 @@ router.delete(
 
 /**
  * GET /contacts/export-all-csv
- * Exporta TODOS los contactos de la tabla contacts (todos los tenants).
- * Solo para usuarios con rol GLOBAL admin u owner.
- * Opcional: ?since=TIMESTAMP_MS → solo contactos con updated_at > since.
  */
 router.get(
   "/contacts/export-all-csv",
   wrap(async (req, res) => {
     const { resolveUserId } = require("../lib/authorize");
     const userId = resolveUserId(req);
-    if (!userId) {
-      return res.status(401).json({ error: "unauthorized" });
-    }
+    if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-    // Rol global del usuario
     const user = await db
       .prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`)
       .get(userId);
@@ -373,9 +534,7 @@ router.get(
     let sinceMs = 0;
     if (sinceRaw != null) {
       const n = Number(sinceRaw);
-      if (Number.isFinite(n) && n > 0) {
-        sinceMs = n;
-      }
+      if (Number.isFinite(n) && n > 0) sinceMs = n;
     }
 
     const clauses = ["1=1"];
@@ -427,12 +586,7 @@ router.get(
     const esc = (val) => {
       if (val === null || val === undefined) return "";
       const s = String(val);
-      if (
-        s.includes('"') ||
-        s.includes(",") ||
-        s.includes("\n") ||
-        s.includes("\r")
-      ) {
+      if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
         return '"' + s.replace(/"/g, '""') + '"';
       }
       return s;
@@ -448,18 +602,14 @@ router.get(
     const pad = (n) => (n < 10 ? "0" + n : String(n));
     const filename = `contacts-all-${now.getFullYear()}${pad(
       now.getMonth() + 1
-    )}${pad(now.getDate())}-${pad(now.getHours())}${pad(
-      now.getMinutes()
-    )}.csv`;
+    )}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.csv`;
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${filename}"`
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(csv);
   })
 );
 
 module.exports = router;
+
 

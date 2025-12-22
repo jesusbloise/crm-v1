@@ -1,7 +1,7 @@
 // src/api/contacts.ts
 import { api } from "@/src/api/http";
 
-export type ClientType = "productora" | "agencia" | null;
+export type ClientType = "productora" | "agencia" | "directo" | null;
 
 export type Contact = {
   id: string;
@@ -19,12 +19,32 @@ export type Contact = {
   updated_at: number;
 };
 
-export async function listContacts(): Promise<Contact[]> {
-  // vista “normal” (la que usas en index.tsx)
-  return api.get("/contacts");
+/* =========================
+   Listado / CRUD existente
+   ========================= */
+
+export async function listContacts(params?: {
+  /** si lo pasas explícito, se envía. si no, NO se manda y el server devuelve todo */
+  limit?: number;
+  workspaceId?: string;
+}): Promise<Contact[]> {
+  const workspaceId = params?.workspaceId?.trim();
+
+  const qs = new URLSearchParams();
+
+  // ✅ NO default a 100.
+  // ✅ Solo envía limit si viene explícito (y es válido).
+  if (typeof params?.limit === "number" && Number.isFinite(params.limit) && params.limit > 0) {
+    qs.set("limit", String(params.limit));
+  }
+
+  if (workspaceId) qs.set("workspaceId", workspaceId);
+
+  const q = qs.toString();
+  return api.get(q ? `/contacts?${q}` : "/contacts");
 }
 
-// 👇 ESTA es la que usa all.tsx para traer TODOS
+// 👇 vista admin (todos los tenants)
 export async function listAllContacts(): Promise<Contact[]> {
   return api.get("/contacts-all");
 }
@@ -50,4 +70,41 @@ export async function deleteContact(id: string): Promise<void> {
   await api.delete(`/contacts/${id}`);
 }
 
+/* =========================
+   🚀 IMPORTAR CONTACTOS CSV
+   ========================= */
+
+export type ImportContactRow = {
+  id?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  position?: string;
+  client_type?: ClientType;
+  account_id?: string;
+};
+
+export type ImportContactsResult = {
+  ok: boolean;
+  received: number;
+  created: number;
+  skipped: number;
+  errors: number;
+  items: Array<{
+    index: number;
+    ok: boolean;
+    id?: string;
+    name?: string;
+    email?: string;
+    reason?: string;
+    message?: string;
+  }>;
+};
+
+export async function importContacts(
+  rows: ImportContactRow[]
+): Promise<ImportContactsResult> {
+  return api.post("/contacts/import", { rows });
+}
 

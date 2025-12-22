@@ -1,10 +1,14 @@
 // app/contacts/index.tsx
 
-import { listContacts } from "@/src/api/contacts";
+import {
+  importContacts,
+  listContacts,
+  type ImportContactRow,
+} from "@/src/api/contacts";
 import { api } from "@/src/api/http";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, Stack } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -16,15 +20,22 @@ import {
   View,
 } from "react-native";
 
-/* 🎨 Tema consistente */
+import * as DocumentPicker from "expo-document-picker";
+// Expo SDK 54: legacy para evitar warning de deprecación
+import * as FileSystem from "expo-file-system/legacy";
+
+/* Tema consistente */
 const BG = "#0b0c10";
 const CARD = "#14151a";
 const BORDER = "#272a33";
 const FIELD = "#121318";
 const TEXT = "#e8ecf1";
 const SUBTLE = "#a9b0bd";
-const ACCENT = "#7c3aed"; // morado
-const ACCENT_2 = "#22d3ee"; // cian (detalles pequeños)
+const ACCENT = "#7c3aed";
+const ACCENT_2 = "#22d3ee";
+
+const PAGE_SIZE = 50;
+const MAX_VISIBLE_PAGES = 4;
 
 function strip(s?: string | null) {
   return (s ?? "").trim();
@@ -44,17 +55,6 @@ function clientTypeLabel(t?: string | null) {
   return "";
 }
 
-/**
- * 🔎 Búsqueda SUPER específica:
- * - nombre
- * - empresa
- * - cargo
- * - email
- * - teléfono
- * - tipo de cliente
- * - creador (nombre + email)
- * - nombres de workspaces (si existen)
- */
 function matchesContact(term: string, c: any) {
   if (!term) return true;
 
@@ -89,8 +89,208 @@ function positionKey(c: any) {
   return strip(c?.position) || "Sin cargo";
 }
 
+/* =========================
+   CSV helpers (sin librerías)
+   ========================= */
+
+function sanitizePhone(v?: string | null) {
+  const s = strip(v);
+  if (!s) return null;
+  return s.replace(/\s+/g, " ");
+}
+
+function toClientType(v?: string | null): ImportContactRow["client_type"] {
+  const s = normalize(v);
+  if (!s) return null;
+
+  if (s.includes("productora")) return "productora";
+  if (s.includes("agencia")) return "agencia";
+  if (s.includes("directo") || s.includes("cliente")) return "directo";
+
+  return null;
+}
+
+function detectDelimiter(sampleLine: string) {
+  const commas = (sampleLine.match(/,/g) || []).length;
+  const semis = (sampleLine.match(/;/g) || []).length;
+  return semis > commas ? ";" : ",";
+}
+
+// Parser CSV con comillas dobles y delimitador configurable
+function parseCSV(text: string, delimiter: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+
+  const s = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (ch === '"') {
+      if (inQuotes && s[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (!inQuotes && ch === delimiter) {
+      row.push(cur);
+      cur = "";
+      continue;
+    }
+
+    if (!inQuotes && ch === "\n") {
+      row.push(cur);
+      rows.push(row.map((x) => x ?? ""));
+      row = [];
+      cur = "";
+      continue;
+    }
+
+    cur += ch;
+  }
+
+  row.push(cur);
+  rows.push(row.map((x) => x ?? ""));
+
+  return rows
+    .map((r) => r.map((c) => (c ?? "").trim()))
+    .filter((r) => r.some((c) => strip(c).length > 0));
+}
+
+function normalizeHeader(h: string) {
+  return normalize(h)
+    .replace(/\./g, "")
+    .replace(/\-/g, " ")
+    .replace(/\_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findCol(headers: string[], candidates: string[]) {
+  const H = headers.map(normalizeHeader);
+
+  for (const cand of candidates) {
+    const c = normalizeHeader(cand);
+    const idx = H.findIndex((h) => h === c);
+    if (idx >= 0) return idx;
+  }
+
+  for (const cand of candidates) {
+    const c = normalizeHeader(cand);
+    const idx = H.findIndex((h) => h.includes(c));
+    if (idx >= 0) return idx;
+  }
+
+  return -1;
+}
+
+function csvToImportRows(csvText: string): ImportContactRow[] {
+  const firstLine = (csvText.split(/\r?\n/)[0] ?? "").trim();
+  const delimiter = detectDelimiter(firstLine);
+
+  const grid = parseCSV(csvText, delimiter);
+  if (grid.length === 0) return [];
+
+  const headers = grid[0] ?? [];
+  const body = grid.slice(1);
+
+  const idxName = findCol(headers, [
+    "name",
+    "nombre",
+    "contacto",
+    "razon social",
+    "razón social",
+  ]);
+  const idxEmail = findCol(headers, ["email", "correo", "mail", "e-mail"]);
+  const idxPhone = findCol(headers, [
+    "phone",
+    "telefono",
+    "teléfono",
+    "celular",
+    "movil",
+    "móvil",
+    "whatsapp",
+  ]);
+  const idxCompany = findCol(headers, [
+    "company",
+    "empresa",
+    "compania",
+    "compañia",
+    "organizacion",
+    "organización",
+  ]);
+  const idxPosition = findCol(headers, ["position", "cargo", "rol", "puesto"]);
+  const idxClientType = findCol(headers, [
+    "client_type",
+    "tipo",
+    "tipo cliente",
+    "tipo_de_cliente",
+    "cliente",
+  ]);
+  const idxAccountId = findCol(headers, [
+    "account_id",
+    "cuenta",
+    "account",
+    "account id",
+  ]);
+
+  const rows: ImportContactRow[] = [];
+
+  for (let i = 0; i < body.length; i++) {
+    const r = body[i] ?? [];
+
+    const name = idxName >= 0 ? strip(r[idxName]) : "";
+    const email = idxEmail >= 0 ? strip(r[idxEmail]) : "";
+    const phone = idxPhone >= 0 ? sanitizePhone(r[idxPhone]) : null;
+    const company = idxCompany >= 0 ? strip(r[idxCompany]) : "";
+    const position = idxPosition >= 0 ? strip(r[idxPosition]) : "";
+    const client_type =
+      idxClientType >= 0 ? toClientType(r[idxClientType]) : null;
+    const account_id = idxAccountId >= 0 ? strip(r[idxAccountId]) : "";
+
+    if (!name) continue;
+
+    rows.push({
+      name,
+      email: email || undefined,
+      phone: phone || undefined,
+      company: company || undefined,
+      position: position || undefined,
+      client_type: client_type ?? null,
+      account_id: account_id || undefined,
+    });
+  }
+
+  return rows;
+}
+
+/* =========================
+   UI paginación numerada
+   ========================= */
+
+function getVisiblePages(page: number, totalPages: number) {
+  if (totalPages <= MAX_VISIBLE_PAGES) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+
+  let start = Math.max(1, page - Math.floor(MAX_VISIBLE_PAGES / 2));
+  let end = start + MAX_VISIBLE_PAGES - 1;
+
+  if (end > totalPages) {
+    end = totalPages;
+    start = end - MAX_VISIBLE_PAGES + 1;
+  }
+
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+}
+
 export default function ContactsList() {
-  // 🔐 Traemos rol GLOBAL desde /tenants/role
   const roleQuery = useQuery({
     queryKey: ["tenants-role"],
     queryFn: () => api.get("/tenants/role"),
@@ -100,8 +300,11 @@ export default function ContactsList() {
   const role: string | undefined = roleData?.role;
   const isAdmin = role === "admin" || role === "owner";
 
-  // 👇 Lista normal de contactos (vista por workspace como ya la tenías)
-  const q = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const q = useQuery({
+    queryKey: ["contacts"],
+    queryFn: () => listContacts(), // ✅ trae TODO
+  });
+
   const onRefresh = useCallback(() => {
     q.refetch();
     roleQuery.refetch();
@@ -111,9 +314,108 @@ export default function ContactsList() {
   const [activePos, setActivePos] = useState<string>("Todos");
   const [posMenuOpen, setPosMenuOpen] = useState(false);
 
-  const data = q.data ?? [];
+  // paginación
+  const [page, setPage] = useState(1);
 
-  // opciones de cargos (para dropdown)
+  const [importInfo, setImportInfo] = useState<{
+    filename?: string;
+    received?: number;
+    created?: number;
+    skipped?: number;
+    errors?: number;
+    message?: string;
+  } | null>(null);
+
+  const importMut = useMutation({
+    mutationFn: async (rows: ImportContactRow[]) => importContacts(rows),
+    onSuccess: (res: any) => {
+      setImportInfo({
+        received: res?.received ?? undefined,
+        created: res?.created ?? undefined,
+        skipped: res?.skipped ?? undefined,
+        errors: res?.errors ?? undefined,
+        message: "Importación terminada",
+      });
+      q.refetch();
+      setPage(1);
+    },
+    onError: (e: any) => {
+      setImportInfo({
+        message: String(e?.message || e || "Error importando"),
+      });
+    },
+  });
+
+  const onPickCSV = useCallback(async () => {
+    setImportInfo(null);
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["text/csv", "text/comma-separated-values", "*/*"],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+
+      if ((result as any)?.canceled) return;
+
+      const asset = (result as any)?.assets?.[0];
+      const uri: string | undefined = asset?.uri;
+      const name: string | undefined = asset?.name;
+
+      const file: File | undefined = asset?.file;
+
+      let csvTextRaw = "";
+
+      if (file && typeof file.text === "function") {
+        csvTextRaw = await file.text();
+      } else {
+        if (!uri) {
+          setImportInfo({ message: "No se pudo leer el archivo (sin uri)" });
+          return;
+        }
+        csvTextRaw = await FileSystem.readAsStringAsync(uri, {
+          encoding: "utf8",
+        });
+      }
+
+      const csvText = csvTextRaw.replace(/^\uFEFF/, "");
+      const rows = csvToImportRows(csvText);
+
+      if (!rows.length) {
+        setImportInfo({
+          filename: name,
+          message:
+            "No encontré filas válidas. Revisa que exista una columna de nombre (name/nombre).",
+        });
+        return;
+      }
+
+      setImportInfo({
+        filename: name,
+        message: `Archivo listo: ${rows.length} filas detectadas. Importando...`,
+        received: rows.length,
+      });
+
+      importMut.mutate(rows);
+    } catch (e: any) {
+      setImportInfo({
+        message: String(e?.message || e || "Error seleccionando archivo"),
+      });
+    }
+  }, [importMut]);
+
+  // ✅ blindaje: q.data a veces puede ser objeto, no array
+  const data = useMemo(() => {
+    const d: any = q.data;
+
+    if (Array.isArray(d)) return d;
+
+    // por si tu api wrapper devolvió algo tipo { rows: [...] }
+    if (d && Array.isArray(d.rows)) return d.rows;
+
+    return [];
+  }, [q.data]);
+
   const positionOptions = useMemo(() => {
     const counts = new Map<string, number>();
     for (const c of data) {
@@ -146,9 +448,24 @@ export default function ContactsList() {
     );
   }, [data, activePos, search]);
 
+  // ✅ cuando cambie el filtro/búsqueda -> volver a página 1 (sin setState en render)
+  const key = useMemo(() => `${activePos}__${normalize(search)}`, [activePos, search]);
+  useEffect(() => {
+    setPage(1);
+  }, [key]);
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * PAGE_SIZE;
+  const end = start + PAGE_SIZE;
+  const pageItems = filtered.slice(start, end);
+
+  const visiblePages = getVisiblePages(safePage, totalPages);
+
   const errorMsg = (q.error as any)?.message || "";
 
-  // etiqueta actual del dropdown de cargos
   const activePosOption = positionOptions.find((t) => t.label === activePos);
   const activePosLabel = activePosOption
     ? `${activePosOption.label} (${activePosOption.count})`
@@ -165,7 +482,6 @@ export default function ContactsList() {
         }}
       />
       <View style={styles.screen}>
-        {/* Acciones: nuevo contacto + (si es admin) ver todos */}
         <View style={styles.headerRow}>
           <Link href="/contacts/new" asChild>
             <Pressable
@@ -178,22 +494,61 @@ export default function ContactsList() {
             </Pressable>
           </Link>
 
-          {/* 👇 Solo admins / owners ven este botón */}
           {isAdmin && (
-            <Link href="/contacts/all" asChild>
+            <View style={{ gap: 8 }}>
+              <Link href="/contacts/all" asChild>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.secondaryBtn,
+                    pressed && { opacity: 0.92 },
+                  ]}
+                >
+                  <Text style={styles.secondaryBtnText}>Ver todos</Text>
+                </Pressable>
+              </Link>
+
               <Pressable
+                onPress={onPickCSV}
+                disabled={importMut.isPending}
                 style={({ pressed }) => [
                   styles.secondaryBtn,
                   pressed && { opacity: 0.92 },
+                  importMut.isPending && { opacity: 0.6 },
                 ]}
               >
-                <Text style={styles.secondaryBtnText}>Ver todos</Text>
+                <Text style={styles.secondaryBtnText}>
+                  {importMut.isPending ? "Importando..." : "Importar CSV"}
+                </Text>
               </Pressable>
-            </Link>
+            </View>
           )}
         </View>
 
-        {/* Buscador */}
+        {isAdmin && importInfo?.message && (
+          <View style={styles.importInfoBox}>
+            <Text style={styles.importInfoTitle}>
+              {importInfo.filename
+                ? `Importación: ${importInfo.filename}`
+                : "Importación"}
+            </Text>
+
+            <Text style={styles.importInfoText}>{importInfo.message}</Text>
+
+            {(importInfo.received != null ||
+              importInfo.created != null ||
+              importInfo.skipped != null ||
+              importInfo.errors != null) && (
+              <Text style={styles.importInfoMeta}>
+                {`recibidos: ${importInfo.received ?? 0} · creados: ${
+                  importInfo.created ?? 0
+                } · saltados: ${importInfo.skipped ?? 0} · errores: ${
+                  importInfo.errors ?? 0
+                }`}
+              </Text>
+            )}
+          </View>
+        )}
+
         <View style={styles.searchWrap}>
           <TextInput
             value={search}
@@ -215,58 +570,52 @@ export default function ContactsList() {
           )}
         </View>
 
-        {/* Filtro por cargo -> DROPDOWN */}
         <View style={styles.filterRow}>
-  <View style={styles.posDropdownWrapper}>
-    <Pressable
-      style={styles.posDropdownTrigger}
-      onPress={() => setPosMenuOpen((v) => !v)}
-    >
-      <Text style={styles.posDropdownText} numberOfLines={1}>
-        {activePosLabel}
-      </Text>
-      <Text style={styles.posDropdownArrow}>
-        {posMenuOpen ? "▲" : "▼"}
-      </Text>
-    </Pressable>
-
-    {posMenuOpen && (
-      <View style={styles.posDropdownMenu}>
-        {positionOptions.map((opt) => {
-          const active = opt.label === activePos;
-          return (
+          <View style={styles.posDropdownWrapper}>
             <Pressable
-              key={opt.label}
-              style={[
-                styles.posOption,
-                active && styles.posOptionActive,
-              ]}
-              onPress={() => {
-                setActivePos(opt.label);
-                setPosMenuOpen(false);
-              }}
+              style={styles.posDropdownTrigger}
+              onPress={() => setPosMenuOpen((v) => !v)}
             >
-              <Text
-                style={[
-                  styles.posOptionText,
-                  active && styles.posOptionTextActive,
-                ]}
-                numberOfLines={1}
-              >
-                {opt.label} ({opt.count})
+              <Text style={styles.posDropdownText} numberOfLines={1}>
+                {activePosLabel}
+              </Text>
+              <Text style={styles.posDropdownArrow}>
+                {posMenuOpen ? "▲" : "▼"}
               </Text>
             </Pressable>
-          );
-        })}
-      </View>
-    )}
-  </View>
 
-  <View style={{ flex: 1 }} />
-</View>
+            {posMenuOpen && (
+              <View style={styles.posDropdownMenu}>
+                {positionOptions.map((opt) => {
+                  const active = opt.label === activePos;
+                  return (
+                    <Pressable
+                      key={opt.label}
+                      style={[styles.posOption, active && styles.posOptionActive]}
+                      onPress={() => {
+                        setActivePos(opt.label);
+                        setPosMenuOpen(false);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.posOptionText,
+                          active && styles.posOptionTextActive,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {opt.label} ({opt.count})
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
+          </View>
 
+          <View style={{ flex: 1 }} />
+        </View>
 
-        {/* Estados: cargando / error / lista */}
         {q.isLoading ? (
           <View style={styles.loaderWrap}>
             <ActivityIndicator />
@@ -289,67 +638,135 @@ export default function ContactsList() {
             </Pressable>
           </View>
         ) : (
-          <FlatList
-            contentContainerStyle={[
-              styles.listContainer,
-              filtered.length === 0 && { flex: 1 },
-            ]}
-            data={filtered}
-            keyExtractor={(item: any) => item.id}
-            refreshControl={
-              <RefreshControl
-                refreshing={q.isFetching || roleQuery.isFetching}
-                onRefresh={onRefresh}
-              />
-            }
-            ListEmptyComponent={
-              <View style={{ alignItems: "center", marginTop: 8 }}>
-                {data.length === 0 ? (
-                  <Text style={styles.subtle}>Sin contactos aún</Text>
-                ) : (
-                  <Text style={styles.subtle}>
-                    No hay resultados para “{search.trim()}”
-                  </Text>
-                )}
-              </View>
-            }
-            renderItem={({ item }: any) => (
-              <Link
-                href={{
-                  pathname: "/contacts/[id]",
-                  params: { id: item.id },
-                }}
-                asChild
-              >
+          <>
+            <View style={styles.pagerSummary}>
+              <Text style={styles.pagerSummaryText}>
+                {total === 0
+                  ? "0 resultados"
+                  : `Mostrando ${start + 1}-${Math.min(end, total)} de ${total}`}
+              </Text>
+            </View>
+
+            <FlatList
+              contentContainerStyle={[
+                styles.listContainer,
+                pageItems.length === 0 && { flex: 1 },
+              ]}
+              data={pageItems}
+              keyExtractor={(item: any) => item.id}
+              refreshControl={
+                <RefreshControl
+                  refreshing={q.isFetching || roleQuery.isFetching}
+                  onRefresh={onRefresh}
+                />
+              }
+              ListEmptyComponent={
+                <View style={{ alignItems: "center", marginTop: 8 }}>
+                  {data.length === 0 ? (
+                    <Text style={styles.subtle}>Sin contactos aún</Text>
+                  ) : (
+                    <Text style={styles.subtle}>
+                      No hay resultados para “{search.trim()}”
+                    </Text>
+                  )}
+                </View>
+              }
+              renderItem={({ item }: any) => (
+                <Link
+                  href={{
+                    pathname: "/contacts/[id]",
+                    params: { id: item.id },
+                  }}
+                  asChild
+                >
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.row,
+                      pressed && { opacity: 0.96 },
+                    ]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.nameRow}>
+                        <Text style={styles.name} numberOfLines={1}>
+                          {item.name}
+                        </Text>
+                        {item.created_by_name && (
+                          <Text style={styles.creator} numberOfLines={1}>
+                            · {item.created_by_name}
+                          </Text>
+                        )}
+                      </View>
+                      <Text style={styles.sub}>
+                        {strip(item.position) ||
+                          strip(item.company) ||
+                          strip(item.email) ||
+                          ""}
+                      </Text>
+                    </View>
+                  </Pressable>
+                </Link>
+              )}
+            />
+
+            {totalPages > 1 && (
+              <View style={styles.pager}>
                 <Pressable
+                  onPress={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
                   style={({ pressed }) => [
-                    styles.row,
-                    pressed && { opacity: 0.96 },
+                    styles.pagerBtn,
+                    pressed && { opacity: 0.92 },
+                    safePage <= 1 && { opacity: 0.4 },
                   ]}
                 >
-                  <View style={{ flex: 1 }}>
-                    {/* Nombre + Creador en la misma línea */}
-                    <View style={styles.nameRow}>
-                      <Text style={styles.name} numberOfLines={1}>
-                        {item.name}
-                      </Text>
-                      {item.created_by_name && (
-                        <Text style={styles.creator} numberOfLines={1}>
-                          · {item.created_by_name}
-                        </Text>
-                      )}
-                    </View>
-                    <Text style={styles.sub}>
-                      {strip(item.position) ||
-                        strip(item.company) ||
-                        strip(item.email) ||
-                        ""}
-                    </Text>
-                  </View>
+                  <Text style={styles.pagerBtnText}>Anterior</Text>
                 </Pressable>
-              </Link>
+
+                <View style={styles.pageNums}>
+                  {safePage > 1 && visiblePages[0] > 1 && (
+                    <Text style={styles.dots}>…</Text>
+                  )}
+
+                  {visiblePages.map((n) => {
+                    const active = n === safePage;
+                    return (
+                      <Pressable
+                        key={n}
+                        onPress={() => setPage(n)}
+                        style={[styles.pageNum, active && styles.pageNumActive]}
+                      >
+                        <Text
+                          style={[
+                            styles.pageNumText,
+                            active && styles.pageNumTextActive,
+                          ]}
+                        >
+                          {n}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+
+                  {safePage < totalPages &&
+                    visiblePages[visiblePages.length - 1] < totalPages && (
+                      <Text style={styles.dots}>…</Text>
+                    )}
+                </View>
+
+                <Pressable
+                  onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  style={({ pressed }) => [
+                    styles.pagerBtn,
+                    pressed && { opacity: 0.92 },
+                    safePage >= totalPages && { opacity: 0.4 },
+                  ]}
+                >
+                  <Text style={styles.pagerBtnText}>Siguiente</Text>
+                </Pressable>
+              </View>
             )}
-          />
+          </>
         )}
       </View>
     </>
@@ -366,7 +783,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
 
-  // Botón nuevo (morado)
   newBtn: {
     backgroundColor: ACCENT,
     paddingVertical: 10,
@@ -377,7 +793,6 @@ const styles = StyleSheet.create({
   },
   newBtnText: { color: "#fff", fontWeight: "900" },
 
-  // Botón "Ver todos" (solo admin)
   secondaryBtn: {
     backgroundColor: "transparent",
     paddingVertical: 8,
@@ -388,7 +803,28 @@ const styles = StyleSheet.create({
   },
   secondaryBtnText: { color: TEXT, fontWeight: "700", fontSize: 13 },
 
-  // Buscador
+  importInfoBox: {
+    marginBottom: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    padding: 10,
+  },
+  importInfoTitle: {
+    color: TEXT,
+    fontWeight: "800",
+    marginBottom: 4,
+    fontSize: 12,
+  },
+  importInfoText: { color: SUBTLE, fontSize: 12 },
+  importInfoMeta: {
+    color: ACCENT_2,
+    fontSize: 12,
+    marginTop: 6,
+    fontWeight: "700",
+  },
+
   searchWrap: {
     position: "relative",
     backgroundColor: FIELD,
@@ -418,21 +854,13 @@ const styles = StyleSheet.create({
   },
   clearText: { color: TEXT, fontSize: 18, lineHeight: 18, fontWeight: "700" },
 
-  // Filtro por cargo (dropdown)
   filterRow: {
     flexDirection: "row",
     alignItems: "center",
     marginBottom: 6,
     marginTop: 2,
   },
-  filterLabel: {
-    color: SUBTLE,
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  posDropdownWrapper: {
-    flexShrink: 1,
-  },
+  posDropdownWrapper: { flexShrink: 1 },
   posDropdownTrigger: {
     flexDirection: "row",
     alignItems: "center",
@@ -449,11 +877,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     flexShrink: 1,
   },
-  posDropdownArrow: {
-    color: SUBTLE,
-    marginLeft: 6,
-    fontSize: 10,
-  },
+  posDropdownArrow: { color: SUBTLE, marginLeft: 6, fontSize: 10 },
   posDropdownMenu: {
     marginTop: 4,
     borderRadius: 12,
@@ -468,19 +892,22 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#1f252f",
   },
-  posOptionActive: {
-    backgroundColor: "#1f2937",
-  },
-  posOptionText: {
-    fontSize: 12,
-    color: TEXT,
-  },
-  posOptionTextActive: {
-    fontWeight: "800",
-    color: ACCENT_2,
-  },
+  posOptionActive: { backgroundColor: "#1f2937" },
+  posOptionText: { fontSize: 12, color: TEXT },
+  posOptionTextActive: { fontWeight: "800", color: ACCENT_2 },
 
-  // Lista / states
+  pagerSummary: {
+    marginTop: 2,
+    marginBottom: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  pagerSummaryText: { color: SUBTLE, fontSize: 12, fontWeight: "700" },
+
   listContainer: { gap: 10 },
   row: {
     backgroundColor: CARD,
@@ -539,6 +966,50 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.16)",
   },
   retryText: { color: "#fff", fontWeight: "900" },
+
+  pager: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 10,
+    gap: 10,
+  },
+  pagerBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  pagerBtnText: { color: TEXT, fontWeight: "900", fontSize: 12 },
+
+  pageNums: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+    justifyContent: "center",
+  },
+  pageNum: {
+    minWidth: 34,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pageNumActive: {
+    borderColor: "rgba(34,211,238,0.8)",
+    backgroundColor: "rgba(34,211,238,0.12)",
+  },
+  pageNumText: { color: TEXT, fontWeight: "800", fontSize: 12 },
+  pageNumTextActive: { color: ACCENT_2 },
+
+  dots: { color: SUBTLE, fontWeight: "900", paddingHorizontal: 4 },
 });
 
 
