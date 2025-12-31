@@ -35,7 +35,7 @@ const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 /* ✅ evento local fallback */
 const LOCAL_EVENT_MAP_KEY = "activityEventLocal:v1";
 
-type Filter = "all" | "open" | "done" | "canceled";
+type Filter = "all" | "open" | "in_progress" | "done" | "canceled";
 
 type ActivityWithCreator = Activity & {
   created_by?: string | null;
@@ -150,7 +150,9 @@ export default function TasksList() {
   const loadRoleAndTenants = useCallback(async () => {
     setLoadingRole(true);
     try {
-      const resRole = await api.get<{ tenant_id: string | null; role: string | null }>("/tenants/role");
+      const resRole = await api.get<{ tenant_id: string | null; role: string | null }>(
+        "/tenants/role"
+      );
       const r = (resRole?.role || "").toLowerCase() as "owner" | "admin" | "member" | "";
       setCurrentRole(r || null);
     } catch {
@@ -270,7 +272,7 @@ export default function TasksList() {
       });
     }
 
-    // 1) Filtro por estado
+    // 1) Filtro por estado (UI)
     items = items.filter((a) => {
       const isDoneUI = a.status === "done" || completedMaster.has(a.id as string);
       const isInProgressUI = !isDoneUI && inProgressMaster.has(a.id as string);
@@ -278,6 +280,8 @@ export default function TasksList() {
       switch (filter) {
         case "open":
           return !isDoneUI && !isInProgressUI;
+        case "in_progress":
+          return isInProgressUI;
         case "done":
           return isDoneUI;
         case "canceled":
@@ -394,7 +398,7 @@ export default function TasksList() {
 
       <View style={styles.screen}>
         <View style={styles.filters}>
-          {(["all", "open", "done", "canceled"] as Filter[]).map((f) => {
+          {(["all", "open", "in_progress", "done", "canceled"] as Filter[]).map((f) => {
             const active = filter === f;
             return (
               <Pressable
@@ -453,7 +457,10 @@ export default function TasksList() {
         {isAdminOrOwner && memberChips.length > 0 && (
           <View style={styles.dropdownRow}>
             <View style={styles.dropdownWrapper}>
-              <Pressable style={styles.dropdownTrigger} onPress={() => setAssigneeMenuOpen((v) => !v)}>
+              <Pressable
+                style={styles.dropdownTrigger}
+                onPress={() => setAssigneeMenuOpen((v) => !v)}
+              >
                 <Text style={styles.dropdownText} numberOfLines={1}>
                   {assigneeActiveLabel}
                 </Text>
@@ -473,7 +480,13 @@ export default function TasksList() {
                           setAssigneeMenuOpen(false);
                         }}
                       >
-                        <Text style={[styles.dropdownOptionText, active && styles.dropdownOptionTextActive]} numberOfLines={1}>
+                        <Text
+                          style={[
+                            styles.dropdownOptionText,
+                            active && styles.dropdownOptionTextActive,
+                          ]}
+                          numberOfLines={1}
+                        >
                           {m.id === "all" ? "Todas las personas" : m.label}
                         </Text>
                       </Pressable>
@@ -503,13 +516,23 @@ export default function TasksList() {
                     return (
                       <Pressable
                         key={t.id}
-                        style={[styles.dropdownOption, active && styles.dropdownOptionActive, busy && { opacity: 0.5 }]}
+                        style={[
+                          styles.dropdownOption,
+                          active && styles.dropdownOptionActive,
+                          busy && { opacity: 0.5 },
+                        ]}
                         onPress={async () => {
                           await onSelectWorkspace(t.id);
                           setWsMenuOpen(false);
                         }}
                       >
-                        <Text style={[styles.dropdownOptionText, active && styles.dropdownOptionTextActive]} numberOfLines={1}>
+                        <Text
+                          style={[
+                            styles.dropdownOptionText,
+                            active && styles.dropdownOptionTextActive,
+                          ]}
+                          numberOfLines={1}
+                        >
                           {t.name || t.id}
                         </Text>
                       </Pressable>
@@ -533,7 +556,9 @@ export default function TasksList() {
             <Text style={styles.subtle}>Cargando actividades…</Text>
           </View>
         ) : q.isError ? (
-          <Text style={{ color: "#fecaca" }}>Error: {String((q.error as any)?.message || q.error)}</Text>
+          <Text style={{ color: "#fecaca" }}>
+            Error: {String((q.error as any)?.message || q.error)}
+          </Text>
         ) : (
           <FlatList
             data={data}
@@ -583,8 +608,6 @@ function getContactLabel(a: ActivityWithCreator): string | null {
 
   return null;
 }
-
-
 
 function parseEventDateToMs(raw: any): number | null {
   if (raw == null) return null;
@@ -678,7 +701,8 @@ function TaskCard({
       ? ` · asignada a ${assignedNames[0]}`
       : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
 
-  const createdLabel = item.created_at != null ? ` · creada el ${formatDate(item.created_at as any)}` : "";
+  const createdLabel =
+    item.created_at != null ? ` · creada el ${formatDate(item.created_at as any)}` : "";
 
   const lastNoteBlock = getLastNoteBlock((item as any).notes);
   const contactLabel = getContactLabel(item);
@@ -690,10 +714,20 @@ function TaskCard({
   return (
     <Link href={{ pathname: "/tasks/[id]", params: { id: item.id } }} asChild>
       <Pressable accessibilityRole="link" hitSlop={8}>
-        <View style={[styles.row, isDoneUI && styles.rowDone, !isDoneUI && isInProgressUI && styles.rowInProgress]}>
+        <View
+          style={[
+            styles.row,
+            isDoneUI && styles.rowDone,
+            !isDoneUI && isInProgressUI && styles.rowInProgress,
+          ]}
+        >
           <View style={styles.titleRow}>
             <Text
-              style={[styles.title, isDoneUI && styles.titleDone, !isDoneUI && isInProgressUI && styles.titleInProgress]}
+              style={[
+                styles.title,
+                isDoneUI && styles.titleDone,
+                !isDoneUI && isInProgressUI && styles.titleInProgress,
+              ]}
               numberOfLines={1}
             >
               {item.title}
@@ -719,7 +753,11 @@ function TaskCard({
           </View>
 
           <Text
-            style={[styles.sub, isDoneUI && styles.subDone, !isDoneUI && isInProgressUI && styles.subInProgress]}
+            style={[
+              styles.sub,
+              isDoneUI && styles.subDone,
+              !isDoneUI && isInProgressUI && styles.subInProgress,
+            ]}
             numberOfLines={3}
           >
             {(item.type || "task") +
@@ -754,6 +792,8 @@ function labelFilter(f: Filter) {
       return "Todas";
     case "open":
       return "Abiertas";
+    case "in_progress":
+      return "En proceso";
     case "done":
       return "Hechas";
     case "canceled":
@@ -864,7 +904,7 @@ const styles = StyleSheet.create({
     padding: 14,
     flexDirection: "column",
     alignItems: "flex-start",
-    gap: 4, // ✅ antes 6 (reduce el espacio interno)
+    gap: 4,
   },
   rowDone: { borderColor: SUCCESS, backgroundColor: "rgba(22,163,74,0.08)" },
   rowInProgress: { borderColor: "#3b82f6", backgroundColor: "rgba(37,99,235,0.12)" },
@@ -873,7 +913,7 @@ const styles = StyleSheet.create({
     width: "100%",
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 6, // ✅ antes 8
+    gap: 6,
     flexWrap: "wrap",
   },
   title: { color: TEXT, fontWeight: "800", fontSize: 15, flexShrink: 1, minWidth: 0 },
@@ -908,7 +948,7 @@ const styles = StyleSheet.create({
   sub: {
     color: SUBTLE,
     fontSize: 12,
-    marginTop: -2, // ✅ pega el detalle al título
+    marginTop: -2,
   },
   subDone: { color: SUCCESS },
   subInProgress: { color: "#60a5fa" },
@@ -928,5 +968,3 @@ const styles = StyleSheet.create({
 
   lastNoteText: { color: SUBTLE, fontSize: 12, marginTop: 2 },
 });
-
-
