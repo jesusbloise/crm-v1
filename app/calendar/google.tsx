@@ -71,6 +71,41 @@ export default function GoogleCalendarScreen() {
   useEffect(() => {
     const loadToken = async () => {
       try {
+        // ✅ WEB: si volvemos desde Google, el token viene en el hash (#access_token=...)
+        if (Platform.OS === "web") {
+          const hash = window.location.hash || "";
+          if (hash.includes("access_token=")) {
+            const params = new URLSearchParams(hash.replace(/^#/, ""));
+            const token = params.get("access_token");
+            const expiresInSec = Number(params.get("expires_in") ?? 3600);
+
+            if (token) {
+              try {
+                await saveGoogleAccessToken(token, expiresInSec);
+
+                // ✅ token recién conectado => vaciar cola
+                await flushCalendarQueue();
+              } catch (e) {
+                console.warn("No se pudo guardar token / vaciar cola:", e);
+              }
+
+              setAccessToken(token);
+              setError(null);
+
+              // ✅ limpiar URL (quita el token del hash)
+              window.history.replaceState(
+                {},
+                document.title,
+                window.location.pathname + window.location.search
+              );
+
+              setLoadingToken(false);
+              return; // ya tenemos token, no seguimos
+            }
+          }
+        }
+
+        // (Tu lógica normal) leer token guardado
         const token = await loadGoogleAccessToken();
         if (token) {
           setAccessToken(token);
@@ -96,7 +131,7 @@ export default function GoogleCalendarScreen() {
     }
   }, [accessToken, loadingToken]);
 
-  // 2) Respuesta OAuth
+  // 2) Respuesta OAuth (mantener tal cual para móvil / casos donde sí llega por response)
   useEffect(() => {
     if (!response) return;
 
@@ -118,6 +153,15 @@ export default function GoogleCalendarScreen() {
 
           setAccessToken(token);
           setError(null);
+
+          // ✅ en web, limpiamos hash si existe
+          if (Platform.OS === "web") {
+            window.history.replaceState(
+              {},
+              document.title,
+              window.location.pathname + window.location.search
+            );
+          }
         })();
       } else {
         setError("No se recibió access_token desde Google.");
@@ -192,7 +236,6 @@ export default function GoogleCalendarScreen() {
   };
 
   // Helpers de fecha
-
   function parseStart(ev: GoogleEvent) {
     const s = ev.start;
     if (!s) return null;
@@ -351,7 +394,6 @@ export default function GoogleCalendarScreen() {
 
   return (
     <View style={styles.screen}>
-      {/* Barra superior: título + botón de nueva actividad */}
       <View style={styles.topBar}>
         <Text style={styles.title}>Google Calendar</Text>
         <Link href="/tasks/new" asChild>
@@ -366,8 +408,18 @@ export default function GoogleCalendarScreen() {
           <Text style={styles.subtitle}>Integración con Google Calendar</Text>
           <Pressable
             style={styles.connectBtn}
-            onPress={() => {
+            onPress={async () => {
               if (!request) return;
+
+              // ✅ WEB: misma pestaña (NO popup / NO nueva ventana)
+              if (Platform.OS === "web") {
+                const authUrl =
+                  request.url ?? (await request.makeAuthUrlAsync(discovery));
+                window.location.assign(authUrl);
+                return;
+              }
+
+              // ✅ Móvil: overlay normal (no se puede evitar)
               promptAsync({ showInRecents: true });
             }}
             disabled={!request}
@@ -394,15 +446,11 @@ export default function GoogleCalendarScreen() {
             </View>
           ) : (
             <>
-              {/* GRID mensual tipo Google */}
               <View style={styles.monthHeaderRow}>
                 <Text style={styles.monthTitle}>
                   {new Date(monthGrid.year, monthGrid.month, 1).toLocaleDateString(
                     "es-ES",
-                    {
-                      month: "long",
-                      year: "numeric",
-                    }
+                    { month: "long", year: "numeric" }
                   )}
                 </Text>
               </View>
@@ -470,7 +518,6 @@ export default function GoogleCalendarScreen() {
                 })}
               </View>
 
-              {/* Lista detallada de eventos por día (debajo del grid) */}
               {grouped.length === 0 ? (
                 <View style={[styles.centerBox, { paddingTop: 16 }]}>
                   <Text style={styles.subtitle}>
@@ -561,7 +608,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
   },
-
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -571,7 +617,6 @@ const styles = StyleSheet.create({
   connectedText: {
     color: SUBTLE,
   },
-
   connectBtn: {
     backgroundColor: PRIMARY,
     borderRadius: 999,
@@ -583,7 +628,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
-
   disconnectBtn: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -597,8 +641,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
-
-  /* Grid mensual */
 
   monthHeaderRow: {
     marginTop: 4,
@@ -666,16 +708,12 @@ const styles = StyleSheet.create({
     color: TEXT,
     fontSize: 10,
   },
-
   dayEventsScroll: {
     maxHeight: 42,
   },
   dayEventsScrollContent: {
     paddingBottom: 2,
   },
-
-  /* Lista detallada */
-
   list: {
     paddingTop: 8,
     paddingBottom: 24,
@@ -713,14 +751,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
-
   error: {
     color: "#fecaca",
     marginTop: 8,
     textAlign: "center",
   },
 });
-
 
 
 // // app/calendar/google.tsx
@@ -741,6 +777,7 @@ const styles = StyleSheet.create({
 
 // import {
 //   clearGoogleAccessToken,
+//   flushCalendarQueue,
 //   loadGoogleAccessToken,
 //   saveGoogleAccessToken,
 // } from "@/src/lib/googleCalendar";
@@ -798,6 +835,12 @@ const styles = StyleSheet.create({
 //         const token = await loadGoogleAccessToken();
 //         if (token) {
 //           setAccessToken(token);
+
+//           // ✅ Si ya había token, intentamos vaciar la cola en background
+//           // (si falla, no rompe nada)
+//           flushCalendarQueue().catch((e) =>
+//             console.log("flushCalendarQueue (loadToken) error:", e)
+//           );
 //         }
 //       } catch (e) {
 //         console.warn("Error leyendo token de Google Calendar:", e);
@@ -827,9 +870,13 @@ const styles = StyleSheet.create({
 //         (async () => {
 //           try {
 //             await saveGoogleAccessToken(token, expiresInSec);
+
+//             // ✅ token recién conectado => vaciar cola
+//             await flushCalendarQueue();
 //           } catch (e) {
-//             console.warn("No se pudo guardar el token de Google:", e);
+//             console.warn("No se pudo guardar token / vaciar cola:", e);
 //           }
+
 //           setAccessToken(token);
 //           setError(null);
 //         })();
@@ -1149,15 +1196,13 @@ const styles = StyleSheet.create({
 //                         {cell.day}
 //                       </Text>
 
-//                       {/* ✅ Si hay más de 2, mostramos scroll interno; si no, como siempre */}
 //                       {needsScroll ? (
-//                      <ScrollView
-//   style={styles.dayEventsScroll}
-//   contentContainerStyle={styles.dayEventsScrollContent}
-//   showsVerticalScrollIndicator={false}
-//   nestedScrollEnabled
-// >
-
+//                         <ScrollView
+//                           style={styles.dayEventsScroll}
+//                           contentContainerStyle={styles.dayEventsScrollContent}
+//                           showsVerticalScrollIndicator={false}
+//                           nestedScrollEnabled
+//                         >
 //                           {evs.map((ev) => (
 //                             <Text
 //                               key={ev.id}
@@ -1355,7 +1400,7 @@ const styles = StyleSheet.create({
 //     borderColor: BORDER,
 //     padding: 4,
 //     minHeight: 60,
-//     overflow: "hidden", // ✅ clave para que el scroll interno no se desborde
+//     overflow: "hidden",
 //   },
 //   dayCellEmpty: {
 //     width: `${100 / 7}%`,
@@ -1383,9 +1428,8 @@ const styles = StyleSheet.create({
 //     fontSize: 10,
 //   },
 
-//   // ✅ scroll interno en la celda cuando hay muchas actividades
 //   dayEventsScroll: {
-//     maxHeight: 42, // ~2-3 líneas visibles, el resto con scroll
+//     maxHeight: 42,
 //   },
 //   dayEventsScrollContent: {
 //     paddingBottom: 2,
@@ -1437,3 +1481,4 @@ const styles = StyleSheet.create({
 //     textAlign: "center",
 //   },
 // });
+
