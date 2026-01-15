@@ -20,7 +20,7 @@ type StoredNotif = {
 
 const keyFor = (activityId: string) => `${STORAGE_PREFIX}${activityId}`;
 
-// --- Compat: handler sin dramas de tipos entre SDKs ---
+// Handler compatible (sin dramas de tipos entre SDKs)
 const BEHAVIOR: any = {
   shouldShowAlert: true,
   shouldPlaySound: true,
@@ -32,33 +32,27 @@ const BEHAVIOR: any = {
 } as any);
 
 /**
- * 🔔 Callback opcional para mostrar un toast bonito en WEB.
- * La registramos desde React (NewActivity) y si no existe usamos alert().
+ * Callback opcional para mostrar un toast bonito en WEB.
+ * La registramos desde React y si no existe usamos alert().
  */
-let toastCallback:
-  | ((title: string, message: string) => void)
-  | null = null;
+let toastCallback: ((title: string, message: string) => void) | null = null;
 
-export function registerToast(
-  cb: (title: string, message: string) => void
-) {
+export function registerToast(cb: (title: string, message: string) => void) {
   toastCallback = cb;
 }
 
 function showWebToast(title: string, message: string) {
-  if (toastCallback) {
-    toastCallback(title, message);
-  } else {
-    // fallback simple si por alguna razón no se registró el toast
-    alert(`${title}\n\n${message}`);
-  }
+  if (toastCallback) toastCallback(title, message);
+  else alert(`${title}\n\n${message}`);
 }
+
+// Para evitar duplicados en WEB por setTimeout al reprogramar (solo runtime actual)
+const webTimers = new Map<string, any>();
 
 /** Pide permisos y crea canal Android con sonido/vibración. */
 export async function initNotifications() {
   try {
     if (Platform.OS === "web") {
-      // En web no hay permisos nativos, solo simulación
       return;
     }
 
@@ -101,6 +95,9 @@ function makeDateTrigger(when: Date) {
 /**
  * Programa una notificación local a fecha/hora exactas con alerta+sonido.
  * Devuelve el notificationId y lo persiste asociado a activityId.
+ *
+ * Nota: En nativo ya cancela el anterior.
+ * En web también cancelamos el timeout anterior para evitar duplicados.
  */
 export async function scheduleActivityReminder({
   activityId,
@@ -109,20 +106,27 @@ export async function scheduleActivityReminder({
   when,
 }: ScheduleParams) {
   try {
-    if (Platform.OS === "web") {
-      // Simulación en Web usando toast centrado
-      const diff = Math.max(1000, when.getTime() - Date.now());
-      setTimeout(() => {
-        showWebToast(
-          "Recordatorio",
-          `${title}\n\n${body ?? ""}`
-        );
-      }, diff);
-      return `web-alert-${activityId}`;
-    }
-
-    // Si ya existía uno, cancélalo (reprogramación)
+    // Siempre intenta cancelar el anterior primero (web incluido)
     await cancelActivityReminder(activityId);
+
+    if (Platform.OS === "web") {
+      const diff = Math.max(1000, when.getTime() - Date.now());
+
+      const t = setTimeout(() => {
+        showWebToast("Recordatorio", `${title}\n\n${body ?? ""}`);
+        webTimers.delete(activityId);
+      }, diff);
+
+      webTimers.set(activityId, t);
+
+      const stored: StoredNotif = {
+        notificationId: `web-alert-${activityId}`,
+        when: when.getTime(),
+      };
+      await AsyncStorage.setItem(keyFor(activityId), JSON.stringify(stored));
+
+      return stored.notificationId;
+    }
 
     // Evitar programar en pasado
     const now = Date.now();
@@ -146,6 +150,7 @@ export async function scheduleActivityReminder({
       when: whenDate.getTime(),
     };
     await AsyncStorage.setItem(keyFor(activityId), JSON.stringify(stored));
+
     return notificationId;
   } catch (err) {
     console.warn("scheduleActivityReminder error:", err);
@@ -156,14 +161,22 @@ export async function scheduleActivityReminder({
 /** Cancela la notificación programada (si existe) para una actividad. */
 export async function cancelActivityReminder(activityId: string) {
   try {
+    // Web: limpiar timeout si está en memoria
+    const wt = webTimers.get(activityId);
+    if (wt) {
+      clearTimeout(wt);
+      webTimers.delete(activityId);
+    }
+
     const raw = await AsyncStorage.getItem(keyFor(activityId));
     if (raw) {
       const parsed: StoredNotif = JSON.parse(raw);
-      if (parsed?.notificationId) {
-        await Notifications.cancelScheduledNotificationAsync(
-          parsed.notificationId
-        );
+
+      // Nativo: cancelar schedule real
+      if (Platform.OS !== "web" && parsed?.notificationId) {
+        await Notifications.cancelScheduledNotificationAsync(parsed.notificationId);
       }
+
       await AsyncStorage.removeItem(keyFor(activityId));
     }
   } catch (err) {
@@ -174,11 +187,18 @@ export async function cancelActivityReminder(activityId: string) {
 /** Cancela todas las notificaciones programadas por este módulo. */
 export async function cancelAllActivityReminders() {
   try {
-    if (Platform.OS === "web") return;
+    // Limpia timeouts web
+    if (Platform.OS === "web") {
+      for (const [, t] of webTimers) clearTimeout(t);
+      webTimers.clear();
+      return;
+    }
+
     const keys = await AsyncStorage.getAllKeys();
     const ours = keys.filter((k) => k.startsWith(STORAGE_PREFIX));
     const rawList = await AsyncStorage.multiGet(ours);
     const ids: string[] = [];
+
     for (const [, raw] of rawList) {
       if (!raw) continue;
       try {
@@ -186,11 +206,8 @@ export async function cancelAllActivityReminders() {
         if (parsed?.notificationId) ids.push(parsed.notificationId);
       } catch {}
     }
-    await Promise.all(
-      ids.map((id) =>
-        Notifications.cancelScheduledNotificationAsync(id)
-      )
-    );
+
+    await Promise.all(ids.map((nid) => Notifications.cancelScheduledNotificationAsync(nid)));
     await AsyncStorage.multiRemove(ours);
   } catch (err) {
     console.warn("cancelAllActivityReminders error:", err);
@@ -219,6 +236,7 @@ export async function reensurePendingReminders(
 ) {
   try {
     if (Platform.OS === "web") return;
+
     const items = await getOpenActivities();
     const now = Date.now();
 
@@ -243,10 +261,7 @@ export async function reensurePendingReminders(
 /** DEBUG: programa una notificación que suena en X segundos (nativo) */
 export async function debugNotifyIn(seconds: number = 10) {
   if (Platform.OS === "web") {
-    showWebToast(
-      "Debug (WEB)",
-      `Simulando notificación en ${seconds}s`
-    );
+    showWebToast("Debug (WEB)", `Simulando notificación en ${seconds}s`);
     setTimeout(() => {
       showWebToast("Debug (WEB)", "Notificación de prueba");
     }, seconds * 1000);
@@ -258,7 +273,7 @@ export async function debugNotifyIn(seconds: number = 10) {
 
   await Notifications.scheduleNotificationAsync({
     content: {
-      title: "🔔 Debug notification",
+      title: "Debug notification",
       body: `Deberías ver/oir esto en ~${seconds}s`,
       sound: Platform.OS === "ios" ? true : undefined,
       data: { kind: "debug" },
@@ -268,6 +283,7 @@ export async function debugNotifyIn(seconds: number = 10) {
 }
 
 
+// // src/utils/notifications.ts
 // import AsyncStorage from "@react-native-async-storage/async-storage";
 // import * as Notifications from "expo-notifications";
 // import { Platform } from "react-native";
@@ -296,24 +312,38 @@ export async function debugNotifyIn(seconds: number = 10) {
 //   shouldSetBadge: false,
 // };
 
-// // Algunos SDKs tipan distinto NotificationHandler/Behavior.
-// // Casteamos a any para evitar el error de TS, el runtime es correcto.
 // (Notifications as any).setNotificationHandler({
 //   handleNotification: async () => BEHAVIOR,
 // } as any);
 
-// // 🔔 Callback global para mostrar un toast visual (Modal centrado)
-// export let showLocalToast: null | ((t: string, m: string) => void) = null;
+// /**
+//  * 🔔 Callback opcional para mostrar un toast bonito en WEB.
+//  * La registramos desde React (NewActivity) y si no existe usamos alert().
+//  */
+// let toastCallback:
+//   | ((title: string, message: string) => void)
+//   | null = null;
 
-// export function registerToast(fn: (t: string, m: string) => void) {
-//   showLocalToast = fn;
+// export function registerToast(
+//   cb: (title: string, message: string) => void
+// ) {
+//   toastCallback = cb;
+// }
+
+// function showWebToast(title: string, message: string) {
+//   if (toastCallback) {
+//     toastCallback(title, message);
+//   } else {
+//     // fallback simple si por alguna razón no se registró el toast
+//     alert(`${title}\n\n${message}`);
+//   }
 // }
 
 // /** Pide permisos y crea canal Android con sonido/vibración. */
 // export async function initNotifications() {
 //   try {
 //     if (Platform.OS === "web") {
-//       // En web solo simulamos con toast/alert, no pedimos permisos reales
+//       // En web no hay permisos nativos, solo simulación
 //       return;
 //     }
 
@@ -326,16 +356,14 @@ export async function debugNotifyIn(seconds: number = 10) {
 //         importance: Notifications.AndroidImportance.MAX,
 //         sound: "default",
 //         vibrationPattern: [0, 250, 250, 250],
-//         lockscreenVisibility:
-//           Notifications.AndroidNotificationVisibility.PUBLIC,
+//         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
 //         bypassDnd: true,
 //         enableVibrate: true,
 //         enableLights: true,
 //         showBadge: true,
 //         audioAttributes: {
 //           usage: Notifications.AndroidAudioUsage.NOTIFICATION_EVENT,
-//           contentType:
-//             Notifications.AndroidAudioContentType.SONIFICATION,
+//           contentType: Notifications.AndroidAudioContentType.SONIFICATION,
 //         },
 //       });
 //     }
@@ -347,13 +375,12 @@ export async function debugNotifyIn(seconds: number = 10) {
 // /** Normaliza un trigger por fecha para cualquier SDK (cast final). */
 // function makeDateTrigger(when: Date) {
 //   if (Platform.OS === "android") {
-//     // En algunos SDKs se usa { date, channelId }, en otros { type: DATE, date, channelId }
-//     return {
+//     return ({
 //       date: when,
 //       channelId: ANDROID_CHANNEL_ID,
-//     } as any as Notifications.NotificationTriggerInput;
+//     } as any) as Notifications.NotificationTriggerInput;
 //   }
-//   return { date: when } as any as Notifications.NotificationTriggerInput;
+//   return ({ date: when } as any) as Notifications.NotificationTriggerInput;
 // }
 
 // /**
@@ -367,39 +394,16 @@ export async function debugNotifyIn(seconds: number = 10) {
 //   when,
 // }: ScheduleParams) {
 //   try {
-//     // 🌐 WEB → siempre simulamos con toast/alert
 //     if (Platform.OS === "web") {
+//       // Simulación en Web usando toast centrado
 //       const diff = Math.max(1000, when.getTime() - Date.now());
 //       setTimeout(() => {
-//         const mensaje = body ?? "";
-//         if (showLocalToast) {
-//           showLocalToast("Recordatorio", `${title}\n${mensaje}`);
-//         } else {
-//           alert(`Recordatorio (WEB)\n\n${title}\n\n${mensaje}`);
-//         }
+//         showWebToast(
+//           "Recordatorio",
+//           `${title}\n\n${body ?? ""}`
+//         );
 //       }, diff);
-
 //       return `web-alert-${activityId}`;
-//     }
-
-//     // Nativo: aseguramos permisos/canales
-//     await initNotifications();
-
-//     // Algunos entornos (Expo Go / emu) no soportan notificaciones reales
-//     const isAvailableFn = (Notifications as any).isAvailableAsync;
-//     if (typeof isAvailableFn === "function") {
-//       const isAvailable = await isAvailableFn();
-//       if (!isAvailable) {
-//         const mensaje =
-//           "Este entorno (Expo Go / emulador) no permite notificaciones reales. " +
-//           "Prueba con un build nativo para activar los recordatorios del sistema.";
-//         if (showLocalToast) {
-//           showLocalToast("Notificaciones no soportadas", mensaje);
-//         } else {
-//           alert(mensaje);
-//         }
-//         return null;
-//       }
 //     }
 
 //     // Si ya existía uno, cancélalo (reprogramación)
@@ -412,16 +416,15 @@ export async function debugNotifyIn(seconds: number = 10) {
 //       whenDate = new Date(now + 60_000); // +1 min
 //     }
 
-//     const notificationId =
-//       await Notifications.scheduleNotificationAsync({
-//         content: {
-//           title,
-//           body,
-//           sound: Platform.OS === "ios" ? true : undefined,
-//           data: { activityId, type: "activity-reminder" },
-//         },
-//         trigger: makeDateTrigger(whenDate), // 👈 cast interno anti-rojos
-//       });
+//     const notificationId = await Notifications.scheduleNotificationAsync({
+//       content: {
+//         title,
+//         body,
+//         sound: Platform.OS === "ios" ? true : undefined,
+//         data: { activityId, type: "activity-reminder" },
+//       },
+//       trigger: makeDateTrigger(whenDate),
+//     });
 
 //     const stored: StoredNotif = {
 //       notificationId,
@@ -480,9 +483,7 @@ export async function debugNotifyIn(seconds: number = 10) {
 // }
 
 // /** Reprograma (cancela + programa de nuevo) a una nueva fecha/hora. */
-// export async function rescheduleActivityReminder(
-//   params: ScheduleParams
-// ) {
+// export async function rescheduleActivityReminder(params: ScheduleParams) {
 //   await cancelActivityReminder(params.activityId);
 //   return scheduleActivityReminder(params);
 // }
@@ -527,20 +528,12 @@ export async function debugNotifyIn(seconds: number = 10) {
 // /** DEBUG: programa una notificación que suena en X segundos (nativo) */
 // export async function debugNotifyIn(seconds: number = 10) {
 //   if (Platform.OS === "web") {
-//     if (showLocalToast) {
-//       showLocalToast(
-//         "Debug notificación",
-//         `Simulando notificación en ${seconds} segundos`
-//       );
-//     } else {
-//       alert(`(WEB) Simulando notificación en ${seconds}s`);
-//     }
+//     showWebToast(
+//       "Debug (WEB)",
+//       `Simulando notificación en ${seconds}s`
+//     );
 //     setTimeout(() => {
-//       if (showLocalToast) {
-//         showLocalToast("Debug notificación", "🚨 (WEB) Debug notify");
-//       } else {
-//         alert("🚨 (WEB) Debug notify");
-//       }
+//       showWebToast("Debug (WEB)", "Notificación de prueba");
 //     }, seconds * 1000);
 //     return;
 //   }
