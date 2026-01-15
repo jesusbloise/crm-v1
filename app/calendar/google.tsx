@@ -67,6 +67,25 @@ export default function GoogleCalendarScreen() {
     discovery
   );
 
+  // ✅ Re-auth “silencioso” (cuando expira token)
+  async function trySilentReauth(): Promise<boolean> {
+    try {
+      if (!request) return false;
+
+      const res = await promptAsync({
+        showInRecents: false,
+        // Si Google mantiene sesión activa, esto suele resolver rápido.
+        // Si no puede, normalmente vuelve "dismiss" o "error".
+        extraParams: { prompt: "none" } as any,
+      } as any);
+
+      return res?.type === "success";
+    } catch (e) {
+      console.log("trySilentReauth error:", e);
+      return false;
+    }
+  }
+
   // 1) Al montar, intentamos recuperar un token guardado
   useEffect(() => {
     const loadToken = async () => {
@@ -105,7 +124,6 @@ export default function GoogleCalendarScreen() {
           }
         }
 
-        // (Tu lógica normal) leer token guardado
         const token = await loadGoogleAccessToken();
         if (token) {
           setAccessToken(token);
@@ -131,7 +149,7 @@ export default function GoogleCalendarScreen() {
     }
   }, [accessToken, loadingToken]);
 
-  // 2) Respuesta OAuth (mantener tal cual para móvil / casos donde sí llega por response)
+  // 2) Respuesta OAuth
   useEffect(() => {
     if (!response) return;
 
@@ -209,7 +227,26 @@ export default function GoogleCalendarScreen() {
 
       if (!res.ok) {
         const text = await res.text();
-        console.log("Error Google Calendar:", text);
+        console.log("Error Google Calendar:", res.status, text);
+
+        // ✅ Token expirado/no válido => reauth automático 1 vez
+        if (res.status === 401 || res.status === 403) {
+          const ok = await trySilentReauth();
+
+          // Si pudo, el useEffect(response) guardará nuevo token y
+          // loadEvents se disparará de nuevo por accessToken
+          if (ok) {
+            return;
+          }
+
+          // Si no se pudo, forzamos reconexión manual
+          await clearGoogleAccessToken().catch(() => {});
+          setAccessToken(null);
+          setEvents([]);
+          setError("La sesión con Google expiró. Conecta nuevamente.");
+          return;
+        }
+
         setError(
           "No se pudieron cargar los eventos. Verifica que la API de Calendar esté habilitada."
         );
@@ -236,6 +273,7 @@ export default function GoogleCalendarScreen() {
   };
 
   // Helpers de fecha
+
   function parseStart(ev: GoogleEvent) {
     const s = ev.start;
     if (!s) return null;
@@ -394,6 +432,7 @@ export default function GoogleCalendarScreen() {
 
   return (
     <View style={styles.screen}>
+      {/* Barra superior: título + botón de nueva actividad */}
       <View style={styles.topBar}>
         <Text style={styles.title}>Google Calendar</Text>
         <Link href="/tasks/new" asChild>
@@ -419,7 +458,7 @@ export default function GoogleCalendarScreen() {
                 return;
               }
 
-              // ✅ Móvil: overlay normal (no se puede evitar)
+              // ✅ Móvil: overlay normal
               promptAsync({ showInRecents: true });
             }}
             disabled={!request}
@@ -446,12 +485,17 @@ export default function GoogleCalendarScreen() {
             </View>
           ) : (
             <>
+              {/* GRID mensual tipo Google */}
               <View style={styles.monthHeaderRow}>
                 <Text style={styles.monthTitle}>
-                  {new Date(monthGrid.year, monthGrid.month, 1).toLocaleDateString(
-                    "es-ES",
-                    { month: "long", year: "numeric" }
-                  )}
+                  {new Date(
+                    monthGrid.year,
+                    monthGrid.month,
+                    1
+                  ).toLocaleDateString("es-ES", {
+                    month: "long",
+                    year: "numeric",
+                  })}
                 </Text>
               </View>
 
@@ -518,6 +562,7 @@ export default function GoogleCalendarScreen() {
                 })}
               </View>
 
+              {/* Lista detallada de eventos por día (debajo del grid) */}
               {grouped.length === 0 ? (
                 <View style={[styles.centerBox, { paddingTop: 16 }]}>
                   <Text style={styles.subtitle}>
@@ -608,6 +653,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
   },
+
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -617,6 +663,7 @@ const styles = StyleSheet.create({
   connectedText: {
     color: SUBTLE,
   },
+
   connectBtn: {
     backgroundColor: PRIMARY,
     borderRadius: 999,
@@ -628,6 +675,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
+
   disconnectBtn: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -641,6 +689,8 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
+
+  /* Grid mensual */
 
   monthHeaderRow: {
     marginTop: 4,
@@ -708,12 +758,16 @@ const styles = StyleSheet.create({
     color: TEXT,
     fontSize: 10,
   },
+
   dayEventsScroll: {
     maxHeight: 42,
   },
   dayEventsScrollContent: {
     paddingBottom: 2,
   },
+
+  /* Lista detallada */
+
   list: {
     paddingTop: 8,
     paddingBottom: 24,
@@ -751,12 +805,14 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 14,
   },
+
   error: {
     color: "#fecaca",
     marginTop: 8,
     textAlign: "center",
   },
 });
+
 
 
 // // app/calendar/google.tsx
@@ -832,6 +888,41 @@ const styles = StyleSheet.create({
 //   useEffect(() => {
 //     const loadToken = async () => {
 //       try {
+//         // ✅ WEB: si volvemos desde Google, el token viene en el hash (#access_token=...)
+//         if (Platform.OS === "web") {
+//           const hash = window.location.hash || "";
+//           if (hash.includes("access_token=")) {
+//             const params = new URLSearchParams(hash.replace(/^#/, ""));
+//             const token = params.get("access_token");
+//             const expiresInSec = Number(params.get("expires_in") ?? 3600);
+
+//             if (token) {
+//               try {
+//                 await saveGoogleAccessToken(token, expiresInSec);
+
+//                 // ✅ token recién conectado => vaciar cola
+//                 await flushCalendarQueue();
+//               } catch (e) {
+//                 console.warn("No se pudo guardar token / vaciar cola:", e);
+//               }
+
+//               setAccessToken(token);
+//               setError(null);
+
+//               // ✅ limpiar URL (quita el token del hash)
+//               window.history.replaceState(
+//                 {},
+//                 document.title,
+//                 window.location.pathname + window.location.search
+//               );
+
+//               setLoadingToken(false);
+//               return; // ya tenemos token, no seguimos
+//             }
+//           }
+//         }
+
+//         // (Tu lógica normal) leer token guardado
 //         const token = await loadGoogleAccessToken();
 //         if (token) {
 //           setAccessToken(token);
@@ -857,7 +948,7 @@ const styles = StyleSheet.create({
 //     }
 //   }, [accessToken, loadingToken]);
 
-//   // 2) Respuesta OAuth
+//   // 2) Respuesta OAuth (mantener tal cual para móvil / casos donde sí llega por response)
 //   useEffect(() => {
 //     if (!response) return;
 
@@ -879,6 +970,15 @@ const styles = StyleSheet.create({
 
 //           setAccessToken(token);
 //           setError(null);
+
+//           // ✅ en web, limpiamos hash si existe
+//           if (Platform.OS === "web") {
+//             window.history.replaceState(
+//               {},
+//               document.title,
+//               window.location.pathname + window.location.search
+//             );
+//           }
 //         })();
 //       } else {
 //         setError("No se recibió access_token desde Google.");
@@ -953,7 +1053,6 @@ const styles = StyleSheet.create({
 //   };
 
 //   // Helpers de fecha
-
 //   function parseStart(ev: GoogleEvent) {
 //     const s = ev.start;
 //     if (!s) return null;
@@ -1112,7 +1211,6 @@ const styles = StyleSheet.create({
 
 //   return (
 //     <View style={styles.screen}>
-//       {/* Barra superior: título + botón de nueva actividad */}
 //       <View style={styles.topBar}>
 //         <Text style={styles.title}>Google Calendar</Text>
 //         <Link href="/tasks/new" asChild>
@@ -1127,8 +1225,18 @@ const styles = StyleSheet.create({
 //           <Text style={styles.subtitle}>Integración con Google Calendar</Text>
 //           <Pressable
 //             style={styles.connectBtn}
-//             onPress={() => {
+//             onPress={async () => {
 //               if (!request) return;
+
+//               // ✅ WEB: misma pestaña (NO popup / NO nueva ventana)
+//               if (Platform.OS === "web") {
+//                 const authUrl =
+//                   request.url ?? (await request.makeAuthUrlAsync(discovery));
+//                 window.location.assign(authUrl);
+//                 return;
+//               }
+
+//               // ✅ Móvil: overlay normal (no se puede evitar)
 //               promptAsync({ showInRecents: true });
 //             }}
 //             disabled={!request}
@@ -1155,15 +1263,11 @@ const styles = StyleSheet.create({
 //             </View>
 //           ) : (
 //             <>
-//               {/* GRID mensual tipo Google */}
 //               <View style={styles.monthHeaderRow}>
 //                 <Text style={styles.monthTitle}>
 //                   {new Date(monthGrid.year, monthGrid.month, 1).toLocaleDateString(
 //                     "es-ES",
-//                     {
-//                       month: "long",
-//                       year: "numeric",
-//                     }
+//                     { month: "long", year: "numeric" }
 //                   )}
 //                 </Text>
 //               </View>
@@ -1231,7 +1335,6 @@ const styles = StyleSheet.create({
 //                 })}
 //               </View>
 
-//               {/* Lista detallada de eventos por día (debajo del grid) */}
 //               {grouped.length === 0 ? (
 //                 <View style={[styles.centerBox, { paddingTop: 16 }]}>
 //                   <Text style={styles.subtitle}>
@@ -1322,7 +1425,6 @@ const styles = StyleSheet.create({
 //     justifyContent: "center",
 //     gap: 8,
 //   },
-
 //   headerRow: {
 //     flexDirection: "row",
 //     alignItems: "center",
@@ -1332,7 +1434,6 @@ const styles = StyleSheet.create({
 //   connectedText: {
 //     color: SUBTLE,
 //   },
-
 //   connectBtn: {
 //     backgroundColor: PRIMARY,
 //     borderRadius: 999,
@@ -1344,7 +1445,6 @@ const styles = StyleSheet.create({
 //     fontWeight: "800",
 //     fontSize: 14,
 //   },
-
 //   disconnectBtn: {
 //     paddingHorizontal: 10,
 //     paddingVertical: 6,
@@ -1358,8 +1458,6 @@ const styles = StyleSheet.create({
 //     fontSize: 11,
 //     fontWeight: "700",
 //   },
-
-//   /* Grid mensual */
 
 //   monthHeaderRow: {
 //     marginTop: 4,
@@ -1427,16 +1525,12 @@ const styles = StyleSheet.create({
 //     color: TEXT,
 //     fontSize: 10,
 //   },
-
 //   dayEventsScroll: {
 //     maxHeight: 42,
 //   },
 //   dayEventsScrollContent: {
 //     paddingBottom: 2,
 //   },
-
-//   /* Lista detallada */
-
 //   list: {
 //     paddingTop: 8,
 //     paddingBottom: 24,
@@ -1474,7 +1568,6 @@ const styles = StyleSheet.create({
 //     fontWeight: "800",
 //     fontSize: 14,
 //   },
-
 //   error: {
 //     color: "#fecaca",
 //     marginTop: 8,

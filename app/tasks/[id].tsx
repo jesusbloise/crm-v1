@@ -17,6 +17,16 @@ import { listContacts } from "@/src/api/contacts";
 import { listDeals } from "@/src/api/deals";
 import { listLeads } from "@/src/api/leads";
 
+import {
+  createCalendarEventFromActivity,
+  enqueueCalendarEventFromActivity,
+} from "@/src/lib/googleCalendar";
+
+import {
+  initNotifications,
+  scheduleActivityReminder,
+} from "@/src/utils/notifications";
+
 import Confirm from "@/src/ui/Confirm";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,12 +34,14 @@ import { Link, router, Stack, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
-  View,
+  View
 } from "react-native";
 
 /* Paleta */
@@ -65,6 +77,204 @@ function asArray<T = any>(v: any): T[] {
   return [];
 }
 
+/* Recordatorio (fallback local) */
+const LOCAL_EVENT_MAP_KEY = "activityEventLocal:v1";
+
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function dateToYYYYMMDD(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function yyyymmddToDDMMYYYY(yyyymmdd: string) {
+  const m = yyyymmdd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return "";
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function ddmmyyyyToYYYYMMDD(ddmmyyyy: string): string | null {
+  const trimmed = ddmmyyyy.trim();
+  if (!trimmed) return null;
+
+  const m = trimmed.match(/^(\d{2})[\/-](\d{2})[\/-](\d{4})$/);
+  if (!m) return null;
+
+  const dd = Number(m[1]);
+  const mm = Number(m[2]);
+  const yyyy = Number(m[3]);
+
+  if (mm < 1 || mm > 12) return null;
+  if (dd < 1 || dd > 31) return null;
+
+  const d = new Date(yyyy, mm - 1, dd);
+  if (Number.isNaN(d.getTime())) return null;
+
+  if (d.getFullYear() !== yyyy || d.getMonth() !== mm - 1 || d.getDate() !== dd)
+    return null;
+
+  return `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
+}
+
+function parseDueDate(yyyymmdd: string): number | null {
+  if (!yyyymmdd.trim()) return null;
+  const m = yyyymmdd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return NaN as any;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(d.getTime())) return NaN as any;
+  return d.getTime();
+}
+
+function parseTime(hhmm: string): { h: number; m: number } | null {
+  if (!hhmm.trim()) return null;
+  const m = hhmm.match(/^(\d{2}):([0-5]\d)$/);
+  if (!m) return null;
+  return { h: Number(m[1]), m: Number(m[2]) };
+}
+
+async function saveLocalEvent(activityId: string, eventMs: number) {
+  try {
+    const raw = await AsyncStorage.getItem(LOCAL_EVENT_MAP_KEY);
+    const current = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    const next = { ...(current || {}), [activityId]: eventMs };
+    await AsyncStorage.setItem(LOCAL_EVENT_MAP_KEY, JSON.stringify(next));
+  } catch (e) {
+    console.warn("No se pudo guardar evento local:", e);
+  }
+}
+
+/* =========================
+   MINI CALENDARIO (Modal)
+========================= */
+function startOfMonth(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+function addMonths(d: Date, delta: number) {
+  return new Date(d.getFullYear(), d.getMonth() + delta, 1);
+}
+function sameDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+function ymdToDate(ymd: string): Date | null {
+  const ms = parseDueDate(ymd);
+  if (!ms || Number.isNaN(ms as any)) return null;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+function MiniCalendarModal(props: {
+  visible: boolean;
+  value: Date;
+  onClose: () => void;
+  onSelect: (d: Date) => void;
+}) {
+  const { visible, value, onClose, onSelect } = props;
+
+  const [monthCursor, setMonthCursor] = useState<Date>(() => startOfMonth(value));
+
+  useEffect(() => {
+    if (visible) setMonthCursor(startOfMonth(value));
+  }, [visible, value]);
+
+  const monthLabel = useMemo(() => {
+    const m = monthCursor.toLocaleDateString("es-CL", { month: "long", year: "numeric" });
+    return m.charAt(0).toUpperCase() + m.slice(1);
+  }, [monthCursor]);
+
+  const grid = useMemo(() => {
+    const first = startOfMonth(monthCursor);
+    const firstDay = first.getDay(); // 0 domingo
+    const offset = (firstDay + 6) % 7; // lunes=0
+    const start = new Date(first);
+    start.setDate(first.getDate() - offset);
+
+    const days: { d: Date; inMonth: boolean }[] = [];
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      days.push({ d, inMonth: d.getMonth() === monthCursor.getMonth() });
+    }
+    return days;
+  }, [monthCursor]);
+
+  const weekDays = ["L", "M", "M", "J", "V", "S", "D"];
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={styles.modalCardCalendar} onPress={() => {}}>
+          <View style={styles.calHeader}>
+            <Pressable
+              onPress={() => setMonthCursor((m) => addMonths(m, -1))}
+              style={styles.calNavBtn}
+              hitSlop={10}
+            >
+              <Text style={styles.calNavTxt}>{"‹"}</Text>
+            </Pressable>
+
+            <Text style={styles.calTitle}>{monthLabel}</Text>
+
+            <Pressable
+              onPress={() => setMonthCursor((m) => addMonths(m, 1))}
+              style={styles.calNavBtn}
+              hitSlop={10}
+            >
+              <Text style={styles.calNavTxt}>{"›"}</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.calWeekRow}>
+            {weekDays.map((w, idx) => (
+              <Text key={`${w}-${idx}`} style={styles.calWeekTxt}>
+                {w}
+              </Text>
+            ))}
+          </View>
+
+          <View style={styles.calGrid}>
+            {grid.map(({ d, inMonth }, idx) => {
+              const isSelected = sameDay(d, value);
+              return (
+                <Pressable
+                  key={`${dateToYYYYMMDD(d)}-${idx}`}
+                  onPress={() => onSelect(d)}
+                  style={[
+                    styles.calDay,
+                    !inMonth && styles.calDayOff,
+                    isSelected && styles.calDaySelected,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.calDayTxt,
+                      !inMonth && styles.calDayTxtOff,
+                      isSelected && styles.calDayTxtSelected,
+                    ]}
+                  >
+                    {d.getDate()}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={styles.calFooter}>
+            <Pressable onPress={onClose} style={styles.calCloseBtn}>
+              <Text style={styles.calCloseTxt}>Cerrar</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 export default function TaskDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
@@ -97,6 +307,16 @@ export default function TaskDetail() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
 
+  // Reagendar / recordatorio
+  const [dateStr, setDateStr] = useState(""); // YYYY-MM-DD
+  const [dateInput, setDateInput] = useState(""); // DD/MM/AAAA
+  const [timeStr, setTimeStr] = useState(""); // HH:MM
+  const [remind, setRemind] = useState(false);
+  const [reminderError, setReminderError] = useState<string | null>(null);
+
+  // ✅ Mini calendario
+  const [miniCalOpen, setMiniCalOpen] = useState(false);
+
   // Cargar maestro UI
   useEffect(() => {
     (async () => {
@@ -114,6 +334,10 @@ export default function TaskDetail() {
     })();
   }, []);
 
+  useEffect(() => {
+    initNotifications().catch(() => {});
+  }, []);
+
   // Detalle
   const qAct = useQuery<ActivityWithCreator>({
     queryKey: ["activity", id],
@@ -128,7 +352,7 @@ export default function TaskDetail() {
     enabled: false,
   });
 
-  // Catálogos (tipados como arrays para evitar errores TS en .find)
+  // Catálogos
   const qAcc = useQuery<any[]>({ queryKey: ["accounts"], queryFn: listAccounts as any });
   const qCon = useQuery<any[]>({ queryKey: ["contacts"], queryFn: listContacts as any });
   const qDeal = useQuery<any[]>({ queryKey: ["deals"], queryFn: listDeals as any });
@@ -326,6 +550,95 @@ export default function TaskDetail() {
     },
   });
 
+  // Reagendar: mutation separada para NO tocar la lógica existente
+  const mReschedule = useMutation({
+    mutationFn: async () => {
+      if (!id) throw new Error("Missing activity id");
+      if (!activity) throw new Error("Activity not loaded");
+
+      setReminderError(null);
+
+      if (!dateStr.trim()) throw new Error("Ingresa una fecha para reagendar.");
+
+      const base = parseDueDate(dateStr);
+      if (!base || Number.isNaN(base as any)) throw new Error("La fecha no es válida.");
+
+      const t = parseTime(timeStr);
+      if (!t) throw new Error("La hora debe ser HH:MM (24h).");
+
+      const when = new Date(base);
+      when.setHours(t.h, t.m, 0, 0);
+
+      if (when.getTime() <= Date.now()) {
+        throw new Error("El recordatorio debe quedar en el futuro.");
+      }
+
+      // 1) Persistir due_date en backend (manteniendo el resto igual)
+      await updateActivity(id, {
+        assigned_to: (activity as any).assigned_to ?? null,
+        assigned_to_2: (activity as any).assigned_to_2 ?? null,
+        title: activity.title ?? null,
+        notes: activity.notes ?? null,
+        account_id: (activity as any).account_id ?? null,
+        contact_id: (activity as any).contact_id ?? null,
+        deal_id: (activity as any).deal_id ?? null,
+        lead_id: (activity as any).lead_id ?? null,
+        status: activity.status ?? null,
+        due_date: when.getTime(),
+        type: activity.type ?? null,
+      } as any);
+
+      // 2) Guardar fallback local
+      await saveLocalEvent(String(id), when.getTime());
+
+      // 3) Notificación local si el switch está activo
+      if (remind) {
+        try {
+          await scheduleActivityReminder({
+            activityId: String(id),
+            title: activity.title ?? "Actividad",
+            body: activity.notes || `Recordatorio: ${activity.title ?? "Actividad"}`,
+            when,
+          });
+        } catch (e) {
+          console.warn("No se pudo programar recordatorio:", e);
+        }
+      }
+
+      // 4) Google Calendar: crear o encolar
+      try {
+        await createCalendarEventFromActivity({
+          id: String(id),
+          title: activity.title ?? "Actividad",
+          notes: activity.notes ?? null,
+          startAt: when,
+        });
+      } catch (e) {
+        try {
+          await enqueueCalendarEventFromActivity({
+            id: String(id),
+            title: activity.title ?? "Actividad",
+            notes: activity.notes ?? null,
+            startAt: when,
+          });
+        } catch (e2) {
+          console.warn("No se pudo encolar evento:", e2);
+        }
+      }
+
+      return when.getTime();
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["activity", id] });
+      await qc.invalidateQueries({ queryKey: ["activities"] });
+      await qc.invalidateQueries({ queryKey: ["activities-all"] });
+    },
+    onError: (err: any) => {
+      const msg = String(err?.message ?? err ?? "No se pudo reagendar.");
+      setReminderError(msg);
+    },
+  });
+
   // Rellenar desde cache lista
   const listAll =
     (qc.getQueryData<ActivityWithCreator[]>(["activities-all"]) ?? []) as
@@ -342,6 +655,41 @@ export default function TaskDetail() {
     if (!activity) return;
     setTitleDraft(activity.title ?? "");
   }, [activity?.id, activity?.title]);
+
+  // Inicializar bloque de reagendar desde due_date existente
+  useEffect(() => {
+    if (!activity) return;
+
+    const due = (activity as any).due_date;
+    if (!due) {
+      setDateStr("");
+      setDateInput("");
+      setTimeStr("");
+      setRemind(false);
+      setReminderError(null);
+      return;
+    }
+
+    const d = new Date(Number(due));
+    if (Number.isNaN(d.getTime())) return;
+
+    const ymd = dateToYYYYMMDD(d);
+    setDateStr(ymd);
+    setDateInput(yyyymmddToDDMMYYYY(ymd));
+    setTimeStr(`${pad2(d.getHours())}:${pad2(d.getMinutes())}`);
+    setRemind(true);
+    setReminderError(null);
+  }, [activity?.id]);
+
+  // Mantener dateInput en sync si dateStr cambia desde el picker
+  useEffect(() => {
+    if (!dateStr.trim()) {
+      setDateInput("");
+      return;
+    }
+    const ddmmyyyy = yyyymmddToDDMMYYYY(dateStr);
+    if (ddmmyyyy) setDateInput(ddmmyyyy);
+  }, [dateStr]);
 
   const currentAssignees: Assignees = useMemo(() => {
     const a: any = activity;
@@ -491,7 +839,7 @@ export default function TaskDetail() {
     });
   };
 
-  // Guardar título (sin notificar)
+  // Guardar título
   const handleSaveTitle = () => {
     if (!activity) return;
     const nextTitle = titleDraft.trim();
@@ -517,7 +865,7 @@ export default function TaskDetail() {
     setEditingTitle(false);
   };
 
-  // Relacionados (usa asArray para evitar .find en objetos)
+  // Relacionados
   const contextChips = useMemo(() => {
     if (!activity) return [];
     const cs: { label: string; href: string }[] = [];
@@ -559,7 +907,6 @@ export default function TaskDetail() {
   const isInProgressUI = !isDoneUI && inProgressMaster.has(activity?.id ?? "");
   const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
 
-  // Label dropdown asignados (de activity real)
   const assigneesLabel = useMemo(() => {
     if (!activity) return "Sin asignar";
 
@@ -582,7 +929,6 @@ export default function TaskDetail() {
     (activity as any)?.assigned_to_2,
   ]);
 
-  // Label preview draft
   const draftLabel = useMemo(() => {
     const names: string[] = [];
     if (draftAssignees.assigned_to) names.push(getMemberLabel(draftAssignees.assigned_to));
@@ -614,11 +960,29 @@ export default function TaskDetail() {
     };
   }, [headerRight]);
 
+  // ✅ BOTÓN ELEGIR: mini calendario modal (web + mobile)
+  const openDatePicker = () => {
+    setReminderError(null);
+    setMiniCalOpen(true);
+  };
+
+  // valor base para el calendario
+  const calValue = useMemo(() => {
+    const d = ymdToDate(dateStr);
+    return d ?? new Date();
+  }, [dateStr]);
+
   return (
     <>
       <Stack.Screen options={screenOptions} />
 
-      <View style={styles.screen}>
+      {/* ✅ Scroll arreglado: ahora TODA la pantalla scrollea */}
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={styles.screenContent}
+        keyboardShouldPersistTaps="handled"
+        nestedScrollEnabled
+      >
         {qAct.isLoading && !activity ? (
           <View style={{ alignItems: "center", paddingTop: 12 }}>
             <ActivityIndicator color={PRIMARY} />
@@ -714,9 +1078,8 @@ export default function TaskDetail() {
                     ? ` · asignada a ${assignedNames[0]}`
                     : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
 
-                const createdLabel = a.created_at
-                  ? ` · creada el ${formatDateShort(a.created_at)}`
-                  : "";
+                const createdLabel = a.created_at ? ` · creada el ${formatDateShort(a.created_at)}` : "";
+                const dueLabel = a.due_date ? ` · vence ${formatDateShort(a.due_date)}` : "";
 
                 return (
                   <Text style={[styles.summary, isDoneUI && styles.summaryDone]}>
@@ -724,6 +1087,7 @@ export default function TaskDetail() {
                     {a.created_by_name ? ` · por ${a.created_by_name}` : ""}
                     {assignedInfo}
                     {createdLabel}
+                    {dueLabel}
                     {isDoneUI ? " · tarea completada" : ""}
                   </Text>
                 );
@@ -903,6 +1267,7 @@ export default function TaskDetail() {
                       style={styles.notesHistoryScroll}
                       nestedScrollEnabled
                       contentContainerStyle={styles.notesHistoryContent}
+                      showsVerticalScrollIndicator={false}
                     >
                       {noteBlocks.map((block, idx) => (
                         <View key={idx} style={styles.noteRow}>
@@ -944,6 +1309,83 @@ export default function TaskDetail() {
                 </View>
               </View>
 
+              {/* ✅ Reagendar / Recordatorio (AHORA debajo de Notas) */}
+              <View style={{ marginTop: 12, gap: 6 }}>
+                <Text style={styles.subSectionTitle}>Reagendar / Recordatorio</Text>
+
+                <View style={styles.reminderBox}>
+                  <View style={styles.reminderRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.itemLabel}>Fecha (DD/MM/AAAA)</Text>
+                      <TextInput
+                        style={styles.reminderInput}
+                        value={dateInput}
+                        onChangeText={(txt) => {
+                          setDateInput(txt);
+                          const normalized = ddmmyyyyToYYYYMMDD(txt);
+                          if (normalized) {
+                            setDateStr(normalized);
+                            setReminderError(null);
+                          } else if (!txt.trim()) {
+                            setDateStr("");
+                          }
+                        }}
+                        placeholder="28/02/2026"
+                        placeholderTextColor={SUBTLE}
+                        keyboardType="numbers-and-punctuation"
+                      />
+                    </View>
+
+                    <Pressable style={styles.reminderPickBtn} onPress={openDatePicker}>
+                      <Text style={styles.reminderPickBtnText}>Elegir</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={styles.reminderRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.itemLabel}>Hora (HH:MM)</Text>
+                      <TextInput
+                        style={styles.reminderInput}
+                        value={timeStr}
+                        onChangeText={setTimeStr}
+                        placeholder="14:30"
+                        placeholderTextColor={SUBTLE}
+                        keyboardType="numbers-and-punctuation"
+                      />
+                    </View>
+
+                    <View style={{ alignItems: "center", justifyContent: "flex-end" }}>
+                      <Text style={styles.itemLabel}>Recordarme</Text>
+                      <Switch
+                        value={remind}
+                        onValueChange={setRemind}
+                        trackColor={{ false: "#444", true: PRIMARY }}
+                        thumbColor={remind ? "#fff" : "#ccc"}
+                      />
+                    </View>
+                  </View>
+
+                  {!!reminderError && <Text style={styles.error}>{reminderError}</Text>}
+
+                  <Pressable
+                    style={[
+                      styles.reminderSaveBtn,
+                      (mReschedule.isPending || qAct.isFetching) && { opacity: 0.6 },
+                    ]}
+                    onPress={() => mReschedule.mutate()}
+                    disabled={mReschedule.isPending || !activity}
+                  >
+                    <Text style={styles.reminderSaveBtnText}>
+                      {mReschedule.isPending ? "Guardando…" : "Guardar"}
+                    </Text>
+                  </Pressable>
+
+                  <Text style={styles.subtleSmall}>
+                    Actualiza la fecha y agenda en Google (o encola si no hay conexión).
+                  </Text>
+                </View>
+              </View>
+
               {/* Relacionados */}
               {contextChips.length > 0 && (
                 <View style={{ marginTop: 10, gap: 6 }}>
@@ -971,7 +1413,21 @@ export default function TaskDetail() {
             </Pressable>
           </>
         )}
-      </View>
+      </ScrollView>
+
+      {/* ✅ Mini calendario modal */}
+      <MiniCalendarModal
+        visible={miniCalOpen}
+        value={calValue}
+        onClose={() => setMiniCalOpen(false)}
+        onSelect={(d) => {
+          const ymd = dateToYYYYMMDD(d);
+          setDateStr(ymd);
+          setDateInput(yyyymmddToDDMMYYYY(ymd));
+          setReminderError(null);
+          setMiniCalOpen(false);
+        }}
+      />
 
       <Confirm
         visible={showConfirm}
@@ -1025,7 +1481,9 @@ function formatDateShort(value?: number | string | null): string {
 
 /* Estilos */
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
+  // ✅ Scroll: padding va en contentContainer
+  screen: { flex: 1, backgroundColor: BG },
+  screenContent: { padding: 16, paddingBottom: 28, gap: 12 },
 
   card: {
     backgroundColor: CARD,
@@ -1091,11 +1549,61 @@ const styles = StyleSheet.create({
   summary: { color: SUBTLE, fontSize: 12 },
   summaryDone: { color: SUCCESS },
 
-  itemLabel: { color: SUBTLE, fontWeight: "700" },
+  itemLabel: { color: SUBTLE, fontWeight: "700", fontSize: 12 },
 
   subtle: { color: SUBTLE },
   subtleSmall: { color: SUBTLE, fontSize: 11 },
   error: { color: "#fecaca" },
+
+  // ✅ Reagendar / recordatorio (compacto)
+  reminderBox: {
+    borderWidth: 1,
+    borderColor: "rgba(34,211,238,0.18)",
+    backgroundColor: "rgba(34,211,238,0.05)",
+    borderRadius: 12,
+    padding: 10,
+    gap: 8,
+  },
+  reminderRow: {
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "center",
+  },
+  reminderInput: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#11121b",
+    color: TEXT,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+  },
+  reminderPickBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(124,58,237,0.35)",
+    backgroundColor: "rgba(124,58,237,0.18)",
+    alignSelf: "flex-end",
+  },
+  reminderPickBtnText: {
+    color: TEXT,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  reminderSaveBtn: {
+    marginTop: 2,
+    backgroundColor: PRIMARY,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  reminderSaveBtnText: {
+    color: "#fff",
+    fontWeight: "900",
+  },
 
   // Dropdown (asignación)
   dropdownWrapper: { alignSelf: "flex-start", minWidth: 240 },
@@ -1212,8 +1720,8 @@ const styles = StyleSheet.create({
   subSectionTitle: {
     color: TEXT,
     fontWeight: "800",
-    fontSize: 15,
-    marginBottom: 4,
+    fontSize: 14,
+    marginBottom: 2,
   },
   notesHistoryWrapper: {
     maxHeight: 220,
@@ -1296,6 +1804,74 @@ const styles = StyleSheet.create({
   btn: { padding: 12, borderRadius: 12, alignItems: "center" },
   btnDanger: { backgroundColor: DANGER },
   btnText: { color: "#fff", fontWeight: "900" },
+
+  // Modal backdrop (ya lo tenías, lo reutilizo)
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+
+  /* ===== Mini calendario styles ===== */
+  modalCardCalendar: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: CARD,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 12,
+    gap: 10,
+  },
+  calHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  calNavBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#11121b",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  calNavTxt: { color: TEXT, fontSize: 18, fontWeight: "900" },
+  calTitle: { color: TEXT, fontWeight: "900", fontSize: 14 },
+
+  calWeekRow: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 6 },
+  calWeekTxt: { width: "14.28%", textAlign: "center", color: SUBTLE, fontSize: 12 },
+
+  calGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 },
+  calDay: {
+    width: "14.28%",
+    aspectRatio: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    marginVertical: 2,
+  },
+  calDayOff: { opacity: 0.45 },
+  calDaySelected: { backgroundColor: "rgba(124,58,237,0.18)", borderWidth: 1, borderColor: "rgba(124,58,237,0.45)" },
+
+  calDayTxt: { color: TEXT, fontSize: 13, fontWeight: "800" },
+  calDayTxtOff: { color: SUBTLE, fontWeight: "700" },
+  calDayTxtSelected: { color: TEXT },
+
+  calFooter: { alignItems: "flex-end", marginTop: 6 },
+  calCloseBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  calCloseTxt: { color: "#fff", fontWeight: "900" },
 });
 
 
@@ -1312,7 +1888,6 @@ const styles = StyleSheet.create({
 //   listWorkspaceMembers,
 //   type WorkspaceMember,
 // } from "@/src/api/workspaceMembers";
-
 
 // import { listAccounts } from "@/src/api/accounts";
 // import { listContacts } from "@/src/api/contacts";
@@ -1334,7 +1909,7 @@ const styles = StyleSheet.create({
 //   View,
 // } from "react-native";
 
-// /* 🎨 Paleta */
+// /* Paleta */
 // const PRIMARY = "#7C3AED";
 // const BG = "#0F1115";
 // const CARD = "#171923";
@@ -1361,13 +1936,19 @@ const styles = StyleSheet.create({
 
 // type Assignees = { assigned_to: string | null; assigned_to_2: string | null };
 
+// function asArray<T = any>(v: any): T[] {
+//   if (Array.isArray(v)) return v as T[];
+//   if (v && Array.isArray(v.rows)) return v.rows as T[];
+//   return [];
+// }
+
 // export default function TaskDetail() {
 //   const { id } = useLocalSearchParams<{ id: string }>();
 //   const qc = useQueryClient();
 
 //   const [showConfirm, setShowConfirm] = useState(false);
 
-//   // ✅ confirmación única de reasignación (solo al guardar)
+//   // confirmación única de reasignación (solo al guardar)
 //   const [showReassignConfirm, setShowReassignConfirm] = useState(false);
 //   const [pendingReassign, setPendingReassign] = useState<Assignees | null>(null);
 //   const [pendingReassignMessage, setPendingReassignMessage] = useState("");
@@ -1379,15 +1960,19 @@ const styles = StyleSheet.create({
 //   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
 //   const [localStatus, setLocalStatus] = useState<Status | null>(null);
 
-//   // 🆕 nota nueva
+//   // nota nueva
 //   const [newNoteBody, setNewNoteBody] = useState("");
 
-//   // ✅ dropdown asignación (modo edición local + guardar)
+//   // dropdown asignación (modo edición local + guardar)
 //   const [assigneesMenuOpen, setAssigneesMenuOpen] = useState(false);
 //   const [draftAssignees, setDraftAssignees] = useState<Assignees>({
 //     assigned_to: null,
 //     assigned_to_2: null,
 //   });
+
+//   // editar título
+//   const [editingTitle, setEditingTitle] = useState(false);
+//   const [titleDraft, setTitleDraft] = useState("");
 
 //   // Cargar maestro UI
 //   useEffect(() => {
@@ -1420,17 +2005,17 @@ const styles = StyleSheet.create({
 //     enabled: false,
 //   });
 
-//   // Catálogos
-//   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
-//   const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
-//   const qDeal = useQuery({ queryKey: ["deals"], queryFn: listDeals });
-//   const qLead = useQuery({ queryKey: ["leads"], queryFn: listLeads });
+//   // Catálogos (tipados como arrays para evitar errores TS en .find)
+//   const qAcc = useQuery<any[]>({ queryKey: ["accounts"], queryFn: listAccounts as any });
+//   const qCon = useQuery<any[]>({ queryKey: ["contacts"], queryFn: listContacts as any });
+//   const qDeal = useQuery<any[]>({ queryKey: ["deals"], queryFn: listDeals as any });
+//   const qLead = useQuery<any[]>({ queryKey: ["leads"], queryFn: listLeads as any });
 
 //   // Miembros del workspace actual
-// const qMembers = useQuery<WorkspaceMember[]>({
-//   queryKey: ["workspaceMembers"],
-//   queryFn: listWorkspaceMembers,
-// });
+//   const qMembers = useQuery<WorkspaceMember[]>({
+//     queryKey: ["workspaceMembers"],
+//     queryFn: listWorkspaceMembers,
+//   });
 
 //   const getMemberLabel = useCallback(
 //     (memberId: string) => {
@@ -1584,7 +2169,7 @@ const styles = StyleSheet.create({
 //     onError: () => alert("No se pudo eliminar la actividad. Intenta nuevamente."),
 //   });
 
-//   // 🔁 updateActivity (reasignación / notas)
+//   // updateActivity (reasignación / notas / título)
 //   const mReassign = useMutation({
 //     mutationFn: async (payload: {
 //       assigned_to: string | null;
@@ -1599,7 +2184,6 @@ const styles = StyleSheet.create({
 //       due_date?: number | null;
 //       type?: Activity["type"] | null;
 
-//       // ✅ NUEVO: solo se manda cuando el usuario confirma la reasignación
 //       notify_assignees?: boolean;
 //     }) => {
 //       if (!id) throw new Error("Missing activity id");
@@ -1630,6 +2214,12 @@ const styles = StyleSheet.create({
 //     ? ({ ...(fromList || {}), ...qAct.data } as ActivityWithCreator)
 //     : fromList;
 
+//   // inicializar draft del título cuando llega la activity
+//   useEffect(() => {
+//     if (!activity) return;
+//     setTitleDraft(activity.title ?? "");
+//   }, [activity?.id, activity?.title]);
+
 //   const currentAssignees: Assignees = useMemo(() => {
 //     const a: any = activity;
 //     return {
@@ -1638,7 +2228,6 @@ const styles = StyleSheet.create({
 //     };
 //   }, [(activity as any)?.assigned_to, (activity as any)?.assigned_to_2]);
 
-//   // ✅ FIX LOOP: al abrir menú, clonar SOLO si cambió realmente (y dependencias primitivas)
 //   useEffect(() => {
 //     if (!assigneesMenuOpen) return;
 //     setDraftAssignees((prev) => {
@@ -1697,7 +2286,6 @@ const styles = StyleSheet.create({
 //   const applyPendingReassign = () => {
 //     if (!activity || !pendingReassign) return;
 
-//     // ✅ CLAVE: aquí SÍ mandamos notify_assignees=true
 //     mReassign.mutate({
 //       assigned_to: pendingReassign.assigned_to,
 //       assigned_to_2: pendingReassign.assigned_to_2,
@@ -1745,7 +2333,6 @@ const styles = StyleSheet.create({
 //     const newBlock = `[${timestamp}] ${body}`;
 //     const merged = prev ? `${prev}\n\n${newBlock}` : newBlock;
 
-//     // ✅ Importante: aquí NO mandamos notify_assignees (evita correos por notas)
 //     mReassign.mutate({
 //       assigned_to: (activity as any).assigned_to ?? null,
 //       assigned_to_2: (activity as any).assigned_to_2 ?? null,
@@ -1766,7 +2353,6 @@ const styles = StyleSheet.create({
 //     const nextBlocks = noteBlocks.filter((_, i) => i !== index);
 //     const merged = nextBlocks.join("\n\n");
 
-//     // ✅ Importante: aquí NO mandamos notify_assignees
 //     mReassign.mutate({
 //       assigned_to: (activity as any).assigned_to ?? null,
 //       assigned_to_2: (activity as any).assigned_to_2 ?? null,
@@ -1782,32 +2368,63 @@ const styles = StyleSheet.create({
 //     });
 //   };
 
-//   // Relacionados
+//   // Guardar título (sin notificar)
+//   const handleSaveTitle = () => {
+//     if (!activity) return;
+//     const nextTitle = titleDraft.trim();
+//     if (!nextTitle) {
+//       alert("El nombre no puede quedar vacío.");
+//       return;
+//     }
+
+//     mReassign.mutate({
+//       assigned_to: (activity as any).assigned_to ?? null,
+//       assigned_to_2: (activity as any).assigned_to_2 ?? null,
+//       title: nextTitle,
+//       notes: activity.notes ?? null,
+//       account_id: (activity as any).account_id ?? null,
+//       contact_id: (activity as any).contact_id ?? null,
+//       deal_id: (activity as any).deal_id ?? null,
+//       lead_id: (activity as any).lead_id ?? null,
+//       status: activity.status ?? null,
+//       due_date: (activity as any).due_date ?? null,
+//       type: activity.type ?? null,
+//     });
+
+//     setEditingTitle(false);
+//   };
+
+//   // Relacionados (usa asArray para evitar .find en objetos)
 //   const contextChips = useMemo(() => {
 //     if (!activity) return [];
 //     const cs: { label: string; href: string }[] = [];
 
+//     const accounts = asArray<any>(qAcc.data);
+//     const contacts = asArray<any>(qCon.data);
+//     const deals = asArray<any>(qDeal.data);
+//     const leads = asArray<any>(qLead.data);
+
 //     if ((activity as any).account_id) {
 //       const name =
-//         (qAcc.data ?? []).find((x) => x.id === (activity as any).account_id)?.name ??
+//         accounts.find((x) => x.id === (activity as any).account_id)?.name ??
 //         (activity as any).account_id;
 //       cs.push({ label: `Cuenta: ${name}`, href: `/accounts/${(activity as any).account_id}` });
 //     }
 //     if ((activity as any).contact_id) {
 //       const name =
-//         (qCon.data ?? []).find((x) => x.id === (activity as any).contact_id)?.name ??
+//         contacts.find((x) => x.id === (activity as any).contact_id)?.name ??
 //         (activity as any).contact_id;
 //       cs.push({ label: `Contacto: ${name}`, href: `/contacts/${(activity as any).contact_id}` });
 //     }
 //     if ((activity as any).deal_id) {
 //       const name =
-//         (qDeal.data ?? []).find((x) => x.id === (activity as any).deal_id)?.title ??
+//         deals.find((x) => x.id === (activity as any).deal_id)?.title ??
 //         (activity as any).deal_id;
 //       cs.push({ label: `Oportunidad: ${name}`, href: `/deals/${(activity as any).deal_id}` });
 //     }
 //     if ((activity as any).lead_id) {
 //       const name =
-//         (qLead.data ?? []).find((x) => x.id === (activity as any).lead_id)?.name ??
+//         leads.find((x) => x.id === (activity as any).lead_id)?.name ??
 //         (activity as any).lead_id;
 //       cs.push({ label: `Lead: ${name}`, href: `/leads/${(activity as any).lead_id}` });
 //     }
@@ -1852,7 +2469,6 @@ const styles = StyleSheet.create({
 //     return `${names[0]} y ${names[1]}`;
 //   }, [draftAssignees, getMemberLabel]);
 
-//   // ✅ Evitar loops en web con setOptions: memoizar options
 //   const headerRight = useCallback(() => {
 //     return (
 //       <Pressable
@@ -1894,10 +2510,68 @@ const styles = StyleSheet.create({
 //         ) : (
 //           <>
 //             <View style={[styles.card, isDoneUI && styles.cardDone]}>
-//               <Text style={[styles.title, isDoneUI && styles.titleDone]}>
-//                 {iconByType(activity.type)}{" "}
-//                 {activity.title && activity.title.length > 0 ? activity.title : "Sin título"}
-//               </Text>
+//               {/* Titulo + editar */}
+//               <View style={styles.titleRow}>
+//                 <View style={{ flex: 1 }}>
+//                   {editingTitle ? (
+//                     <TextInput
+//                       value={titleDraft}
+//                       onChangeText={setTitleDraft}
+//                       placeholder="Nombre de la actividad"
+//                       placeholderTextColor={SUBTLE}
+//                       style={[
+//                         styles.titleInput,
+//                         isDoneUI && { borderColor: "rgba(22,163,74,0.6)" },
+//                       ]}
+//                       returnKeyType="done"
+//                       onSubmitEditing={handleSaveTitle}
+//                     />
+//                   ) : (
+//                     <Text style={[styles.title, isDoneUI && styles.titleDone]} numberOfLines={2}>
+//                       {typeLabel(activity.type)}{" "}
+//                       {activity.title && activity.title.length > 0 ? activity.title : "Sin título"}
+//                     </Text>
+//                   )}
+//                 </View>
+
+//                 {editingTitle ? (
+//                   <View style={styles.titleActions}>
+//                     <Pressable
+//                       onPress={() => {
+//                         setTitleDraft(activity.title ?? "");
+//                         setEditingTitle(false);
+//                       }}
+//                       disabled={mReassign.isPending}
+//                       style={({ pressed }) => [
+//                         styles.smallBtn,
+//                         pressed && { opacity: 0.92 },
+//                         mReassign.isPending && { opacity: 0.5 },
+//                       ]}
+//                     >
+//                       <Text style={styles.smallBtnText}>Cancelar</Text>
+//                     </Pressable>
+
+//                     <Pressable
+//                       onPress={handleSaveTitle}
+//                       disabled={mReassign.isPending || !titleDraft.trim()}
+//                       style={({ pressed }) => [
+//                         styles.smallBtnPrimary,
+//                         pressed && { opacity: 0.92 },
+//                         (mReassign.isPending || !titleDraft.trim()) && { opacity: 0.5 },
+//                       ]}
+//                     >
+//                       <Text style={styles.smallBtnText}>Guardar</Text>
+//                     </Pressable>
+//                   </View>
+//                 ) : (
+//                   <Pressable
+//                     onPress={() => setEditingTitle(true)}
+//                     style={({ pressed }) => [styles.editBtn, pressed && { opacity: 0.92 }]}
+//                   >
+//                     <Text style={styles.editBtnText}>Editar</Text>
+//                   </Pressable>
+//                 )}
+//               </View>
 
 //               {/* Resumen */}
 //               {(() => {
@@ -1932,7 +2606,7 @@ const styles = StyleSheet.create({
 //                 );
 //               })()}
 
-//               {/* ✅ Dropdown de asignación (edición local + guardar) */}
+//               {/* Dropdown de asignación */}
 //               <View style={{ marginTop: 10, gap: 6 }}>
 //                 <Text style={styles.itemLabel}>Personas asignadas (máx. 2)</Text>
 
@@ -1945,9 +2619,7 @@ const styles = StyleSheet.create({
 //                     <Text style={styles.dropdownText} numberOfLines={1}>
 //                       {assigneesLabel}
 //                     </Text>
-//                     <Text style={styles.dropdownArrow}>
-//                       {assigneesMenuOpen ? "▲" : "▼"}
-//                     </Text>
+//                     <Text style={styles.dropdownArrow}>{assigneesMenuOpen ? "▲" : "▼"}</Text>
 //                   </Pressable>
 
 //                   {assigneesMenuOpen && (
@@ -2002,7 +2674,7 @@ const styles = StyleSheet.create({
 //                                 numberOfLines={1}
 //                               >
 //                                 {m.name || m.email || m.id}
-//                                 {isSelected ? "  ✓" : ""}
+//                                 {isSelected ? "  OK" : ""}
 //                               </Text>
 //                             </Pressable>
 //                           );
@@ -2204,12 +2876,12 @@ const styles = StyleSheet.create({
 //   );
 // }
 
-// /* ——— Helpers ——— */
-// function iconByType(t: "task" | "call" | "meeting" | "note") {
-//   if (t === "call") return "📞";
-//   if (t === "meeting") return "📅";
-//   if (t === "note") return "📝";
-//   return "✅";
+// /* Helpers */
+// function typeLabel(t: "task" | "call" | "meeting" | "note") {
+//   if (t === "call") return "LLAMADA";
+//   if (t === "meeting") return "REUNION";
+//   if (t === "note") return "NOTA";
+//   return "";
 // }
 
 // function formatDateShort(value?: number | string | null): string {
@@ -2228,7 +2900,7 @@ const styles = StyleSheet.create({
 //   return d.toLocaleDateString();
 // }
 
-// /* ——— Estilos ——— */
+// /* Estilos */
 // const styles = StyleSheet.create({
 //   screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
 
@@ -2245,8 +2917,53 @@ const styles = StyleSheet.create({
 //     backgroundColor: "rgba(22,163,74,0.08)",
 //   },
 
+//   titleRow: {
+//     flexDirection: "row",
+//     alignItems: "flex-start",
+//     gap: 10,
+//   },
+
 //   title: { fontSize: 20, fontWeight: "900", color: TEXT },
 //   titleDone: { color: SUCCESS },
+
+//   titleInput: {
+//     borderRadius: 10,
+//     borderWidth: 1,
+//     borderColor: BORDER,
+//     backgroundColor: "#11121b",
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     color: TEXT,
+//     fontSize: 16,
+//     fontWeight: "900",
+//   },
+
+//   titleActions: { flexDirection: "row", gap: 8 },
+//   editBtn: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     borderRadius: 10,
+//     borderWidth: 1,
+//     borderColor: "rgba(255,255,255,0.14)",
+//     backgroundColor: "rgba(255,255,255,0.06)",
+//   },
+//   editBtnText: { color: TEXT, fontWeight: "900", fontSize: 12 },
+
+//   smallBtn: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     borderRadius: 10,
+//     borderWidth: 1,
+//     borderColor: "rgba(255,255,255,0.14)",
+//     backgroundColor: "rgba(255,255,255,0.06)",
+//   },
+//   smallBtnPrimary: {
+//     paddingHorizontal: 10,
+//     paddingVertical: 8,
+//     borderRadius: 10,
+//     backgroundColor: PRIMARY,
+//   },
+//   smallBtnText: { color: "#fff", fontWeight: "900", fontSize: 12 },
 
 //   summary: { color: SUBTLE, fontSize: 12 },
 //   summaryDone: { color: SUCCESS },
