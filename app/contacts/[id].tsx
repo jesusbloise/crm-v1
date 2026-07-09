@@ -382,7 +382,7 @@ if (
             />
 
             {/* Cargo */}
-            <Text style={styles.label}>Cargo</Text>
+            <Text style={styles.label}>Cargo / Skill</Text>
             <TextInput
               placeholder="Cargo"
               value={position}

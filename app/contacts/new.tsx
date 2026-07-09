@@ -319,7 +319,7 @@ export default function NewContact() {
           placeholder="Opcional"
           placeholderTextColor={SUBTLE}
         />
-        <Text style={styles.label}>Cargo</Text>
+        <Text style={styles.label}>Cargo / Skill</Text>
         <TextInput
           style={styles.input}
           value={position}
