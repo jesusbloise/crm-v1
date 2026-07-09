@@ -1,7 +1,12 @@
 // src/api/contacts.ts
 import { api } from "@/src/api/http";
 
-export type ClientType = "productora" | "agencia" | "directo" | null;
+export type ClientType =
+  | "productora"
+  | "agencia"
+  | "directo"
+  | "proveedor"
+  | null;
 
 export type Contact = {
   id: string;

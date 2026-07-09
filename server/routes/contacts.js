@@ -24,7 +24,7 @@ const safeClientType = (v) => {
   const s = coerceStr(v);
   if (!s) return null;
   const x = s.toLowerCase();
-  const allowed = ["productora", "agencia", "directo"];
+  const allowed = ["productora", "agencia", "directo", "proveedor"];
   return allowed.includes(x) ? x : null;
 };
 const makeContactId = () => {
@@ -353,8 +353,8 @@ router.post(
     account_id = typeof account_id === "string" ? account_id.trim() : null;
     client_type = typeof client_type === "string" ? client_type.trim() : null;
 
-    const allowed = ["productora", "agencia", "directo", null];
-    if (!allowed.includes(client_type)) client_type = null;
+    const allowed = ["productora", "agencia", "directo", "proveedor", null];
+if (!allowed.includes(client_type)) client_type = null;
 
     if (!id || !name)
       return res.status(400).json({ error: "id_and_name_required" });
@@ -450,8 +450,8 @@ router.patch(
     client_type =
       typeof client_type === "string" ? client_type.trim() : found.client_type;
 
-    const allowed = ["productora", "agencia", "directo", null];
-    if (!allowed.includes(client_type)) client_type = found.client_type;
+    const allowed = ["productora", "agencia", "directo", "proveedor", null];
+if (!allowed.includes(client_type)) client_type = found.client_type;
 
     if (account_id) {
       const acc = await db
