@@ -1,3 +1,4 @@
+import { getRoleNow } from "@/src/api/auth";
 import {
   createTimeEntry,
   listMyTimeEntries,
@@ -8,7 +9,7 @@ import {
   type WorkProject,
 } from "@/src/api/timeTracking";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { Stack, router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -80,7 +81,7 @@ function EntryCard({ item }: { item: TimeEntry }) {
         <View style={{ flex: 1 }}>
           <Text style={styles.entryTitle}>{item.project_name}</Text>
           <Text style={styles.entrySub}>
-            {item.item_name} · {moneyDate(item.work_date)}
+            {item.item_name} ï¿½ {moneyDate(item.work_date)}
           </Text>
         </View>
 
@@ -104,6 +105,7 @@ export default function TimeIndexScreen() {
   const [workDate, setWorkDate] = useState(todayLocal());
   const [hours, setHours] = useState("");
   const [description, setDescription] = useState("");
+  const [role, setRole] = useState<string | null>(null);
 
   const qProjects = useQuery({
     queryKey: ["work-projects"],
@@ -124,6 +126,8 @@ export default function TimeIndexScreen() {
   const items = qItems.data ?? [];
   const entries = qMine.data?.rows ?? [];
   const totalHours = qMine.data?.total_hours ?? 0;
+const canAdminHours = role === "owner" || role === "admin";
+
 
   useEffect(() => {
     if (!projectId && projects.length > 0) {
@@ -136,6 +140,11 @@ export default function TimeIndexScreen() {
       setItemId(items[0].id);
     }
   }, [itemId, items]);
+
+  useEffect(() => {
+  getRoleNow().then((r) => setRole(r));
+}, []);
+
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === projectId),
@@ -184,17 +193,17 @@ export default function TimeIndexScreen() {
     }
 
     if (!itemId) {
-      Alert.alert("Falta ítem", "Selecciona un ítem.");
+      Alert.alert("Falta ï¿½tem", "Selecciona un ï¿½tem.");
       return;
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
-      Alert.alert("Fecha inválida", "Usa el formato YYYY-MM-DD.");
+      Alert.alert("Fecha invï¿½lida", "Usa el formato YYYY-MM-DD.");
       return;
     }
 
     if (!Number.isFinite(h) || h <= 0 || h > 24) {
-      Alert.alert("Horas inválidas", "Ingresa un número entre 0 y 24.");
+      Alert.alert("Horas invï¿½lidas", "Ingresa un nï¿½mero entre 0 y 24.");
       return;
     }
 
@@ -228,21 +237,22 @@ export default function TimeIndexScreen() {
         }
         ListHeaderComponent={
           <View>
-            <View style={styles.header}>
-              <View>
-                <Text style={styles.kicker}>Registro de horas</Text>
-                <Text style={styles.title}>Mis horas</Text>
-                <Text style={styles.subtitle}>
-                  Registra el trabajo realizado por proyecto e ítem.
-                </Text>
-              </View>
+            <View style={{ flex: 1 }}>
+  <Text style={styles.kicker}>Registro de horas</Text>
+  <Text style={styles.title}>Mis horas</Text>
+  <Text style={styles.subtitle}>
+    Registra el trabajo realizado por proyecto e Ã­tem.
+  </Text>
 
-              <View style={styles.totalCard}>
-                <Text style={styles.totalNumber}>{totalHours}</Text>
-                <Text style={styles.totalLabel}>horas</Text>
-              </View>
-            </View>
-
+  {canAdminHours && (
+    <Pressable
+      style={styles.adminButton}
+      onPress={() => router.push("/time/admin" as any)}
+    >
+      <Text style={styles.adminButtonText}>Administrar horas</Text>
+    </Pressable>
+  )}
+</View>
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>Nuevo registro</Text>
 
@@ -281,10 +291,10 @@ export default function TimeIndexScreen() {
                     </Text>
                   )}
 
-                  <Text style={styles.label}>Ítem</Text>
+                  <Text style={styles.label}>ï¿½tem</Text>
                   {items.length === 0 ? (
                     <Text style={styles.emptyText}>
-                      No hay ítems activos. Un admin debe crear ítems.
+                      No hay ï¿½tems activos. Un admin debe crear ï¿½tems.
                     </Text>
                   ) : (
                     <ScrollView
@@ -368,9 +378,9 @@ export default function TimeIndexScreen() {
         ListEmptyComponent={
           !loading ? (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>Sin registros todavía</Text>
+              <Text style={styles.emptyTitle}>Sin registros todavï¿½a</Text>
               <Text style={styles.emptyText}>
-                Cuando registres horas, aparecerán aquí.
+                Cuando registres horas, aparecerï¿½n aquï¿½.
               </Text>
             </View>
           ) : null
@@ -597,4 +607,18 @@ const styles = StyleSheet.create({
     color: SUBTLE,
     lineHeight: 20,
   },
+  adminButton: {
+  alignSelf: "flex-start",
+  marginTop: 12,
+  backgroundColor: "rgba(124,58,237,0.16)",
+  borderColor: "rgba(124,58,237,0.45)",
+  borderWidth: 1,
+  borderRadius: 999,
+  paddingHorizontal: 14,
+  paddingVertical: 9,
+},
+adminButtonText: {
+  color: TEXT,
+  fontWeight: "900",
+},
 });
