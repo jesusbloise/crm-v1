@@ -337,14 +337,18 @@ export default function RootLayout() {
 function BottomBar({ bottomInset }: { bottomInset: number }) {
   const pathname = usePathname();
 
-  const items = [
-    { href: "/", label: "Resumen", icon: "home" as const },
-    { href: "/contacts", label: "Contactos", icon: "users" as const },
-    { href: "/deals", label: "Oportun.", icon: "briefcase" as const },
-    { href: "/tasks", label: "Activ.", icon: "check-square" as const },
-    { href: "/calendar", label: "Calend.", icon: "calendar" as const },
-    { href: "/more", label: "Más", icon: "grid" as const },
-  ];
+const items = [
+  { href: "/", label: "Resumen", icon: "home" as const },
+  { href: "/contacts", label: "Contactos", icon: "users" as const },
+
+  // Oportunidades queda oculto por ahora porque no lo estamos usando.
+  // { href: "/deals", label: "Oportun.", icon: "briefcase" as const },
+
+  { href: "/time", label: "Horas", icon: "clock" as const },
+  { href: "/tasks", label: "Activ.", icon: "check-square" as const },
+  { href: "/calendar", label: "Calend.", icon: "calendar" as const },
+  { href: "/more", label: "Más", icon: "grid" as const },
+];
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/" || pathname === "";
