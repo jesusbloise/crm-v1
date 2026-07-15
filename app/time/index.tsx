@@ -4,9 +4,7 @@ import {
   listMyTimeEntries,
   listWorkItems,
   listWorkProjects,
-  type TimeEntry,
-  type WorkItem,
-  type WorkProject,
+  type TimeEntry
 } from "@/src/api/timeTracking";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
@@ -33,6 +31,12 @@ const SUBTLE = "#a9b0bd";
 const ACCENT = "#7c3aed";
 const ACCENT_2 = "#22d3ee";
 
+type DropdownOption = {
+  id: string;
+  label: string;
+  sublabel?: string | null;
+};
+
 function todayLocal() {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -51,6 +55,16 @@ function moneyDate(date?: string | null) {
 function toNumber(v: string | number | null | undefined) {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n : 0;
+}
+function formatHours(v: string | number | null | undefined) {
+  const totalMinutes = Math.round(toNumber(v) * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${h}:${String(m).padStart(2, "0")}`;
+}
+
+function displayUserName(item: TimeEntry) {
+  return item.user_name || item.user_email || "Sin nombre";
 }
 
 function Pill({
@@ -74,25 +88,105 @@ function Pill({
   );
 }
 
-function EntryCard({ item }: { item: TimeEntry }) {
-  return (
-    <View style={styles.entryCard}>
-      <View style={styles.entryTop}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.entryTitle}>{item.project_name}</Text>
-          <Text style={styles.entrySub}>
-            {item.item_name} � {moneyDate(item.work_date)}
-          </Text>
-        </View>
+function SelectDropdown({
+  label,
+  value,
+  placeholder,
+  options,
+  open,
+  onToggle,
+  onSelect,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  options: DropdownOption[];
+  open: boolean;
+  onToggle: () => void;
+  onSelect: (id: string) => void;
+}) {
+  const selected = options.find((o) => o.id === value) || null;
 
-        <View style={styles.hoursBadge}>
-          <Text style={styles.hoursText}>{toNumber(item.hours)} h</Text>
+  return (
+    <View>
+      <Text style={styles.label}>{label}</Text>
+
+      <Pressable style={styles.dropdownButton} onPress={onToggle}>
+        <Text style={styles.dropdownButtonText} numberOfLines={1}>
+          {selected?.label || placeholder}
+        </Text>
+
+        <Text style={styles.dropdownIcon}>{open ? "Cerrar" : "Abrir"}</Text>
+      </Pressable>
+
+      {open && (
+        <View style={styles.dropdownMenu}>
+          <ScrollView style={styles.dropdownScroll} nestedScrollEnabled>
+            {options.map((option) => (
+              <Pressable
+                key={option.id}
+                style={[
+                  styles.dropdownOption,
+                  value === option.id && styles.dropdownOptionActive,
+                ]}
+                onPress={() => onSelect(option.id)}
+              >
+                <Text
+                  style={[
+                    styles.dropdownOptionText,
+                    value === option.id && styles.dropdownOptionTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {option.label}
+                </Text>
+
+                {!!option.sublabel && (
+                  <Text style={styles.dropdownRole} numberOfLines={1}>
+                    {option.sublabel}
+                  </Text>
+                )}
+              </Pressable>
+            ))}
+          </ScrollView>
         </View>
+      )}
+    </View>
+  );
+}
+function EntryRow({ item }: { item: TimeEntry }) {
+  return (
+    <View style={styles.timeRow}>
+      <View style={styles.cellDate}>
+        <Text style={styles.cellText}>{moneyDate(item.work_date)}</Text>
       </View>
 
-      {!!item.description && (
-        <Text style={styles.entryDescription}>{item.description}</Text>
-      )}
+      <View style={styles.cellName}>
+        <Text style={styles.cellText} numberOfLines={1}>
+          {displayUserName(item)}
+        </Text>
+      </View>
+
+      <View style={styles.cellProject}>
+        <Text style={styles.cellText} numberOfLines={1}>
+          {item.project_name}
+        </Text>
+        {!!item.description && (
+          <Text style={styles.cellMuted} numberOfLines={1}>
+            {item.description}
+          </Text>
+        )}
+      </View>
+
+      <View style={styles.cellItem}>
+        <Text style={styles.itemBadgeText} numberOfLines={1}>
+          {item.item_name}
+        </Text>
+      </View>
+
+      <View style={styles.cellTime}>
+        <Text style={styles.timeValue}>{formatHours(item.hours)}</Text>
+      </View>
     </View>
   );
 }
@@ -106,6 +200,9 @@ export default function TimeIndexScreen() {
   const [hours, setHours] = useState("");
   const [description, setDescription] = useState("");
   const [role, setRole] = useState<string | null>(null);
+const [openDropdown, setOpenDropdown] = useState<"project" | "item" | null>(
+  null
+);
 
   const qProjects = useQuery({
     queryKey: ["work-projects"],
@@ -155,7 +252,29 @@ const canAdminHours = role === "owner" || role === "admin";
     () => items.find((i) => i.id === itemId),
     [items, itemId]
   );
+ const projectOptions = useMemo<DropdownOption[]>(
+  () =>
+    projects.map((p) => ({
+      id: p.id,
+      label: p.name,
+      sublabel: p.client_name || p.description || null,
+    })),
+  [projects]
+);
 
+const itemOptions = useMemo<DropdownOption[]>(
+  () =>
+    items.map((it) => ({
+      id: it.id,
+      label: it.name,
+      sublabel: it.description || null,
+    })),
+  [items]
+);
+
+function toggleDropdown(name: "project" | "item") {
+  setOpenDropdown((current) => (current === name ? null : name));
+}
   const createMut = useMutation({
     mutationFn: createTimeEntry,
     onSuccess: async () => {
@@ -193,17 +312,17 @@ const canAdminHours = role === "owner" || role === "admin";
     }
 
     if (!itemId) {
-      Alert.alert("Falta �tem", "Selecciona un �tem.");
+      Alert.alert("Falta item", "Selecciona un item.");
       return;
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
-      Alert.alert("Fecha inv�lida", "Usa el formato YYYY-MM-DD.");
+      Alert.alert("Fecha inválida", "Usa el formato YYYY-MM-DD.");
       return;
     }
 
     if (!Number.isFinite(h) || h <= 0 || h > 24) {
-      Alert.alert("Horas inv�lidas", "Ingresa un n�mero entre 0 y 24.");
+      Alert.alert("Horas inválidas", "Ingresa un número entre 0 y 24.");
       return;
     }
 
@@ -263,59 +382,49 @@ const canAdminHours = role === "owner" || role === "admin";
                 </View>
               ) : (
                 <>
-                  <Text style={styles.label}>Proyecto</Text>
-                  {projects.length === 0 ? (
-                    <Text style={styles.emptyText}>
-                      No hay proyectos activos. Un admin debe crear proyectos.
-                    </Text>
-                  ) : (
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={styles.pillRow}
-                    >
-                      {projects.map((p: WorkProject) => (
-                        <Pill
-                          key={p.id}
-                          label={p.name}
-                          active={p.id === projectId}
-                          onPress={() => setProjectId(p.id)}
-                        />
-                      ))}
-                    </ScrollView>
-                  )}
+    {projects.length === 0 ? (
+  <>
+    <Text style={styles.label}>Proyecto</Text>
+    <Text style={styles.emptyText}>
+      No hay proyectos activos. Un admin debe crear proyectos.
+    </Text>
+  </>
+) : (
+  <SelectDropdown
+    label="Proyecto"
+    value={projectId}
+    placeholder="Selecciona un proyecto"
+    options={projectOptions}
+    open={openDropdown === "project"}
+    onToggle={() => toggleDropdown("project")}
+    onSelect={(id) => {
+      setProjectId(id);
+      setOpenDropdown(null);
+    }}
+  />
+)}
 
-                  {!!selectedProject?.client_name && (
-                    <Text style={styles.hint}>
-                      Cliente: {selectedProject.client_name}
-                    </Text>
-                  )}
-
-                  <Text style={styles.label}>�tem</Text>
-                  {items.length === 0 ? (
-                    <Text style={styles.emptyText}>
-                      No hay �tems activos. Un admin debe crear �tems.
-                    </Text>
-                  ) : (
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={styles.pillRow}
-                    >
-                      {items.map((it: WorkItem) => (
-                        <Pill
-                          key={it.id}
-                          label={it.name}
-                          active={it.id === itemId}
-                          onPress={() => setItemId(it.id)}
-                        />
-                      ))}
-                    </ScrollView>
-                  )}
-
-                  {!!selectedItem?.description && (
-                    <Text style={styles.hint}>{selectedItem.description}</Text>
-                  )}
+   {items.length === 0 ? (
+  <>
+    <Text style={styles.label}>Item</Text>
+    <Text style={styles.emptyText}>
+      No hay items activos. Un admin debe crear items.
+    </Text>
+  </>
+) : (
+  <SelectDropdown
+    label="Item"
+    value={itemId}
+    placeholder="Selecciona un item"
+    options={itemOptions}
+    open={openDropdown === "item"}
+    onToggle={() => toggleDropdown("item")}
+    onSelect={(id) => {
+      setItemId(id);
+      setOpenDropdown(null);
+    }}
+  />
+)}
 
                   <View style={styles.row}>
                     <View style={styles.col}>
@@ -372,15 +481,36 @@ const canAdminHours = role === "owner" || role === "admin";
               <Text style={styles.sectionTitle}>Historial</Text>
               <Text style={styles.listCounter}>{entries.length} registros</Text>
             </View>
+            <View style={styles.tableHeader}>
+  <View style={styles.cellDate}>
+    <Text style={styles.headerText}>Fecha</Text>
+  </View>
+
+  <View style={styles.cellName}>
+    <Text style={styles.headerText}>Nombre</Text>
+  </View>
+
+  <View style={styles.cellProject}>
+    <Text style={styles.headerText}>Proyecto</Text>
+  </View>
+
+  <View style={styles.cellItem}>
+    <Text style={styles.headerText}>Item</Text>
+  </View>
+
+  <View style={styles.cellTime}>
+    <Text style={styles.headerText}>Tiempo</Text>
+  </View>
+</View>
           </View>
         }
-        renderItem={({ item }) => <EntryCard item={item} />}
+        renderItem={({ item }) => <EntryRow item={item} />}
         ListEmptyComponent={
           !loading ? (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyTitle}>Sin registros todav�a</Text>
+              <Text style={styles.emptyTitle}>Sin registros todavia</Text>
               <Text style={styles.emptyText}>
-                Cuando registres horas, aparecer�n aqu�.
+                Cuando registres horas, aparecen aqui.
               </Text>
             </View>
           ) : null
@@ -620,5 +750,130 @@ const styles = StyleSheet.create({
 adminButtonText: {
   color: TEXT,
   fontWeight: "900",
+},
+tableHeader: {
+  flexDirection: "row",
+  alignItems: "center",
+  backgroundColor: FIELD,
+  borderWidth: 1,
+  borderColor: BORDER,
+  borderRadius: 12,
+  paddingHorizontal: 10,
+  paddingVertical: 9,
+  marginBottom: 6,
+},
+headerText: {
+  color: SUBTLE,
+  fontSize: 11,
+  fontWeight: "900",
+  textTransform: "uppercase",
+},
+timeRow: {
+  flexDirection: "row",
+  alignItems: "center",
+  backgroundColor: CARD,
+  borderWidth: 1,
+  borderColor: BORDER,
+  borderRadius: 12,
+  paddingHorizontal: 10,
+  paddingVertical: 9,
+  marginBottom: 6,
+},
+cellDate: {
+  width: 92,
+  paddingRight: 8,
+},
+cellName: {
+  width: 120,
+  paddingRight: 8,
+},
+cellProject: {
+  width: 300,
+  paddingRight: 8,
+},
+cellItem: {
+  width: 86,
+  paddingRight: 8,
+},
+cellTime: {
+  width: 58,
+  alignItems: "flex-end",
+},
+cellText: {
+  color: TEXT,
+  fontSize: 13,
+  fontWeight: "800",
+},
+cellMuted: {
+  color: SUBTLE,
+  fontSize: 11,
+  fontWeight: "600",
+  marginTop: 2,
+},
+itemBadgeText: {
+  color: ACCENT_2,
+  fontSize: 12,
+  fontWeight: "900",
+},
+timeValue: {
+  color: TEXT,
+  fontSize: 13,
+  fontWeight: "900",
+},
+
+dropdownButton: {
+  backgroundColor: FIELD,
+  borderColor: BORDER,
+  borderWidth: 1,
+  borderRadius: 14,
+  paddingHorizontal: 12,
+  paddingVertical: 13,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+},
+dropdownButtonText: {
+  color: TEXT,
+  fontWeight: "800",
+  flex: 1,
+},
+dropdownIcon: {
+  color: ACCENT_2,
+  fontWeight: "900",
+  fontSize: 12,
+},
+dropdownMenu: {
+  marginTop: 8,
+  backgroundColor: "#1b1d24",
+  borderColor: "#3a3f4d",
+  borderWidth: 1,
+  borderRadius: 16,
+  overflow: "hidden",
+},
+dropdownScroll: {
+  maxHeight: 360,
+},
+dropdownOption: {
+  paddingHorizontal: 12,
+  paddingVertical: 12,
+  borderBottomColor: "#313543",
+  borderBottomWidth: 1,
+},
+dropdownOptionActive: {
+  backgroundColor: "rgba(124,58,237,0.22)",
+},
+dropdownOptionText: {
+  color: SUBTLE,
+  fontWeight: "800",
+},
+dropdownOptionTextActive: {
+  color: TEXT,
+},
+dropdownRole: {
+  color: ACCENT_2,
+  fontSize: 12,
+  fontWeight: "800",
+  marginTop: 3,
 },
 });
