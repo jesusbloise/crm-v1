@@ -23,6 +23,7 @@ import {
   TextInput,
   View
 } from "react-native";
+import AdminReportsPanel from "./adminReports";
 
 const BG = "#0b0c10";
 const CARD = "#14151a";
@@ -34,7 +35,7 @@ const ACCENT = "#7c3aed";
 const ACCENT_2 = "#22d3ee";
 const DANGER = "#ef4444";
 
-type Tab = "projects" | "items";
+type Tab = "projects" | "items" | "reports";
 
 function isActive(v: any) {
   return v === 1 || v === true || v === "1" || v === "true";
@@ -116,7 +117,7 @@ function AdminProjectCard({ item }: { item: WorkProject }) {
           <Text style={styles.label}>Cliente</Text>
           <TextInput value={clientName} onChangeText={setClientName} style={styles.input} placeholderTextColor="#6b7280" />
 
-          <Text style={styles.label}>Descripci�n</Text>
+          <Text style={styles.label}>Descripción</Text>
           <TextInput
             value={description}
             onChangeText={setDescription}
@@ -184,7 +185,7 @@ function AdminItemCard({ item }: { item: WorkItem }) {
       await qc.invalidateQueries({ queryKey: ["work-items"] });
     },
     onError: (err: any) => {
-      Alert.alert("Error", err?.message || "No se pudo actualizar el �tem.");
+      Alert.alert("Error", err?.message || "No se pudo actualizar el Item.");
     },
   });
 
@@ -218,7 +219,7 @@ function AdminItemCard({ item }: { item: WorkItem }) {
           <Text style={styles.label}>Nombre</Text>
           <TextInput value={name} onChangeText={setName} style={styles.input} placeholderTextColor="#6b7280" />
 
-          <Text style={styles.label}>Descripci�n</Text>
+          <Text style={styles.label}>DescripciÓn</Text>
           <TextInput
             value={description}
             onChangeText={setDescription}
@@ -240,7 +241,7 @@ function AdminItemCard({ item }: { item: WorkItem }) {
             disabled={mut.isPending}
             onPress={() => {
               if (!name.trim()) {
-                Alert.alert("Falta nombre", "El �tem necesita un nombre.");
+                Alert.alert("Falta nombre", "El item necesita un nombre.");
                 return;
               }
               mut.mutate();
@@ -316,10 +317,10 @@ export default function TimeAdminScreen() {
       setItemName("");
       setItemDescription("");
       await qc.invalidateQueries({ queryKey: ["work-items"] });
-      Alert.alert("Listo", "�tem creado correctamente.");
+      Alert.alert("Listo", "Item creado correctamente.");
     },
     onError: (err: any) => {
-      Alert.alert("Error", err?.message || "No se pudo crear el �tem.");
+      Alert.alert("Error", err?.message || "No se pudo crear el Item.");
     },
   });
 
@@ -327,6 +328,7 @@ export default function TimeAdminScreen() {
   const items = qItems.data ?? [];
 
   const currentList = useMemo(() => {
+    if (tab === "reports") return [];
     return tab === "projects" ? projects : items;
   }, [tab, projects, items]);
 
@@ -346,7 +348,7 @@ export default function TimeAdminScreen() {
         <Stack.Screen options={{ title: "Administrar horas" }} />
         <Text style={styles.lockTitle}>Sin permisos</Text>
         <Text style={styles.lockText}>
-          Solo owner o admin pueden administrar proyectos e �tems.
+          Solo owner o admin pueden administrar proyectos e Items.
         </Text>
        <Pressable style={styles.primaryButton} onPress={() => router.push("/time" as any)}>
           <Text style={styles.primaryButtonText}>Volver a mis horas</Text>
@@ -378,7 +380,7 @@ export default function TimeAdminScreen() {
             <View style={styles.header}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.kicker}>Admin</Text>
-                <Text style={styles.title}>Proyectos e �tems</Text>
+                <Text style={styles.title}>Proyectos e items</Text>
                 <Text style={styles.subtitle}>
                   Crea y administra las opciones que los usuarios seleccionan al registrar horas.
                 </Text>
@@ -404,12 +406,23 @@ export default function TimeAdminScreen() {
                 style={[styles.tab, tab === "items" && styles.tabActive]}
               >
                 <Text style={[styles.tabText, tab === "items" && styles.tabTextActive]}>
-                  �tems ({items.length})
+                  Items ({items.length})
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => setTab("reports")}
+                style={[styles.tab, tab === "reports" && styles.tabActive]}
+              >
+                <Text style={[styles.tabText, tab === "reports" && styles.tabTextActive]}>
+                  Reportes
                 </Text>
               </Pressable>
             </View>
 
-            {tab === "projects" ? (
+            {tab === "reports" ? (
+              <AdminReportsPanel projects={projects} items={items} />
+            ) : tab === "projects" ? (
               <View style={styles.formCard}>
                 <Text style={styles.sectionTitle}>Crear proyecto</Text>
 
@@ -417,7 +430,7 @@ export default function TimeAdminScreen() {
                 <TextInput
                   value={projectName}
                   onChangeText={setProjectName}
-                  placeholder="Ej: Campa�a Banco Chile"
+                  placeholder="Ej: Campaña Banco Chile"
                   placeholderTextColor="#6b7280"
                   style={styles.input}
                 />
@@ -431,7 +444,7 @@ export default function TimeAdminScreen() {
                   style={styles.input}
                 />
 
-                <Text style={styles.label}>Descripci�n</Text>
+                <Text style={styles.label}>Descripción</Text>
                 <TextInput
                   value={projectDescription}
                   onChangeText={setProjectDescription}
@@ -462,22 +475,22 @@ export default function TimeAdminScreen() {
               </View>
             ) : (
               <View style={styles.formCard}>
-                <Text style={styles.sectionTitle}>Crear �tem</Text>
+                <Text style={styles.sectionTitle}>Crear Item</Text>
 
                 <Text style={styles.label}>Nombre</Text>
                 <TextInput
                   value={itemName}
                   onChangeText={setItemName}
-                  placeholder="Ej: Edici�n, Motion, Color"
+                  placeholder="Ej: Edición, Motion, Color"
                   placeholderTextColor="#6b7280"
                   style={styles.input}
                 />
 
-                <Text style={styles.label}>Descripci�n</Text>
+                <Text style={styles.label}>Descripcion</Text>
                 <TextInput
                   value={itemDescription}
                   onChangeText={setItemDescription}
-                  placeholder="Describe cu�ndo usar este �tem"
+                  placeholder="Describe cuándo usar este item"
                   placeholderTextColor="#6b7280"
                   style={[styles.input, styles.textArea]}
                   multiline
@@ -497,34 +510,38 @@ export default function TimeAdminScreen() {
                   }
                 >
                   <Text style={styles.primaryButtonText}>
-                    {createItemMut.isPending ? "Creando..." : "Crear �tem"}
+                    {createItemMut.isPending ? "Creando..." : "Crear Item"}
                   </Text>
                 </Pressable>
               </View>
             )}
 
-            <View style={styles.listHeader}>
-              <Text style={styles.sectionTitle}>
-                {tab === "projects" ? "Proyectos" : "�tems"}
-              </Text>
-              <Text style={styles.counter}>{currentList.length} registros</Text>
-            </View>
+            {tab !== "reports" && (
+              <View style={styles.listHeader}>
+                <Text style={styles.sectionTitle}>
+                  {tab === "projects" ? "Proyectos" : "Items"}
+                </Text>
+                <Text style={styles.counter}>{currentList.length} registros</Text>
+              </View>
+            )}
           </View>
         }
         renderItem={({ item }) =>
-          tab === "projects" ? (
+          tab === "reports" ? null : tab === "projects" ? (
             <AdminProjectCard item={item as WorkProject} />
           ) : (
             <AdminItemCard item={item as WorkItem} />
           )
         }
         ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>Sin registros todav�a</Text>
-            <Text style={styles.emptyText}>
-              Crea el primer {tab === "projects" ? "proyecto" : "�tem"} desde el formulario superior.
-            </Text>
-          </View>
+          tab === "reports" ? null : (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>Sin registros todavia</Text>
+              <Text style={styles.emptyText}>
+                Crea el primer {tab === "projects" ? "proyecto" : "item"} desde el formulario superior.
+              </Text>
+            </View>
+          )
         }
       />
     </View>

@@ -123,18 +123,21 @@ router.get(
     const userId = resolveUserId(req);
     if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-    const rows = await db
-      .prepare(
-        `
-        SELECT *
-        FROM time_entries
-        WHERE tenant_id = ?
-          AND user_id = ?
-        ORDER BY work_date DESC, created_at DESC
-      `
-      )
-      .all(req.tenantId, userId);
-
+const rows = await db
+  .prepare(
+    `
+    SELECT
+      te.*,
+      u.name AS user_name,
+      u.email AS user_email
+    FROM time_entries te
+    LEFT JOIN users u ON te.user_id = u.id
+    WHERE te.tenant_id = ?
+      AND te.user_id = ?
+    ORDER BY te.work_date DESC, te.created_at DESC
+  `
+  )
+  .all(req.tenantId, userId);
     const total_hours = rows.reduce((sum, row) => {
       return sum + Number(row.hours || 0);
     }, 0);
