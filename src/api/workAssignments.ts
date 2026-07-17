@@ -70,53 +70,31 @@ export type UpdateWorkAssignmentInput = {
   status?: WorkAssignmentStatus;
 };
 
-function cleanParams(filters?: WorkAssignmentFilters) {
-  const params = new URLSearchParams();
 
-  if (!filters) return "";
-
-  if (filters.userId) params.set("userId", filters.userId);
-  if (filters.projectId) params.set("projectId", filters.projectId);
-  if (filters.itemId) params.set("itemId", filters.itemId);
-  if (filters.from) params.set("from", filters.from);
-  if (filters.to) params.set("to", filters.to);
-  if (filters.status) params.set("status", filters.status);
-
-  const qs = params.toString();
-  return qs ? `?${qs}` : "";
-}
 
 export async function listWorkAssignments(
   filters?: WorkAssignmentFilters
 ): Promise<WorkAssignmentsResponse> {
-  return api(`/work-assignments${cleanParams(filters)}`);
+  return api.getp<WorkAssignmentsResponse>("/work-assignments", filters);
 }
 
 export async function listMyWorkAssignments(): Promise<WorkAssignmentsResponse> {
-  return api("/work-assignments/mine");
+  return api.get<WorkAssignmentsResponse>("/work-assignments/mine");
 }
 
 export async function createWorkAssignment(
   input: CreateWorkAssignmentInput
 ): Promise<WorkAssignment> {
-  return api("/work-assignments", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  return api.post<WorkAssignment>("/work-assignments", input);
 }
 
 export async function updateWorkAssignment(
   id: string,
   patch: UpdateWorkAssignmentInput
 ): Promise<WorkAssignment> {
-  return api(`/work-assignments/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch),
-  });
+  return api.patch<WorkAssignment>(`/work-assignments/${id}`, patch);
 }
 
 export async function deleteWorkAssignment(id: string): Promise<{ ok: boolean }> {
-  return api(`/work-assignments/${id}`, {
-    method: "DELETE",
-  });
+  return api.delete<{ ok: boolean }>(`/work-assignments/${id}`);
 }

@@ -21,8 +21,9 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View
+  View,
 } from "react-native";
+import AdminAssignmentsPanel from "./adminAssignments";
 import AdminReportsPanel from "./adminReports";
 
 const BG = "#0b0c10";
@@ -35,7 +36,7 @@ const ACCENT = "#7c3aed";
 const ACCENT_2 = "#22d3ee";
 const DANGER = "#ef4444";
 
-type Tab = "projects" | "items" | "reports";
+type Tab = "projects" | "items" | "reports" | "assignments";
 
 function isActive(v: any) {
   return v === 1 || v === true || v === "1" || v === "true";
@@ -44,7 +45,12 @@ function isActive(v: any) {
 function StatusBadge({ active }: { active: boolean }) {
   return (
     <View style={[styles.badge, active ? styles.badgeOn : styles.badgeOff]}>
-      <Text style={[styles.badgeText, active ? styles.badgeTextOn : styles.badgeTextOff]}>
+      <Text
+        style={[
+          styles.badgeText,
+          active ? styles.badgeTextOn : styles.badgeTextOff,
+        ]}
+      >
         {active ? "Activo" : "Inactivo"}
       </Text>
     </View>
@@ -103,21 +109,38 @@ function AdminProjectCard({ item }: { item: WorkProject }) {
       <View style={styles.cardTop}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>{item.name}</Text>
-          {!!item.client_name && <Text style={styles.cardSub}>Cliente: {item.client_name}</Text>}
-          {!!item.description && <Text style={styles.cardDescription}>{item.description}</Text>}
+
+          {!!item.client_name && (
+            <Text style={styles.cardSub}>Cliente: {item.client_name}</Text>
+          )}
+
+          {!!item.description && (
+            <Text style={styles.cardDescription}>{item.description}</Text>
+          )}
         </View>
+
         <StatusBadge active={isActive(item.is_active)} />
       </View>
 
       {editing && (
         <View style={styles.editBox}>
           <Text style={styles.label}>Nombre</Text>
-          <TextInput value={name} onChangeText={setName} style={styles.input} placeholderTextColor="#6b7280" />
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            style={styles.input}
+            placeholderTextColor="#6b7280"
+          />
 
           <Text style={styles.label}>Cliente</Text>
-          <TextInput value={clientName} onChangeText={setClientName} style={styles.input} placeholderTextColor="#6b7280" />
+          <TextInput
+            value={clientName}
+            onChangeText={setClientName}
+            style={styles.input}
+            placeholderTextColor="#6b7280"
+          />
 
-          <Text style={styles.label}>Descripción</Text>
+          <Text style={styles.label}>Descripcion</Text>
           <TextInput
             value={description}
             onChangeText={setDescription}
@@ -129,8 +152,13 @@ function AdminProjectCard({ item }: { item: WorkProject }) {
       )}
 
       <View style={styles.actions}>
-        <Pressable style={styles.secondaryButton} onPress={() => setEditing((v) => !v)}>
-          <Text style={styles.secondaryText}>{editing ? "Cancelar" : "Editar"}</Text>
+        <Pressable
+          style={styles.secondaryButton}
+          onPress={() => setEditing((v) => !v)}
+        >
+          <Text style={styles.secondaryText}>
+            {editing ? "Cancelar" : "Editar"}
+          </Text>
         </Pressable>
 
         {editing && (
@@ -142,10 +170,13 @@ function AdminProjectCard({ item }: { item: WorkProject }) {
                 Alert.alert("Falta nombre", "El proyecto necesita un nombre.");
                 return;
               }
+
               mut.mutate();
             }}
           >
-            <Text style={styles.primarySmallText}>{mut.isPending ? "Guardando..." : "Guardar"}</Text>
+            <Text style={styles.primarySmallText}>
+              {mut.isPending ? "Guardando..." : "Guardar"}
+            </Text>
           </Pressable>
         )}
 
@@ -154,7 +185,9 @@ function AdminProjectCard({ item }: { item: WorkProject }) {
           disabled={toggleMut.isPending}
           onPress={() => toggleMut.mutate()}
         >
-          <Text style={styles.dangerText}>{isActive(item.is_active) ? "Desactivar" : "Activar"}</Text>
+          <Text style={styles.dangerText}>
+            {isActive(item.is_active) ? "Desactivar" : "Activar"}
+          </Text>
         </Pressable>
       </View>
     </View>
@@ -185,7 +218,7 @@ function AdminItemCard({ item }: { item: WorkItem }) {
       await qc.invalidateQueries({ queryKey: ["work-items"] });
     },
     onError: (err: any) => {
-      Alert.alert("Error", err?.message || "No se pudo actualizar el Item.");
+      Alert.alert("Error", err?.message || "No se pudo actualizar el item.");
     },
   });
 
@@ -209,17 +242,26 @@ function AdminItemCard({ item }: { item: WorkItem }) {
       <View style={styles.cardTop}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>{item.name}</Text>
-          {!!item.description && <Text style={styles.cardDescription}>{item.description}</Text>}
+
+          {!!item.description && (
+            <Text style={styles.cardDescription}>{item.description}</Text>
+          )}
         </View>
+
         <StatusBadge active={isActive(item.is_active)} />
       </View>
 
       {editing && (
         <View style={styles.editBox}>
           <Text style={styles.label}>Nombre</Text>
-          <TextInput value={name} onChangeText={setName} style={styles.input} placeholderTextColor="#6b7280" />
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            style={styles.input}
+            placeholderTextColor="#6b7280"
+          />
 
-          <Text style={styles.label}>DescripciÓn</Text>
+          <Text style={styles.label}>Descripcion</Text>
           <TextInput
             value={description}
             onChangeText={setDescription}
@@ -231,8 +273,13 @@ function AdminItemCard({ item }: { item: WorkItem }) {
       )}
 
       <View style={styles.actions}>
-        <Pressable style={styles.secondaryButton} onPress={() => setEditing((v) => !v)}>
-          <Text style={styles.secondaryText}>{editing ? "Cancelar" : "Editar"}</Text>
+        <Pressable
+          style={styles.secondaryButton}
+          onPress={() => setEditing((v) => !v)}
+        >
+          <Text style={styles.secondaryText}>
+            {editing ? "Cancelar" : "Editar"}
+          </Text>
         </Pressable>
 
         {editing && (
@@ -244,10 +291,13 @@ function AdminItemCard({ item }: { item: WorkItem }) {
                 Alert.alert("Falta nombre", "El item necesita un nombre.");
                 return;
               }
+
               mut.mutate();
             }}
           >
-            <Text style={styles.primarySmallText}>{mut.isPending ? "Guardando..." : "Guardar"}</Text>
+            <Text style={styles.primarySmallText}>
+              {mut.isPending ? "Guardando..." : "Guardar"}
+            </Text>
           </Pressable>
         )}
 
@@ -256,7 +306,9 @@ function AdminItemCard({ item }: { item: WorkItem }) {
           disabled={toggleMut.isPending}
           onPress={() => toggleMut.mutate()}
         >
-          <Text style={styles.dangerText}>{isActive(item.is_active) ? "Desactivar" : "Activar"}</Text>
+          <Text style={styles.dangerText}>
+            {isActive(item.is_active) ? "Desactivar" : "Activar"}
+          </Text>
         </Pressable>
       </View>
     </View>
@@ -320,7 +372,7 @@ export default function TimeAdminScreen() {
       Alert.alert("Listo", "Item creado correctamente.");
     },
     onError: (err: any) => {
-      Alert.alert("Error", err?.message || "No se pudo crear el Item.");
+      Alert.alert("Error", err?.message || "No se pudo crear el item.");
     },
   });
 
@@ -328,7 +380,7 @@ export default function TimeAdminScreen() {
   const items = qItems.data ?? [];
 
   const currentList = useMemo(() => {
-    if (tab === "reports") return [];
+    if (tab === "reports" || tab === "assignments") return [];
     return tab === "projects" ? projects : items;
   }, [tab, projects, items]);
 
@@ -348,9 +400,13 @@ export default function TimeAdminScreen() {
         <Stack.Screen options={{ title: "Administrar horas" }} />
         <Text style={styles.lockTitle}>Sin permisos</Text>
         <Text style={styles.lockText}>
-          Solo owner o admin pueden administrar proyectos e Items.
+          Solo owner o admin pueden administrar proyectos, items y asignaciones.
         </Text>
-       <Pressable style={styles.primaryButton} onPress={() => router.push("/time" as any)}>
+
+        <Pressable
+          style={styles.primaryButton}
+          onPress={() => router.push("/time" as any)}
+        >
           <Text style={styles.primaryButtonText}>Volver a mis horas</Text>
         </Pressable>
       </View>
@@ -380,13 +436,17 @@ export default function TimeAdminScreen() {
             <View style={styles.header}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.kicker}>Admin</Text>
-                <Text style={styles.title}>Proyectos e items</Text>
+                <Text style={styles.title}>Gestion de horas</Text>
                 <Text style={styles.subtitle}>
-                  Crea y administra las opciones que los usuarios seleccionan al registrar horas.
+                  Administra proyectos, items, reportes y asignaciones de
+                  trabajo para el equipo.
                 </Text>
               </View>
 
-              <Pressable style={styles.backButton} onPress={() => router.push("/time" as any)}>
+              <Pressable
+                style={styles.backButton}
+                onPress={() => router.push("/time" as any)}
+              >
                 <Text style={styles.backText}>Mis horas</Text>
               </Pressable>
             </View>
@@ -396,7 +456,12 @@ export default function TimeAdminScreen() {
                 onPress={() => setTab("projects")}
                 style={[styles.tab, tab === "projects" && styles.tabActive]}
               >
-                <Text style={[styles.tabText, tab === "projects" && styles.tabTextActive]}>
+                <Text
+                  style={[
+                    styles.tabText,
+                    tab === "projects" && styles.tabTextActive,
+                  ]}
+                >
                   Proyectos ({projects.length})
                 </Text>
               </Pressable>
@@ -405,7 +470,12 @@ export default function TimeAdminScreen() {
                 onPress={() => setTab("items")}
                 style={[styles.tab, tab === "items" && styles.tabActive]}
               >
-                <Text style={[styles.tabText, tab === "items" && styles.tabTextActive]}>
+                <Text
+                  style={[
+                    styles.tabText,
+                    tab === "items" && styles.tabTextActive,
+                  ]}
+                >
                   Items ({items.length})
                 </Text>
               </Pressable>
@@ -414,14 +484,35 @@ export default function TimeAdminScreen() {
                 onPress={() => setTab("reports")}
                 style={[styles.tab, tab === "reports" && styles.tabActive]}
               >
-                <Text style={[styles.tabText, tab === "reports" && styles.tabTextActive]}>
+                <Text
+                  style={[
+                    styles.tabText,
+                    tab === "reports" && styles.tabTextActive,
+                  ]}
+                >
                   Reportes
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => setTab("assignments")}
+                style={[styles.tab, tab === "assignments" && styles.tabActive]}
+              >
+                <Text
+                  style={[
+                    styles.tabText,
+                    tab === "assignments" && styles.tabTextActive,
+                  ]}
+                >
+                  Asignar horas
                 </Text>
               </Pressable>
             </View>
 
             {tab === "reports" ? (
               <AdminReportsPanel projects={projects} items={items} />
+            ) : tab === "assignments" ? (
+              <AdminAssignmentsPanel projects={projects} items={items} />
             ) : tab === "projects" ? (
               <View style={styles.formCard}>
                 <Text style={styles.sectionTitle}>Crear proyecto</Text>
@@ -430,7 +521,7 @@ export default function TimeAdminScreen() {
                 <TextInput
                   value={projectName}
                   onChangeText={setProjectName}
-                  placeholder="Ej: Campaña Banco Chile"
+                  placeholder="Ej: Campana Banco Chile"
                   placeholderTextColor="#6b7280"
                   style={styles.input}
                 />
@@ -444,7 +535,7 @@ export default function TimeAdminScreen() {
                   style={styles.input}
                 />
 
-                <Text style={styles.label}>Descripción</Text>
+                <Text style={styles.label}>Descripcion</Text>
                 <TextInput
                   value={projectDescription}
                   onChangeText={setProjectDescription}
@@ -457,7 +548,8 @@ export default function TimeAdminScreen() {
                 <Pressable
                   style={[
                     styles.primaryButton,
-                    (!projectName.trim() || createProjectMut.isPending) && styles.disabled,
+                    (!projectName.trim() || createProjectMut.isPending) &&
+                      styles.disabled,
                   ]}
                   disabled={!projectName.trim() || createProjectMut.isPending}
                   onPress={() =>
@@ -469,19 +561,21 @@ export default function TimeAdminScreen() {
                   }
                 >
                   <Text style={styles.primaryButtonText}>
-                    {createProjectMut.isPending ? "Creando..." : "Crear proyecto"}
+                    {createProjectMut.isPending
+                      ? "Creando..."
+                      : "Crear proyecto"}
                   </Text>
                 </Pressable>
               </View>
             ) : (
               <View style={styles.formCard}>
-                <Text style={styles.sectionTitle}>Crear Item</Text>
+                <Text style={styles.sectionTitle}>Crear item</Text>
 
                 <Text style={styles.label}>Nombre</Text>
                 <TextInput
                   value={itemName}
                   onChangeText={setItemName}
-                  placeholder="Ej: Edición, Motion, Color"
+                  placeholder="Ej: Edicion, Motion, Color"
                   placeholderTextColor="#6b7280"
                   style={styles.input}
                 />
@@ -490,7 +584,7 @@ export default function TimeAdminScreen() {
                 <TextInput
                   value={itemDescription}
                   onChangeText={setItemDescription}
-                  placeholder="Describe cuándo usar este item"
+                  placeholder="Describe cuando usar este item"
                   placeholderTextColor="#6b7280"
                   style={[styles.input, styles.textArea]}
                   multiline
@@ -499,7 +593,8 @@ export default function TimeAdminScreen() {
                 <Pressable
                   style={[
                     styles.primaryButton,
-                    (!itemName.trim() || createItemMut.isPending) && styles.disabled,
+                    (!itemName.trim() || createItemMut.isPending) &&
+                      styles.disabled,
                   ]}
                   disabled={!itemName.trim() || createItemMut.isPending}
                   onPress={() =>
@@ -510,13 +605,13 @@ export default function TimeAdminScreen() {
                   }
                 >
                   <Text style={styles.primaryButtonText}>
-                    {createItemMut.isPending ? "Creando..." : "Crear Item"}
+                    {createItemMut.isPending ? "Creando..." : "Crear item"}
                   </Text>
                 </Pressable>
               </View>
             )}
 
-            {tab !== "reports" && (
+            {tab !== "reports" && tab !== "assignments" && (
               <View style={styles.listHeader}>
                 <Text style={styles.sectionTitle}>
                   {tab === "projects" ? "Proyectos" : "Items"}
@@ -527,18 +622,20 @@ export default function TimeAdminScreen() {
           </View>
         }
         renderItem={({ item }) =>
-          tab === "reports" ? null : tab === "projects" ? (
+          tab === "reports" || tab === "assignments" ? null : tab ===
+            "projects" ? (
             <AdminProjectCard item={item as WorkProject} />
           ) : (
             <AdminItemCard item={item as WorkItem} />
           )
         }
         ListEmptyComponent={
-          tab === "reports" ? null : (
+          tab === "reports" || tab === "assignments" ? null : (
             <View style={styles.emptyState}>
               <Text style={styles.emptyTitle}>Sin registros todavia</Text>
               <Text style={styles.emptyText}>
-                Crea el primer {tab === "projects" ? "proyecto" : "item"} desde el formulario superior.
+                Crea el primer {tab === "projects" ? "proyecto" : "item"} desde
+                el formulario superior.
               </Text>
             </View>
           )
@@ -584,6 +681,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 4,
     marginBottom: 14,
+    gap: 4,
   },
   tab: {
     flex: 1,
@@ -596,7 +694,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(124,58,237,0.42)",
   },
-  tabText: { color: SUBTLE, fontWeight: "900" },
+  tabText: {
+    color: SUBTLE,
+    fontWeight: "900",
+    fontSize: 12,
+    textAlign: "center",
+  },
   tabTextActive: { color: TEXT },
   formCard: {
     backgroundColor: CARD,
