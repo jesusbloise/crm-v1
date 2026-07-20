@@ -8,6 +8,7 @@ import {
 } from "@/src/api/timeTracking";
 import {
   listMyWorkAssignments,
+  updateWorkAssignment,
   type WorkAssignment,
 } from "@/src/api/workAssignments";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -187,7 +188,15 @@ function EntryRow({ item }: { item: TimeEntry }) {
   );
 }
 
-function AssignmentRow({ item }: { item: WorkAssignment }) {
+function AssignmentRow({
+  item,
+  busy,
+  onRegister,
+}: {
+  item: WorkAssignment;
+  busy: boolean;
+  onRegister: (item: WorkAssignment) => void;
+}) {
   return (
     <View style={styles.assignmentRow}>
       <View style={styles.assignmentTop}>
@@ -213,6 +222,16 @@ function AssignmentRow({ item }: { item: WorkAssignment }) {
           {item.description}
         </Text>
       )}
+
+      <Pressable
+        style={[styles.assignmentButton, busy && styles.submitButtonDisabled]}
+        disabled={busy}
+        onPress={() => onRegister(item)}
+      >
+        <Text style={styles.assignmentButtonText}>
+          {busy ? "Registrando..." : "Registrar como realizada"}
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -253,7 +272,9 @@ export default function TimeIndexScreen() {
   const projects = qProjects.data ?? [];
   const items = qItems.data ?? [];
   const entries = qMine.data?.rows ?? [];
-  const assignments = qAssignments.data?.rows ?? [];
+ const assignments = (qAssignments.data?.rows ?? []).filter(
+  (item) => item.status === "assigned"
+);
   const canAdminHours = role === "owner" || role === "admin";
 
   useEffect(() => {
@@ -311,6 +332,36 @@ export default function TimeIndexScreen() {
       );
     },
   });
+
+  const completeAssignmentMut = useMutation({
+  mutationFn: async (assignment: WorkAssignment) => {
+    await createTimeEntry({
+      project_id: assignment.project_id,
+      item_id: assignment.item_id,
+      work_date: assignment.assignment_date,
+      hours: Number(assignment.estimated_hours || 0),
+      description: assignment.description || null,
+    });
+
+    await updateWorkAssignment(assignment.id, {
+      status: "done",
+    });
+  },
+  onSuccess: async () => {
+    await qc.invalidateQueries({ queryKey: ["time-entries", "mine"] });
+    await qc.invalidateQueries({ queryKey: ["work-assignments", "mine"] });
+    await qc.invalidateQueries({ queryKey: ["time-entries"] });
+    await qc.invalidateQueries({ queryKey: ["work-assignments"] });
+
+    Alert.alert("Listo", "Asignacion registrada como hora realizada.");
+  },
+  onError: (err: any) => {
+    Alert.alert(
+      "No se pudo registrar",
+      err?.message || "No se pudo convertir la asignacion en hora realizada."
+    );
+  },
+});
 
   const loading =
     qProjects.isLoading ||
@@ -528,9 +579,16 @@ export default function TimeIndexScreen() {
               </View>
             ) : (
               <View style={styles.assignmentsBox}>
-                {assignments.map((item) => (
-                  <AssignmentRow key={item.id} item={item} />
-                ))}
+  {assignments.map((item) => (
+  <AssignmentRow
+    key={item.id}
+    item={item}
+    busy={completeAssignmentMut.isPending}
+    onRegister={(assignment) => {
+      completeAssignmentMut.mutate(assignment);
+    }}
+  />
+))}
               </View>
             )}
 
@@ -767,7 +825,21 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginTop: 2,
   },
-
+assignmentButton: {
+  alignSelf: "flex-start",
+  marginTop: 8,
+  backgroundColor: "rgba(124,58,237,0.18)",
+  borderColor: "rgba(124,58,237,0.45)",
+  borderWidth: 1,
+  borderRadius: 999,
+  paddingHorizontal: 12,
+  paddingVertical: 8,
+},
+assignmentButtonText: {
+  color: TEXT,
+  fontWeight: "900",
+  fontSize: 12,
+},
   tableHeader: {
     flexDirection: "row",
     alignItems: "center",
