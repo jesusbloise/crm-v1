@@ -6,6 +6,7 @@ import {
   type WorkItem,
   type WorkProject,
 } from "@/src/api/timeTracking";
+import { listWorkAssignments } from "@/src/api/workAssignments";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
@@ -32,6 +33,19 @@ type DropdownOption = {
   sublabel?: string | null;
 };
 
+type ReportKind = "real" | "assigned";
+
+type ReportRow = {
+  id: string;
+  kind: ReportKind;
+  user_name: string;
+  work_date: string;
+  project_name: string;
+  item_name: string;
+  hours: string | number;
+  description?: string | null;
+};
+
 function formatDate(value?: string | null) {
   if (!value) return "";
   const parts = value.split("-");
@@ -53,10 +67,13 @@ function formatTimeValue(value: any) {
   const m = totalMinutes % 60;
   return `${h}:${String(m).padStart(2, "0")}`;
 }
+
 function memberLabel(member?: WorkspaceMember | null) {
   if (!member) return "Todos los usuarios";
+
   const name = member.name?.trim();
   const email = member.email?.trim();
+
   if (name && email) return name + "   " + email;
   return name || email || "Usuario";
 }
@@ -66,10 +83,10 @@ function reportUserLabel(entry: TimeEntry) {
   return anyEntry.user_name || anyEntry.user_email || entry.user_id || "Usuario";
 }
 
-function entrySearchText(entry: TimeEntry) {
+function entrySearchText(entry: ReportRow) {
   return [
-    reportUserLabel(entry),
-    entry.user_id,
+    entry.kind === "assigned" ? "asignada" : "realizada",
+    entry.user_name,
     entry.work_date,
     formatDate(entry.work_date),
     entry.project_name,
@@ -106,17 +123,21 @@ function SelectDropdown({
       <Text style={styles.label}>{label}</Text>
 
       <Pressable style={styles.dropdownButton} onPress={onToggle}>
-        <Text style={styles.dropdownButtonText}>
+        <Text style={styles.dropdownButtonText} numberOfLines={1}>
           {selected?.label || placeholder}
         </Text>
-        <Text style={styles.dropdownIcon}>{open ? "?" : "?"}</Text>
+
+        <Text style={styles.dropdownIcon}>{open ? "Cerrar" : "Abrir"}</Text>
       </Pressable>
 
       {open && (
         <View style={styles.dropdownMenu}>
           <ScrollView style={styles.dropdownScroll} nestedScrollEnabled>
             <Pressable
-              style={[styles.dropdownOption, !value && styles.dropdownOptionActive]}
+              style={[
+                styles.dropdownOption,
+                !value && styles.dropdownOptionActive,
+              ]}
               onPress={() => onSelect("")}
             >
               <Text
@@ -124,6 +145,7 @@ function SelectDropdown({
                   styles.dropdownOptionText,
                   !value && styles.dropdownOptionTextActive,
                 ]}
+                numberOfLines={1}
               >
                 {placeholder}
               </Text>
@@ -143,11 +165,15 @@ function SelectDropdown({
                     styles.dropdownOptionText,
                     value === option.id && styles.dropdownOptionTextActive,
                   ]}
+                  numberOfLines={1}
                 >
                   {option.label}
                 </Text>
+
                 {!!option.sublabel && (
-                  <Text style={styles.dropdownRole}>{option.sublabel}</Text>
+                  <Text style={styles.dropdownRole} numberOfLines={1}>
+                    {option.sublabel}
+                  </Text>
                 )}
               </Pressable>
             ))}
@@ -171,7 +197,9 @@ export default function AdminReportsPanel({
   const [draftFrom, setDraftFrom] = useState("");
   const [draftTo, setDraftTo] = useState("");
   const [search, setSearch] = useState("");
-  const [openDropdown, setOpenDropdown] = useState<"user" | "project" | "item" | null>(null);
+  const [openDropdown, setOpenDropdown] = useState<
+    "user" | "project" | "item" | null
+  >(null);
   const [filters, setFilters] = useState<TimeEntryFilters>({});
 
   const qMembers = useQuery({
@@ -184,17 +212,75 @@ export default function AdminReportsPanel({
     queryFn: () => listTimeEntries(filters),
   });
 
-  const rawRows = qReports.data?.rows ?? [];
-  const total = qReports.data?.total ?? 0;
-  const totalHours = qReports.data?.total_hours ?? 0;
+  const qAssignments = useQuery({
+    queryKey: ["work-assignments", "reports", filters],
+    queryFn: () =>
+      listWorkAssignments({
+        userId: filters.userId,
+        projectId: filters.projectId,
+        itemId: filters.itemId,
+        from: filters.from,
+        to: filters.to,
+        status: "assigned",
+      }),
+  });
+
+  const timeRows = qReports.data?.rows ?? [];
+  const assignmentRows = qAssignments.data?.rows ?? [];
   const members = qMembers.data ?? [];
+
+  const rawRows = useMemo<ReportRow[]>(() => {
+    const realRows: ReportRow[] = timeRows.map((entry) => ({
+      id: entry.id,
+      kind: "real",
+      user_name: reportUserLabel(entry),
+      work_date: entry.work_date,
+      project_name: entry.project_name,
+      item_name: entry.item_name,
+      hours: entry.hours,
+      description: entry.description,
+    }));
+
+    const assignedRows: ReportRow[] = assignmentRows.map((entry) => ({
+      id: entry.id,
+      kind: "assigned",
+      user_name:
+        entry.assigned_user_name ||
+        entry.assigned_user_email ||
+        entry.assigned_user_id ||
+        "Usuario",
+      work_date: entry.assignment_date,
+      project_name: entry.project_name,
+      item_name: entry.item_name,
+      hours: entry.estimated_hours,
+      description: entry.description,
+    }));
+
+    return [...realRows, ...assignedRows].sort((a, b) => {
+      if (a.work_date === b.work_date) return a.kind.localeCompare(b.kind);
+      return a.work_date < b.work_date ? 1 : -1;
+    });
+  }, [timeRows, assignmentRows]);
+
+  const total = rawRows.length;
+
+  const realHours = useMemo(() => {
+    return timeRows.reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
+  }, [timeRows]);
+
+  const assignedHours = useMemo(() => {
+    return assignmentRows.reduce(
+      (sum, entry) => sum + Number(entry.estimated_hours || 0),
+      0
+    );
+  }, [assignmentRows]);
 
   const userOptions = useMemo<DropdownOption[]>(
     () =>
-      members.map((m) => ({
+      members.map((m: any) => ({
         id: m.id,
         label: memberLabel(m),
-        sublabel: m.role,
+        sublabel: m.role || m.email || null,
       })),
     [members]
   );
@@ -229,6 +315,8 @@ export default function AdminReportsPanel({
     return visibleRows.reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
   }, [visibleRows]);
 
+  const isFetching = qReports.isFetching || qAssignments.isFetching;
+
   function toggleDropdown(name: "user" | "project" | "item") {
     setOpenDropdown((current) => (current === name ? null : name));
   }
@@ -260,13 +348,19 @@ export default function AdminReportsPanel({
       <View style={styles.formCard}>
         <Text style={styles.sectionTitle}>Reportes de horas</Text>
         <Text style={styles.help}>
-          Consulta las horas por usuario, proyecto, Item y rango de fechas.
+          Consulta horas realizadas y asignadas por usuario, proyecto, item y
+          rango de fechas.
         </Text>
 
         <View style={styles.statGrid}>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{formatHours(totalHours)}</Text>
-            <Text style={styles.statLabel}>Horas totales</Text>
+            <Text style={styles.statValue}>{formatHours(realHours)}</Text>
+            <Text style={styles.statLabel}>Horas realizadas</Text>
+          </View>
+
+          <View style={styles.statCard}>
+            <Text style={styles.statValue}>{formatHours(assignedHours)}</Text>
+            <Text style={styles.statLabel}>Horas asignadas</Text>
           </View>
 
           <View style={styles.statCard}>
@@ -275,18 +369,18 @@ export default function AdminReportsPanel({
           </View>
         </View>
 
-        <Text style={styles.label}>Buscador rApido</Text>
+        <Text style={styles.label}>Buscador rapido</Text>
         <TextInput
           value={search}
           onChangeText={setSearch}
-          placeholder="Buscar usuario, proyecto, Item, fecha o comentario"
+          placeholder="Buscar usuario, proyecto, item, tipo, fecha o comentario"
           placeholderTextColor="#6b7280"
           style={styles.input}
         />
 
         {!!search.trim() && (
           <Text style={styles.searchHint}>
-            Mostrando {visibleRows.length} de {rawRows.length} registros {" "}
+            Mostrando {visibleRows.length} de {rawRows.length} registros{" "}
             {formatHours(visibleHours)} hrs visibles
           </Text>
         )}
@@ -320,7 +414,7 @@ export default function AdminReportsPanel({
         <SelectDropdown
           label="Item"
           value={draftItemId}
-          placeholder="Todos los Items"
+          placeholder="Todos los items"
           options={itemOptions}
           open={openDropdown === "item"}
           onToggle={() => toggleDropdown("item")}
@@ -366,8 +460,8 @@ export default function AdminReportsPanel({
       </View>
 
       <View style={styles.listHeader}>
-        <Text style={styles.sectionTitle}>Horas registradas</Text>
-        {qReports.isFetching ? (
+        <Text style={styles.sectionTitle}>Horas registradas y asignadas</Text>
+        {isFetching ? (
           <ActivityIndicator color={ACCENT} />
         ) : (
           <Text style={styles.counter}>{visibleRows.length} visibles</Text>
@@ -384,67 +478,83 @@ export default function AdminReportsPanel({
       ) : (
         <View style={styles.resultsBox}>
           <ScrollView style={styles.resultsScroll} nestedScrollEnabled>
-           <View style={styles.tableHeader}>
-  <View style={styles.cellDate}>
-    <Text style={styles.headerText}>Fecha</Text>
-  </View>
+            <View style={styles.tableHeader}>
+              <View style={styles.cellDate}>
+                <Text style={styles.headerText}>Fecha</Text>
+              </View>
 
-  <View style={styles.cellName}>
-    <Text style={styles.headerText}>Nombre</Text>
-  </View>
+              <View style={styles.cellType}>
+                <Text style={styles.headerText}>Tipo</Text>
+              </View>
 
-  <View style={styles.cellProject}>
-    <Text style={styles.headerText}>Proyecto</Text>
-  </View>
+              <View style={styles.cellName}>
+                <Text style={styles.headerText}>Nombre</Text>
+              </View>
 
-  <View style={styles.cellItem}>
-    <Text style={styles.headerText}>Item</Text>
-  </View>
+              <View style={styles.cellProject}>
+                <Text style={styles.headerText}>Proyecto</Text>
+              </View>
 
-  <View style={styles.cellTime}>
-    <Text style={styles.headerText}>Tiempo</Text>
-  </View>
-</View>
+              <View style={styles.cellItem}>
+                <Text style={styles.headerText}>Item</Text>
+              </View>
 
-{visibleRows.map((entry) => (
-  <View key={entry.id} style={styles.timeRow}>
-    <View style={styles.cellDate}>
-      <Text style={styles.cellText} numberOfLines={1}>
-        {formatDate(entry.work_date)}
-      </Text>
-    </View>
+              <View style={styles.cellTime}>
+                <Text style={styles.headerText}>Tiempo</Text>
+              </View>
+            </View>
 
-    <View style={styles.cellName}>
-      <Text style={styles.cellText} numberOfLines={1}>
-        {reportUserLabel(entry)}
-      </Text>
-    </View>
+            {visibleRows.map((entry) => (
+              <View key={`${entry.kind}-${entry.id}`} style={styles.timeRow}>
+                <View style={styles.cellDate}>
+                  <Text style={styles.cellText} numberOfLines={1}>
+                    {formatDate(entry.work_date)}
+                  </Text>
+                </View>
 
-    <View style={styles.cellProject}>
-      <Text style={styles.cellText} numberOfLines={1}>
-        {entry.project_name}
-      </Text>
+                <View style={styles.cellType}>
+                  <Text
+                    style={[
+                      styles.typeBadge,
+                      entry.kind === "assigned" && styles.typeBadgeAssigned,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {entry.kind === "assigned" ? "Asignada" : "Realizada"}
+                  </Text>
+                </View>
 
-      {!!entry.description && (
-        <Text style={styles.cellMuted} numberOfLines={1}>
-          {entry.description}
-        </Text>
-      )}
-    </View>
+                <View style={styles.cellName}>
+                  <Text style={styles.cellText} numberOfLines={1}>
+                    {entry.user_name}
+                  </Text>
+                </View>
 
-    <View style={styles.cellItem}>
-      <Text style={styles.itemBadgeText} numberOfLines={1}>
-        {entry.item_name}
-      </Text>
-    </View>
+                <View style={styles.cellProject}>
+                  <Text style={styles.cellText} numberOfLines={1}>
+                    {entry.project_name}
+                  </Text>
 
-    <View style={styles.cellTime}>
-      <Text style={styles.timeValue}>
-        {formatTimeValue(entry.hours)}
-      </Text>
-    </View>
-  </View>
-))}
+                  {!!entry.description && (
+                    <Text style={styles.cellMuted} numberOfLines={1}>
+                      {entry.description}
+                    </Text>
+                  )}
+                </View>
+
+                <View style={styles.cellItem}>
+                  <Text style={styles.itemBadgeText} numberOfLines={1}>
+                    {entry.item_name}
+                  </Text>
+                </View>
+
+                <View style={styles.cellTime}>
+                  <Text style={styles.timeValue}>
+                    {formatTimeValue(entry.hours)}
+                  </Text>
+                </View>
+              </View>
+            ))}
           </ScrollView>
         </View>
       )}
@@ -536,23 +646,23 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     fontSize: 12,
   },
- dropdownMenu: {
-  marginTop: 8,
-  backgroundColor: "#1b1d24",
-  borderColor: "#3a3f4d",
-  borderWidth: 1,
-  borderRadius: 16,
-  overflow: "hidden",
-},
+  dropdownMenu: {
+    marginTop: 8,
+    backgroundColor: "#1b1d24",
+    borderColor: "#3a3f4d",
+    borderWidth: 1,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
   dropdownScroll: {
     maxHeight: 360,
   },
- dropdownOption: {
-  paddingHorizontal: 12,
-  paddingVertical: 12,
-  borderBottomColor: "#313543",
-  borderBottomWidth: 1,
-},
+  dropdownOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomColor: "#313543",
+    borderBottomWidth: 1,
+  },
   dropdownOptionActive: {
     backgroundColor: "rgba(124,58,237,0.18)",
   },
@@ -629,105 +739,81 @@ const styles = StyleSheet.create({
   resultsScroll: {
     maxHeight: 620,
   },
-  reportRow: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  tableHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: FIELD,
     borderBottomColor: BORDER,
     borderBottomWidth: 1,
-    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
   },
-  compactTop: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-  },
-  compactUser: {
-    color: TEXT,
-    fontWeight: "900",
-    fontSize: 14,
-    flex: 1,
-  },
-  compactHours: {
-    color: ACCENT_2,
-    fontWeight: "900",
-    fontSize: 14,
-  },
-  compactMeta: {
+  headerText: {
     color: SUBTLE,
-    fontWeight: "800",
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
   },
-  compactDesc: {
+  timeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: CARD,
+    borderBottomColor: BORDER,
+    borderBottomWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  cellDate: {
+    width: 92,
+    paddingRight: 8,
+  },
+  cellType: {
+    width: 92,
+    paddingRight: 8,
+  },
+  cellName: {
+    width: 120,
+    paddingRight: 8,
+  },
+  cellProject: {
+    width: 270,
+    paddingRight: 8,
+  },
+  cellItem: {
+    width: 86,
+    paddingRight: 8,
+  },
+  cellTime: {
+    width: 58,
+    alignItems: "flex-end",
+  },
+  cellText: {
     color: TEXT,
-    opacity: 0.88,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  cellMuted: {
+    color: SUBTLE,
+    fontSize: 11,
+    fontWeight: "600",
     marginTop: 2,
   },
-  tableHeader: {
-  flexDirection: "row",
-  alignItems: "center",
-  backgroundColor: FIELD,
-  borderBottomColor: BORDER,
-  borderBottomWidth: 1,
-  paddingHorizontal: 10,
-  paddingVertical: 9,
-},
-headerText: {
-  color: SUBTLE,
-  fontSize: 11,
-  fontWeight: "900",
-  textTransform: "uppercase",
-},
-timeRow: {
-  flexDirection: "row",
-  alignItems: "center",
-  backgroundColor: CARD,
-  borderBottomColor: BORDER,
-  borderBottomWidth: 1,
-  paddingHorizontal: 10,
-  paddingVertical: 9,
-},
-cellDate: {
-  width: 92,
-  paddingRight: 8,
-},
-cellName: {
-  width: 120,
-  paddingRight: 8,
-},
-cellProject: {
-  width: 300,
-  paddingRight: 8,
-},
-cellItem: {
-  width: 86,
-  paddingRight: 8,
-},
-cellTime: {
-  width: 58,
-  alignItems: "flex-end",
-},
-cellText: {
-  color: TEXT,
-  fontSize: 13,
-  fontWeight: "800",
-},
-cellMuted: {
-  color: SUBTLE,
-  fontSize: 11,
-  fontWeight: "600",
-  marginTop: 2,
-},
-itemBadgeText: {
-  color: ACCENT_2,
-  fontSize: 12,
-  fontWeight: "900",
-},
-timeValue: {
-  color: TEXT,
-  fontSize: 13,
-  fontWeight: "900",
-},
+  itemBadgeText: {
+    color: ACCENT_2,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  timeValue: {
+    color: TEXT,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  typeBadge: {
+    color: ACCENT_2,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  typeBadgeAssigned: {
+    color: "#c4b5fd",
+  },
 });

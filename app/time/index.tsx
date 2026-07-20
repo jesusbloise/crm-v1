@@ -4,8 +4,12 @@ import {
   listMyTimeEntries,
   listWorkItems,
   listWorkProjects,
-  type TimeEntry
+  type TimeEntry,
 } from "@/src/api/timeTracking";
+import {
+  listMyWorkAssignments,
+  type WorkAssignment,
+} from "@/src/api/workAssignments";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
@@ -56,6 +60,7 @@ function toNumber(v: string | number | null | undefined) {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n : 0;
 }
+
 function formatHours(v: string | number | null | undefined) {
   const totalMinutes = Math.round(toNumber(v) * 60);
   const h = Math.floor(totalMinutes / 60);
@@ -67,25 +72,14 @@ function displayUserName(item: TimeEntry) {
   return item.user_name || item.user_email || "Sin nombre";
 }
 
-function Pill({
-  label,
-  active,
-  onPress,
-}: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={[styles.pill, active && styles.pillActive]}
-    >
-      <Text style={[styles.pillText, active && styles.pillTextActive]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
+function formatAssignmentTime(item: WorkAssignment) {
+  if (item.start_time && item.end_time) {
+    return `${item.start_time} - ${item.end_time}`;
+  }
+
+  if (item.start_time) return item.start_time;
+
+  return "Sin hora";
 }
 
 function SelectDropdown({
@@ -154,6 +148,7 @@ function SelectDropdown({
     </View>
   );
 }
+
 function EntryRow({ item }: { item: TimeEntry }) {
   return (
     <View style={styles.timeRow}>
@@ -171,6 +166,7 @@ function EntryRow({ item }: { item: TimeEntry }) {
         <Text style={styles.cellText} numberOfLines={1}>
           {item.project_name}
         </Text>
+
         {!!item.description && (
           <Text style={styles.cellMuted} numberOfLines={1}>
             {item.description}
@@ -191,6 +187,36 @@ function EntryRow({ item }: { item: TimeEntry }) {
   );
 }
 
+function AssignmentRow({ item }: { item: WorkAssignment }) {
+  return (
+    <View style={styles.assignmentRow}>
+      <View style={styles.assignmentTop}>
+        <Text style={styles.assignmentTitle} numberOfLines={1}>
+          {item.project_name}
+        </Text>
+
+        <Text style={styles.assignmentHours}>
+          {formatHours(item.estimated_hours)}
+        </Text>
+      </View>
+
+      <Text style={styles.assignmentMeta} numberOfLines={1}>
+        {moneyDate(item.assignment_date)}   {formatAssignmentTime(item)}
+      </Text>
+
+      <Text style={styles.assignmentMeta} numberOfLines={1}>
+        Item: {item.item_name}
+      </Text>
+
+      {!!item.description && (
+        <Text style={styles.assignmentDesc} numberOfLines={2}>
+          {item.description}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 export default function TimeIndexScreen() {
   const qc = useQueryClient();
 
@@ -200,9 +226,9 @@ export default function TimeIndexScreen() {
   const [hours, setHours] = useState("");
   const [description, setDescription] = useState("");
   const [role, setRole] = useState<string | null>(null);
-const [openDropdown, setOpenDropdown] = useState<"project" | "item" | null>(
-  null
-);
+  const [openDropdown, setOpenDropdown] = useState<"project" | "item" | null>(
+    null
+  );
 
   const qProjects = useQuery({
     queryKey: ["work-projects"],
@@ -219,12 +245,16 @@ const [openDropdown, setOpenDropdown] = useState<"project" | "item" | null>(
     queryFn: () => listMyTimeEntries(),
   });
 
+  const qAssignments = useQuery({
+    queryKey: ["work-assignments", "mine"],
+    queryFn: () => listMyWorkAssignments(),
+  });
+
   const projects = qProjects.data ?? [];
   const items = qItems.data ?? [];
   const entries = qMine.data?.rows ?? [];
-  const totalHours = qMine.data?.total_hours ?? 0;
-const canAdminHours = role === "owner" || role === "admin";
-
+  const assignments = qAssignments.data?.rows ?? [];
+  const canAdminHours = role === "owner" || role === "admin";
 
   useEffect(() => {
     if (!projectId && projects.length > 0) {
@@ -239,42 +269,33 @@ const canAdminHours = role === "owner" || role === "admin";
   }, [itemId, items]);
 
   useEffect(() => {
-  getRoleNow().then((r) => setRole(r));
-}, []);
+    getRoleNow().then((r) => setRole(r));
+  }, []);
 
-
-  const selectedProject = useMemo(
-    () => projects.find((p) => p.id === projectId),
-    [projects, projectId]
+  const projectOptions = useMemo<DropdownOption[]>(
+    () =>
+      projects.map((p) => ({
+        id: p.id,
+        label: p.name,
+        sublabel: p.client_name || p.description || null,
+      })),
+    [projects]
   );
 
-  const selectedItem = useMemo(
-    () => items.find((i) => i.id === itemId),
-    [items, itemId]
+  const itemOptions = useMemo<DropdownOption[]>(
+    () =>
+      items.map((it) => ({
+        id: it.id,
+        label: it.name,
+        sublabel: it.description || null,
+      })),
+    [items]
   );
- const projectOptions = useMemo<DropdownOption[]>(
-  () =>
-    projects.map((p) => ({
-      id: p.id,
-      label: p.name,
-      sublabel: p.client_name || p.description || null,
-    })),
-  [projects]
-);
 
-const itemOptions = useMemo<DropdownOption[]>(
-  () =>
-    items.map((it) => ({
-      id: it.id,
-      label: it.name,
-      sublabel: it.description || null,
-    })),
-  [items]
-);
+  function toggleDropdown(name: "project" | "item") {
+    setOpenDropdown((current) => (current === name ? null : name));
+  }
 
-function toggleDropdown(name: "project" | "item") {
-  setOpenDropdown((current) => (current === name ? null : name));
-}
   const createMut = useMutation({
     mutationFn: createTimeEntry,
     onSuccess: async () => {
@@ -291,9 +312,17 @@ function toggleDropdown(name: "project" | "item") {
     },
   });
 
-  const loading = qProjects.isLoading || qItems.isLoading || qMine.isLoading;
+  const loading =
+    qProjects.isLoading ||
+    qItems.isLoading ||
+    qMine.isLoading ||
+    qAssignments.isLoading;
+
   const refreshing =
-    qProjects.isFetching || qItems.isFetching || qMine.isFetching;
+    qProjects.isFetching ||
+    qItems.isFetching ||
+    qMine.isFetching ||
+    qAssignments.isFetching;
 
   const canSubmit =
     !!projectId &&
@@ -317,12 +346,12 @@ function toggleDropdown(name: "project" | "item") {
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate)) {
-      Alert.alert("Fecha inválida", "Usa el formato YYYY-MM-DD.");
+      Alert.alert("Fecha invalida", "Usa el formato YYYY-MM-DD.");
       return;
     }
 
     if (!Number.isFinite(h) || h <= 0 || h > 24) {
-      Alert.alert("Horas inválidas", "Ingresa un número entre 0 y 24.");
+      Alert.alert("Horas invalidas", "Ingresa un numero entre 0 y 24.");
       return;
     }
 
@@ -350,28 +379,32 @@ function toggleDropdown(name: "project" | "item") {
               qProjects.refetch();
               qItems.refetch();
               qMine.refetch();
+              qAssignments.refetch();
             }}
             tintColor={ACCENT}
           />
         }
         ListHeaderComponent={
           <View>
-            <View style={{ flex: 1 }}>
-  <Text style={styles.kicker}>Registro de horas</Text>
-  <Text style={styles.title}>Mis horas</Text>
-  <Text style={styles.subtitle}>
-    Registra el trabajo realizado por proyecto e ítem.
-  </Text>
+            <View style={styles.header}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.kicker}>Registro de horas</Text>
+                <Text style={styles.title}>Mis horas</Text>
+                <Text style={styles.subtitle}>
+                  Registra el trabajo realizado por proyecto e item.
+                </Text>
 
-  {canAdminHours && (
-    <Pressable
-      style={styles.adminButton}
-      onPress={() => router.push("/time/admin" as any)}
-    >
-      <Text style={styles.adminButtonText}>Administrar horas</Text>
-    </Pressable>
-  )}
-</View>
+                {canAdminHours && (
+                  <Pressable
+                    style={styles.adminButton}
+                    onPress={() => router.push("/time/admin" as any)}
+                  >
+                    <Text style={styles.adminButtonText}>Administrar horas</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>Nuevo registro</Text>
 
@@ -382,49 +415,49 @@ function toggleDropdown(name: "project" | "item") {
                 </View>
               ) : (
                 <>
-    {projects.length === 0 ? (
-  <>
-    <Text style={styles.label}>Proyecto</Text>
-    <Text style={styles.emptyText}>
-      No hay proyectos activos. Un admin debe crear proyectos.
-    </Text>
-  </>
-) : (
-  <SelectDropdown
-    label="Proyecto"
-    value={projectId}
-    placeholder="Selecciona un proyecto"
-    options={projectOptions}
-    open={openDropdown === "project"}
-    onToggle={() => toggleDropdown("project")}
-    onSelect={(id) => {
-      setProjectId(id);
-      setOpenDropdown(null);
-    }}
-  />
-)}
+                  {projects.length === 0 ? (
+                    <>
+                      <Text style={styles.label}>Proyecto</Text>
+                      <Text style={styles.emptyText}>
+                        No hay proyectos activos. Un admin debe crear proyectos.
+                      </Text>
+                    </>
+                  ) : (
+                    <SelectDropdown
+                      label="Proyecto"
+                      value={projectId}
+                      placeholder="Selecciona un proyecto"
+                      options={projectOptions}
+                      open={openDropdown === "project"}
+                      onToggle={() => toggleDropdown("project")}
+                      onSelect={(id) => {
+                        setProjectId(id);
+                        setOpenDropdown(null);
+                      }}
+                    />
+                  )}
 
-   {items.length === 0 ? (
-  <>
-    <Text style={styles.label}>Item</Text>
-    <Text style={styles.emptyText}>
-      No hay items activos. Un admin debe crear items.
-    </Text>
-  </>
-) : (
-  <SelectDropdown
-    label="Item"
-    value={itemId}
-    placeholder="Selecciona un item"
-    options={itemOptions}
-    open={openDropdown === "item"}
-    onToggle={() => toggleDropdown("item")}
-    onSelect={(id) => {
-      setItemId(id);
-      setOpenDropdown(null);
-    }}
-  />
-)}
+                  {items.length === 0 ? (
+                    <>
+                      <Text style={styles.label}>Item</Text>
+                      <Text style={styles.emptyText}>
+                        No hay items activos. Un admin debe crear items.
+                      </Text>
+                    </>
+                  ) : (
+                    <SelectDropdown
+                      label="Item"
+                      value={itemId}
+                      placeholder="Selecciona un item"
+                      options={itemOptions}
+                      open={openDropdown === "item"}
+                      onToggle={() => toggleDropdown("item")}
+                      onSelect={(id) => {
+                        setItemId(id);
+                        setOpenDropdown(null);
+                      }}
+                    />
+                  )}
 
                   <View style={styles.row}>
                     <View style={styles.col}>
@@ -478,30 +511,55 @@ function toggleDropdown(name: "project" | "item") {
             </View>
 
             <View style={styles.listHeader}>
+              <Text style={styles.sectionTitle}>Mis asignaciones futuras</Text>
+              <Text style={styles.listCounter}>
+                {assignments.length} pendientes
+              </Text>
+            </View>
+
+            {assignments.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>
+                  Sin asignaciones pendientes
+                </Text>
+                <Text style={styles.emptyText}>
+                  Cuando un admin te asigne horas futuras, apareceran aqui.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.assignmentsBox}>
+                {assignments.map((item) => (
+                  <AssignmentRow key={item.id} item={item} />
+                ))}
+              </View>
+            )}
+
+            <View style={styles.listHeader}>
               <Text style={styles.sectionTitle}>Historial</Text>
               <Text style={styles.listCounter}>{entries.length} registros</Text>
             </View>
+
             <View style={styles.tableHeader}>
-  <View style={styles.cellDate}>
-    <Text style={styles.headerText}>Fecha</Text>
-  </View>
+              <View style={styles.cellDate}>
+                <Text style={styles.headerText}>Fecha</Text>
+              </View>
 
-  <View style={styles.cellName}>
-    <Text style={styles.headerText}>Nombre</Text>
-  </View>
+              <View style={styles.cellName}>
+                <Text style={styles.headerText}>Nombre</Text>
+              </View>
 
-  <View style={styles.cellProject}>
-    <Text style={styles.headerText}>Proyecto</Text>
-  </View>
+              <View style={styles.cellProject}>
+                <Text style={styles.headerText}>Proyecto</Text>
+              </View>
 
-  <View style={styles.cellItem}>
-    <Text style={styles.headerText}>Item</Text>
-  </View>
+              <View style={styles.cellItem}>
+                <Text style={styles.headerText}>Item</Text>
+              </View>
 
-  <View style={styles.cellTime}>
-    <Text style={styles.headerText}>Tiempo</Text>
-  </View>
-</View>
+              <View style={styles.cellTime}>
+                <Text style={styles.headerText}>Tiempo</Text>
+              </View>
+            </View>
           </View>
         }
         renderItem={({ item }) => <EntryRow item={item} />}
@@ -510,7 +568,7 @@ function toggleDropdown(name: "project" | "item") {
             <View style={styles.emptyState}>
               <Text style={styles.emptyTitle}>Sin registros todavia</Text>
               <Text style={styles.emptyText}>
-                Cuando registres horas, aparecen aqui.
+                Cuando registres horas, apareceran aqui.
               </Text>
             </View>
           ) : null
@@ -554,26 +612,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
     maxWidth: 520,
   },
-  totalCard: {
-    minWidth: 96,
-    backgroundColor: "rgba(124,58,237,0.12)",
-    borderColor: "rgba(124,58,237,0.45)",
-    borderWidth: 1,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 12,
-  },
-  totalNumber: {
-    color: TEXT,
-    fontSize: 24,
-    fontWeight: "900",
-  },
-  totalLabel: {
-    color: ACCENT,
-    fontSize: 12,
-    fontWeight: "800",
-  },
   card: {
     backgroundColor: CARD,
     borderWidth: 1,
@@ -595,34 +633,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     textTransform: "uppercase",
     letterSpacing: 0.4,
-  },
-  pillRow: {
-    gap: 8,
-    paddingRight: 12,
-  },
-  pill: {
-    paddingHorizontal: 13,
-    paddingVertical: 9,
-    borderRadius: 999,
-    backgroundColor: FIELD,
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-  pillActive: {
-    backgroundColor: "rgba(124,58,237,0.16)",
-    borderColor: ACCENT,
-  },
-  pillText: {
-    color: SUBTLE,
-    fontWeight: "800",
-  },
-  pillTextActive: {
-    color: TEXT,
-  },
-  hint: {
-    color: SUBTLE,
-    marginTop: 8,
-    fontSize: 12,
   },
   row: {
     flexDirection: "row",
@@ -679,46 +689,6 @@ const styles = StyleSheet.create({
     color: SUBTLE,
     fontWeight: "800",
   },
-  entryCard: {
-    backgroundColor: CARD,
-    borderColor: BORDER,
-    borderWidth: 1,
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 10,
-  },
-  entryTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  entryTitle: {
-    color: TEXT,
-    fontSize: 15,
-    fontWeight: "900",
-  },
-  entrySub: {
-    color: SUBTLE,
-    marginTop: 3,
-    fontWeight: "700",
-  },
-  hoursBadge: {
-    backgroundColor: "rgba(34,211,238,0.12)",
-    borderColor: "rgba(34,211,238,0.38)",
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  hoursText: {
-    color: ACCENT_2,
-    fontWeight: "900",
-  },
-  entryDescription: {
-    color: SUBTLE,
-    marginTop: 10,
-    lineHeight: 19,
-  },
   emptyState: {
     backgroundColor: CARD,
     borderColor: BORDER,
@@ -726,6 +696,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     padding: 20,
     alignItems: "center",
+    marginBottom: 18,
   },
   emptyTitle: {
     color: TEXT,
@@ -738,142 +709,188 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   adminButton: {
-  alignSelf: "flex-start",
-  marginTop: 12,
-  backgroundColor: "rgba(124,58,237,0.16)",
-  borderColor: "rgba(124,58,237,0.45)",
-  borderWidth: 1,
-  borderRadius: 999,
-  paddingHorizontal: 14,
-  paddingVertical: 9,
-},
-adminButtonText: {
-  color: TEXT,
-  fontWeight: "900",
-},
-tableHeader: {
-  flexDirection: "row",
-  alignItems: "center",
-  backgroundColor: FIELD,
-  borderWidth: 1,
-  borderColor: BORDER,
-  borderRadius: 12,
-  paddingHorizontal: 10,
-  paddingVertical: 9,
-  marginBottom: 6,
-},
-headerText: {
-  color: SUBTLE,
-  fontSize: 11,
-  fontWeight: "900",
-  textTransform: "uppercase",
-},
-timeRow: {
-  flexDirection: "row",
-  alignItems: "center",
-  backgroundColor: CARD,
-  borderWidth: 1,
-  borderColor: BORDER,
-  borderRadius: 12,
-  paddingHorizontal: 10,
-  paddingVertical: 9,
-  marginBottom: 6,
-},
-cellDate: {
-  width: 92,
-  paddingRight: 8,
-},
-cellName: {
-  width: 120,
-  paddingRight: 8,
-},
-cellProject: {
-  width: 300,
-  paddingRight: 8,
-},
-cellItem: {
-  width: 86,
-  paddingRight: 8,
-},
-cellTime: {
-  width: 58,
-  alignItems: "flex-end",
-},
-cellText: {
-  color: TEXT,
-  fontSize: 13,
-  fontWeight: "800",
-},
-cellMuted: {
-  color: SUBTLE,
-  fontSize: 11,
-  fontWeight: "600",
-  marginTop: 2,
-},
-itemBadgeText: {
-  color: ACCENT_2,
-  fontSize: 12,
-  fontWeight: "900",
-},
-timeValue: {
-  color: TEXT,
-  fontSize: 13,
-  fontWeight: "900",
-},
+    alignSelf: "flex-start",
+    marginTop: 12,
+    backgroundColor: "rgba(124,58,237,0.16)",
+    borderColor: "rgba(124,58,237,0.45)",
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  adminButtonText: {
+    color: TEXT,
+    fontWeight: "900",
+  },
 
-dropdownButton: {
-  backgroundColor: FIELD,
-  borderColor: BORDER,
-  borderWidth: 1,
-  borderRadius: 14,
-  paddingHorizontal: 12,
-  paddingVertical: 13,
-  flexDirection: "row",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 10,
-},
-dropdownButtonText: {
-  color: TEXT,
-  fontWeight: "800",
-  flex: 1,
-},
-dropdownIcon: {
-  color: ACCENT_2,
-  fontWeight: "900",
-  fontSize: 12,
-},
-dropdownMenu: {
-  marginTop: 8,
-  backgroundColor: "#1b1d24",
-  borderColor: "#3a3f4d",
-  borderWidth: 1,
-  borderRadius: 16,
-  overflow: "hidden",
-},
-dropdownScroll: {
-  maxHeight: 360,
-},
-dropdownOption: {
-  paddingHorizontal: 12,
-  paddingVertical: 12,
-  borderBottomColor: "#313543",
-  borderBottomWidth: 1,
-},
-dropdownOptionActive: {
-  backgroundColor: "rgba(124,58,237,0.22)",
-},
-dropdownOptionText: {
-  color: SUBTLE,
-  fontWeight: "800",
-},
-dropdownOptionTextActive: {
-  color: TEXT,
-},
-dropdownRole: {
-  color: ACCENT_2,
-  fontSize: 12,
-  fontWeight: "800",
-  marginTop: 3,
-},
+  assignmentsBox: {
+    backgroundColor: CARD,
+    borderColor: BORDER,
+    borderWidth: 1,
+    borderRadius: 18,
+    overflow: "hidden",
+    marginBottom: 18,
+  },
+  assignmentRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomColor: BORDER,
+    borderBottomWidth: 1,
+    gap: 4,
+  },
+  assignmentTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  },
+  assignmentTitle: {
+    color: TEXT,
+    fontWeight: "900",
+    fontSize: 14,
+    flex: 1,
+  },
+  assignmentHours: {
+    color: ACCENT_2,
+    fontWeight: "900",
+    fontSize: 14,
+  },
+  assignmentMeta: {
+    color: SUBTLE,
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  assignmentDesc: {
+    color: TEXT,
+    opacity: 0.88,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+
+  tableHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: FIELD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    marginBottom: 6,
+  },
+  headerText: {
+    color: SUBTLE,
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  timeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    marginBottom: 6,
+  },
+  cellDate: {
+    width: 92,
+    paddingRight: 8,
+  },
+  cellName: {
+    width: 120,
+    paddingRight: 8,
+  },
+  cellProject: {
+    width: 300,
+    paddingRight: 8,
+  },
+  cellItem: {
+    width: 86,
+    paddingRight: 8,
+  },
+  cellTime: {
+    width: 58,
+    alignItems: "flex-end",
+  },
+  cellText: {
+    color: TEXT,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  cellMuted: {
+    color: SUBTLE,
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  itemBadgeText: {
+    color: ACCENT_2,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  timeValue: {
+    color: TEXT,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  dropdownButton: {
+    backgroundColor: FIELD,
+    borderColor: BORDER,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  dropdownButtonText: {
+    color: TEXT,
+    fontWeight: "800",
+    flex: 1,
+  },
+  dropdownIcon: {
+    color: ACCENT_2,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  dropdownMenu: {
+    marginTop: 8,
+    backgroundColor: "#1b1d24",
+    borderColor: "#3a3f4d",
+    borderWidth: 1,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
+  dropdownScroll: {
+    maxHeight: 360,
+  },
+  dropdownOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomColor: "#313543",
+    borderBottomWidth: 1,
+  },
+  dropdownOptionActive: {
+    backgroundColor: "rgba(124,58,237,0.22)",
+  },
+  dropdownOptionText: {
+    color: SUBTLE,
+    fontWeight: "800",
+  },
+  dropdownOptionTextActive: {
+    color: TEXT,
+  },
+  dropdownRole: {
+    color: ACCENT_2,
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 3,
+  },
 });
