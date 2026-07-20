@@ -1,6 +1,6 @@
 // app/deals/[id].tsx
 import { listAccounts } from "@/src/api/accounts";
-import { listContacts } from "@/src/api/contacts";
+import { listContacts, type Contact } from "@/src/api/contacts";
 import {
   deleteDeal,
   getDeal,
@@ -61,7 +61,10 @@ export default function DealDetail() {
     enabled: !!dealId,
   });
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
-  const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+const qCon = useQuery<Contact[]>({
+  queryKey: ["contacts"],
+  queryFn: () => listContacts(),
+});
 
   // Estado editable del deal
   const [title, setTitle] = useState("");

@@ -28,7 +28,7 @@ try {
 
 import { listAccounts } from "@/src/api/accounts";
 import { listActivities, type Activity } from "@/src/api/activities";
-import { listContacts } from "@/src/api/contacts";
+import { listContacts, type Contact } from "@/src/api/contacts";
 import { listDeals } from "@/src/api/deals";
 import { listLeads } from "@/src/api/leads";
 
@@ -64,7 +64,10 @@ export default function Home() {
   // Data conteos
   const qDeals = useQuery({ queryKey: ["deals"], queryFn: listDeals });
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
-  const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+const qCon = useQuery<Contact[]>({
+  queryKey: ["contacts"],
+  queryFn: () => listContacts(),
+});
   const qLeads = useQuery({ queryKey: ["leads"], queryFn: listLeads });
 
   // Data de actividades (para la lista principal)

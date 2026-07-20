@@ -1,9 +1,9 @@
 // app/accounts/[id].tsx
 import { deleteAccount, getAccount, updateAccount } from "@/src/api/accounts";
-import { listContacts } from "@/src/api/contacts";
+import { listContacts, type Contact } from "@/src/api/contacts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Stack, router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   FlatList,
   Pressable,
@@ -35,7 +35,10 @@ export default function AccountDetail() {
     queryFn: () => getAccount(accountId!),
     enabled: !!accountId,
   });
-  const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const qCon = useQuery<Contact[]>({
+  queryKey: ["contacts"],
+  queryFn: () => listContacts(),
+});
 
   const contacts = useMemo(
     () => (qCon.data ?? []).filter((c) => c.account_id === accountId),

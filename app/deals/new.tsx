@@ -1,18 +1,18 @@
 // app/deals/new.tsx
 import { listAccounts } from "@/src/api/accounts";
-import { listContacts } from "@/src/api/contacts";
+import { listContacts, type Contact } from "@/src/api/contacts";
 import { createDeal, type DealStage } from "@/src/api/deals";
 import { uid } from "@/src/utils/uid";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
 import { useMemo, useState } from "react";
 import {
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
 /* Etapas */
@@ -39,7 +39,10 @@ const DARK_SUBTLE  = "#475569";
 export default function NewDeal() {
   const qc = useQueryClient();
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
-  const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const qCon = useQuery<Contact[]>({
+  queryKey: ["contacts"],
+  queryFn: () => listContacts(),
+});
 
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState<string>("");
