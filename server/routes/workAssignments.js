@@ -9,6 +9,10 @@ const {
   resolveUserId,
 } = require("../lib/authorize");
 
+const {
+  notifyWorkAssignmentCreated,
+} = require("../lib/workAssignmentNotifications");
+
 const router = Router();
 
 const VALID_STATUS = new Set(["assigned", "done", "cancelled"]);
@@ -96,14 +100,7 @@ router.get(
   "/work-assignments",
   canRead("work_assignments"),
   wrap(async (req, res) => {
-    const {
-      userId,
-      projectId,
-      itemId,
-      from,
-      to,
-      status,
-    } = req.query || {};
+    const { userId, projectId, itemId, from, to, status } = req.query || {};
 
     const clauses = ["wa.tenant_id = ?"];
     const params = [req.tenantId];
@@ -298,6 +295,10 @@ router.post(
         now
       );
 
+    notifyWorkAssignmentCreated(row).catch((err) => {
+      console.error("Error notificando asignacion de horas:", err);
+    });
+
     res.status(201).json(row);
   })
 );
@@ -351,9 +352,7 @@ router.patch(
         : current.description;
 
     const status =
-      body.status !== undefined
-        ? coerceStr(body.status)
-        : current.status;
+      body.status !== undefined ? coerceStr(body.status) : current.status;
 
     if (!isValidDate(assignment_date)) {
       return res.status(400).json({ error: "invalid_assignment_date" });
