@@ -73,6 +73,21 @@ function displayUserName(item: TimeEntry) {
   return item.user_name || item.user_email || "Sin nombre";
 }
 
+function entrySearchText(item: TimeEntry) {
+  return [
+    displayUserName(item),
+    item.work_date,
+    moneyDate(item.work_date),
+    item.project_name,
+    item.item_name,
+    item.hours,
+    item.description,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 function formatAssignmentTime(item: WorkAssignment) {
   if (item.start_time && item.end_time) {
     return `${item.start_time} - ${item.end_time}`;
@@ -245,6 +260,7 @@ export default function TimeIndexScreen() {
   const [hours, setHours] = useState("");
   const [description, setDescription] = useState("");
   const [role, setRole] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [openDropdown, setOpenDropdown] = useState<"project" | "item" | null>(
     null
   );
@@ -272,6 +288,13 @@ export default function TimeIndexScreen() {
   const projects = qProjects.data ?? [];
   const items = qItems.data ?? [];
   const entries = qMine.data?.rows ?? [];
+  const visibleEntries = useMemo(() => {
+  const q = search.trim().toLowerCase();
+
+  if (!q) return entries;
+
+  return entries.filter((item) => entrySearchText(item).includes(q));
+}, [entries, search]);
  const assignments = (qAssignments.data?.rows ?? []).filter(
   (item) => item.status === "assigned"
 );
@@ -420,7 +443,7 @@ export default function TimeIndexScreen() {
       <Stack.Screen options={{ title: "Mis horas" }} />
 
       <FlatList
-        data={entries}
+        data={visibleEntries}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.content}
         refreshControl={
@@ -592,12 +615,31 @@ export default function TimeIndexScreen() {
               </View>
             )}
 
-            <View style={styles.listHeader}>
-              <Text style={styles.sectionTitle}>Historial</Text>
-              <Text style={styles.listCounter}>{entries.length} registros</Text>
-            </View>
+         <View style={styles.listHeader}>
+  <Text style={styles.sectionTitle}>Historial</Text>
+  <Text style={styles.listCounter}>
+    {visibleEntries.length} de {entries.length} registros
+  </Text>
+</View>
 
-            <View style={styles.tableHeader}>
+<View style={styles.searchBox}>
+  <Text style={styles.label}>Buscar en mis horas</Text>
+  <TextInput
+    value={search}
+    onChangeText={setSearch}
+    placeholder="Buscar por proyecto, item, fecha o comentario"
+    placeholderTextColor="#6b7280"
+    style={styles.input}
+  />
+
+  {!!search.trim() && (
+    <Pressable style={styles.clearSearchButton} onPress={() => setSearch("")}>
+      <Text style={styles.clearSearchText}>Limpiar busqueda</Text>
+    </Pressable>
+  )}
+</View>
+
+<View style={styles.tableHeader}>
               <View style={styles.cellDate}>
                 <Text style={styles.headerText}>Fecha</Text>
               </View>
@@ -965,4 +1007,27 @@ assignmentButtonText: {
     fontWeight: "800",
     marginTop: 3,
   },
+  searchBox: {
+  backgroundColor: CARD,
+  borderColor: BORDER,
+  borderWidth: 1,
+  borderRadius: 18,
+  padding: 14,
+  marginBottom: 12,
+},
+clearSearchButton: {
+  alignSelf: "flex-start",
+  marginTop: 10,
+  backgroundColor: FIELD,
+  borderColor: BORDER,
+  borderWidth: 1,
+  borderRadius: 999,
+  paddingHorizontal: 12,
+  paddingVertical: 8,
+},
+clearSearchText: {
+  color: TEXT,
+  fontWeight: "900",
+  fontSize: 12,
+},
 });

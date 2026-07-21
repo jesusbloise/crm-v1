@@ -99,6 +99,50 @@ function entrySearchText(entry: ReportRow) {
     .toLowerCase();
 }
 
+function csvEscape(value: any) {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename: string, rows: ReportRow[]) {
+  const headers = [
+    "Fecha",
+    "Tipo",
+    "Usuario",
+    "Proyecto",
+    "Item",
+    "Horas",
+    "Comentario",
+  ];
+
+  const lines = rows.map((entry) => [
+    formatDate(entry.work_date),
+    entry.kind === "assigned" ? "Asignada" : "Realizada",
+    entry.user_name,
+    entry.project_name,
+    entry.item_name,
+    formatTimeValue(entry.hours),
+    entry.description || "",
+  ]);
+
+  const csv = [headers, ...lines]
+    .map((row) => row.map(csvEscape).join(";"))
+    .join("\n");
+
+  const blob = new Blob(["\uFEFF" + csv], {
+    type: "text/csv;charset=utf-8;",
+  });
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  link.click();
+
+  URL.revokeObjectURL(url);
+}
+
 function SelectDropdown({
   label,
   value,
@@ -343,6 +387,13 @@ export default function AdminReportsPanel({
     setOpenDropdown(null);
   }
 
+function exportReport() {
+  const today = new Date().toISOString().slice(0, 10);
+  const filename = `reporte-horas-${today}.csv`;
+
+  downloadCsv(filename, visibleRows);
+}
+
   return (
     <View>
       <View style={styles.formCard}>
@@ -449,14 +500,25 @@ export default function AdminReportsPanel({
         </View>
 
         <View style={styles.actions}>
-          <Pressable style={styles.primaryButton} onPress={applyFilters}>
-            <Text style={styles.primaryButtonText}>Aplicar filtros</Text>
-          </Pressable>
+  <Pressable style={styles.primaryButton} onPress={applyFilters}>
+    <Text style={styles.primaryButtonText}>Aplicar filtros</Text>
+  </Pressable>
 
-          <Pressable style={styles.secondaryButton} onPress={clearFilters}>
-            <Text style={styles.secondaryText}>Limpiar</Text>
-          </Pressable>
-        </View>
+  <Pressable style={styles.secondaryButton} onPress={clearFilters}>
+    <Text style={styles.secondaryText}>Limpiar</Text>
+  </Pressable>
+
+  <Pressable
+    style={[
+      styles.exportButton,
+      visibleRows.length === 0 && styles.exportButtonDisabled,
+    ]}
+    disabled={visibleRows.length === 0}
+    onPress={exportReport}
+  >
+    <Text style={styles.exportButtonText}>Exportar CSV</Text>
+  </Pressable>
+</View>
       </View>
 
       <View style={styles.listHeader}>
@@ -816,4 +878,20 @@ const styles = StyleSheet.create({
   typeBadgeAssigned: {
     color: "#c4b5fd",
   },
+  exportButton: {
+  marginTop: 16,
+  backgroundColor: "rgba(34,211,238,0.12)",
+  borderColor: "rgba(34,211,238,0.38)",
+  borderWidth: 1,
+  borderRadius: 12,
+  paddingVertical: 14,
+  paddingHorizontal: 16,
+},
+exportButtonDisabled: {
+  opacity: 0.45,
+},
+exportButtonText: {
+  color: ACCENT_2,
+  fontWeight: "900",
+},
 });
