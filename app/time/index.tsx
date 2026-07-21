@@ -42,6 +42,17 @@ type DropdownOption = {
   sublabel?: string | null;
 };
 
+type WeeklyDay = {
+  key: string;
+  label: string;
+  value: number;
+};
+
+type TopSummary = {
+  label: string;
+  value: number;
+};
+
 function todayLocal() {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -67,6 +78,69 @@ function formatHours(v: string | number | null | undefined) {
   const h = Math.floor(totalMinutes / 60);
   const m = totalMinutes % 60;
   return `${h}:${String(m).padStart(2, "0")}`;
+}
+function dateKey(d: Date) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseLocalDate(value?: string | null) {
+  if (!value) return null;
+
+  const parts = value.split("-").map(Number);
+  if (parts.length !== 3) return null;
+
+  const [year, month, day] = parts;
+  if (!year || !month || !day) return null;
+
+  return new Date(year, month - 1, day);
+}
+
+function startOfCurrentWeek() {
+  const d = new Date();
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+
+  const monday = new Date(d);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(d.getDate() + diff);
+
+  return monday;
+}
+
+function sameMonth(date: Date, base: Date) {
+  return (
+    date.getFullYear() === base.getFullYear() &&
+    date.getMonth() === base.getMonth()
+  );
+}
+
+function getTopSummary(
+  rows: TimeEntry[],
+  field: "project_name" | "item_name"
+): TopSummary {
+  const map = new Map<string, number>();
+
+  for (const row of rows) {
+    const label = String(row[field] || "Sin nombre").trim() || "Sin nombre";
+    map.set(label, (map.get(label) || 0) + toNumber(row.hours));
+  }
+
+  const [first] = Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+
+  if (!first) {
+    return {
+      label: "Sin datos",
+      value: 0,
+    };
+  }
+
+  return {
+    label: first[0],
+    value: first[1],
+  };
 }
 
 function displayUserName(item: TimeEntry) {
@@ -97,7 +171,112 @@ function formatAssignmentTime(item: WorkAssignment) {
 
   return "Sin hora";
 }
+function SummaryStat({
+  label,
+  value,
+  subvalue,
+}: {
+  label: string;
+  value: string;
+  subvalue?: string;
+}) {
+  return (
+    <View style={styles.summaryStat}>
+      <Text style={styles.summaryStatValue} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={styles.summaryStatLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      {!!subvalue && (
+        <Text style={styles.summaryStatSubvalue} numberOfLines={1}>
+          {subvalue}
+        </Text>
+      )}
+    </View>
+  );
+}
 
+function WeeklyChart({ data }: { data: WeeklyDay[] }) {
+  const max = Math.max(...data.map((item) => item.value), 0);
+
+  return (
+    <View style={styles.weeklyCard}>
+      <View style={styles.weeklyHeader}>
+        <View>
+          <Text style={styles.weeklyTitle}>Horas esta semana</Text>
+          <Text style={styles.weeklySubtitle}>Lunes a domingo</Text>
+        </View>
+
+        <Text style={styles.weeklyTotal}>
+          {formatHours(data.reduce((sum, item) => sum + item.value, 0))}
+        </Text>
+      </View>
+
+      <View style={styles.weeklyBars}>
+        {data.map((item) => {
+          const height = max > 0 ? Math.max(8, Math.round((item.value / max) * 78)) : 8;
+
+          return (
+            <View key={item.key} style={styles.weeklyDay}>
+              <View style={styles.weeklyBarTrack}>
+                <View style={[styles.weeklyBarFill, { height }]} />
+              </View>
+
+              <Text style={styles.weeklyDayLabel}>{item.label}</Text>
+              <Text style={styles.weeklyDayValue}>{formatHours(item.value)}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+function PersonalSummary({
+  weekTotal,
+  monthTotal,
+  topProject,
+  topItem,
+  weeklyDays,
+}: {
+  weekTotal: number;
+  monthTotal: number;
+  topProject: TopSummary;
+  topItem: TopSummary;
+  weeklyDays: WeeklyDay[];
+}) {
+  return (
+    <View style={styles.summaryCard}>
+      <View style={styles.summaryHeader}>
+        <View>
+          <Text style={styles.summaryTitle}>Mi resumen</Text>
+          <Text style={styles.summarySubtitle}>
+            Vista rapida de tus horas personales
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.summaryStatsGrid}>
+        <SummaryStat label="Semana actual" value={formatHours(weekTotal)} />
+        <SummaryStat label="Mes actual" value={formatHours(monthTotal)} />
+        <SummaryStat
+          label="Proyecto top"
+          value={topProject.label}
+          subvalue={formatHours(topProject.value)}
+        />
+        <SummaryStat
+          label="Item top"
+          value={topItem.label}
+          subvalue={formatHours(topItem.value)}
+        />
+      </View>
+
+      <View style={styles.weeklyFullWidth}>
+        <WeeklyChart data={weeklyDays} />
+      </View>
+    </View>
+  );
+}
 function SelectDropdown({
   label,
   value,
@@ -289,16 +468,67 @@ export default function TimeIndexScreen() {
   const items = qItems.data ?? [];
   const entries = qMine.data?.rows ?? [];
   const visibleEntries = useMemo(() => {
-  const q = search.trim().toLowerCase();
+    const q = search.trim().toLowerCase();
 
-  if (!q) return entries;
+    if (!q) return entries;
 
-  return entries.filter((item) => entrySearchText(item).includes(q));
-}, [entries, search]);
- const assignments = (qAssignments.data?.rows ?? []).filter(
-  (item) => item.status === "assigned"
-);
+    return entries.filter((item) => entrySearchText(item).includes(q));
+  }, [entries, search]);
+  const assignments = (qAssignments.data?.rows ?? []).filter(
+    (item) => item.status === "assigned"
+  );
   const canAdminHours = role === "owner" || role === "admin";
+const weeklyDays = useMemo<WeeklyDay[]>(() => {
+  const labels = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"];
+  const start = startOfCurrentWeek();
+
+  const days = labels.map((label, index) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + index);
+
+    return {
+      key: dateKey(d),
+      label,
+      value: 0,
+    };
+  });
+
+  const indexByKey = new Map(days.map((day, index) => [day.key, index]));
+
+  for (const entry of entries) {
+    const idx = indexByKey.get(entry.work_date);
+    if (idx !== undefined) {
+      days[idx].value += toNumber(entry.hours);
+    }
+  }
+
+  return days;
+}, [entries]);
+
+const weekTotal = useMemo(() => {
+  return weeklyDays.reduce((sum, day) => sum + day.value, 0);
+}, [weeklyDays]);
+
+const monthRows = useMemo(() => {
+  const now = new Date();
+
+  return entries.filter((entry) => {
+    const d = parseLocalDate(entry.work_date);
+    return d ? sameMonth(d, now) : false;
+  });
+}, [entries]);
+
+const monthTotal = useMemo(() => {
+  return monthRows.reduce((sum, entry) => sum + toNumber(entry.hours), 0);
+}, [monthRows]);
+
+const topProject = useMemo(() => {
+  return getTopSummary(monthRows, "project_name");
+}, [monthRows]);
+
+const topItem = useMemo(() => {
+  return getTopSummary(monthRows, "item_name");
+}, [monthRows]);
 
   useEffect(() => {
     if (!projectId && projects.length > 0) {
@@ -357,34 +587,34 @@ export default function TimeIndexScreen() {
   });
 
   const completeAssignmentMut = useMutation({
-  mutationFn: async (assignment: WorkAssignment) => {
-    await createTimeEntry({
-      project_id: assignment.project_id,
-      item_id: assignment.item_id,
-      work_date: assignment.assignment_date,
-      hours: Number(assignment.estimated_hours || 0),
-      description: assignment.description || null,
-    });
+    mutationFn: async (assignment: WorkAssignment) => {
+      await createTimeEntry({
+        project_id: assignment.project_id,
+        item_id: assignment.item_id,
+        work_date: assignment.assignment_date,
+        hours: Number(assignment.estimated_hours || 0),
+        description: assignment.description || null,
+      });
 
-    await updateWorkAssignment(assignment.id, {
-      status: "done",
-    });
-  },
-  onSuccess: async () => {
-    await qc.invalidateQueries({ queryKey: ["time-entries", "mine"] });
-    await qc.invalidateQueries({ queryKey: ["work-assignments", "mine"] });
-    await qc.invalidateQueries({ queryKey: ["time-entries"] });
-    await qc.invalidateQueries({ queryKey: ["work-assignments"] });
+      await updateWorkAssignment(assignment.id, {
+        status: "done",
+      });
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["time-entries", "mine"] });
+      await qc.invalidateQueries({ queryKey: ["work-assignments", "mine"] });
+      await qc.invalidateQueries({ queryKey: ["time-entries"] });
+      await qc.invalidateQueries({ queryKey: ["work-assignments"] });
 
-    Alert.alert("Listo", "Asignacion registrada como hora realizada.");
-  },
-  onError: (err: any) => {
-    Alert.alert(
-      "No se pudo registrar",
-      err?.message || "No se pudo convertir la asignacion en hora realizada."
-    );
-  },
-});
+      Alert.alert("Listo", "Asignacion registrada como hora realizada.");
+    },
+    onError: (err: any) => {
+      Alert.alert(
+        "No se pudo registrar",
+        err?.message || "No se pudo convertir la asignacion en hora realizada."
+      );
+    },
+  });
 
   const loading =
     qProjects.isLoading ||
@@ -478,7 +708,13 @@ export default function TimeIndexScreen() {
                 )}
               </View>
             </View>
-
+<PersonalSummary
+  weekTotal={weekTotal}
+  monthTotal={monthTotal}
+  topProject={topProject}
+  topItem={topItem}
+  weeklyDays={weeklyDays}
+/>
             <View style={styles.card}>
               <Text style={styles.sectionTitle}>Nuevo registro</Text>
 
@@ -602,44 +838,44 @@ export default function TimeIndexScreen() {
               </View>
             ) : (
               <View style={styles.assignmentsBox}>
-  {assignments.map((item) => (
-  <AssignmentRow
-    key={item.id}
-    item={item}
-    busy={completeAssignmentMut.isPending}
-    onRegister={(assignment) => {
-      completeAssignmentMut.mutate(assignment);
-    }}
-  />
-))}
+                {assignments.map((item) => (
+                  <AssignmentRow
+                    key={item.id}
+                    item={item}
+                    busy={completeAssignmentMut.isPending}
+                    onRegister={(assignment) => {
+                      completeAssignmentMut.mutate(assignment);
+                    }}
+                  />
+                ))}
               </View>
             )}
 
-         <View style={styles.listHeader}>
-  <Text style={styles.sectionTitle}>Historial</Text>
-  <Text style={styles.listCounter}>
-    {visibleEntries.length} de {entries.length} registros
-  </Text>
-</View>
+            <View style={styles.listHeader}>
+              <Text style={styles.sectionTitle}>Historial</Text>
+              <Text style={styles.listCounter}>
+                {visibleEntries.length} de {entries.length} registros
+              </Text>
+            </View>
 
-<View style={styles.searchBox}>
-  <Text style={styles.label}>Buscar en mis horas</Text>
-  <TextInput
-    value={search}
-    onChangeText={setSearch}
-    placeholder="Buscar por proyecto, item, fecha o comentario"
-    placeholderTextColor="#6b7280"
-    style={styles.input}
-  />
+            <View style={styles.searchBox}>
+              <Text style={styles.label}>Buscar en mis horas</Text>
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Buscar por proyecto, item, fecha o comentario"
+                placeholderTextColor="#6b7280"
+                style={styles.input}
+              />
 
-  {!!search.trim() && (
-    <Pressable style={styles.clearSearchButton} onPress={() => setSearch("")}>
-      <Text style={styles.clearSearchText}>Limpiar busqueda</Text>
-    </Pressable>
-  )}
-</View>
+              {!!search.trim() && (
+                <Pressable style={styles.clearSearchButton} onPress={() => setSearch("")}>
+                  <Text style={styles.clearSearchText}>Limpiar busqueda</Text>
+                </Pressable>
+              )}
+            </View>
 
-<View style={styles.tableHeader}>
+            <View style={styles.tableHeader}>
               <View style={styles.cellDate}>
                 <Text style={styles.headerText}>Fecha</Text>
               </View>
@@ -867,21 +1103,21 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginTop: 2,
   },
-assignmentButton: {
-  alignSelf: "flex-start",
-  marginTop: 8,
-  backgroundColor: "rgba(124,58,237,0.18)",
-  borderColor: "rgba(124,58,237,0.45)",
-  borderWidth: 1,
-  borderRadius: 999,
-  paddingHorizontal: 12,
-  paddingVertical: 8,
-},
-assignmentButtonText: {
-  color: TEXT,
-  fontWeight: "900",
-  fontSize: 12,
-},
+  assignmentButton: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    backgroundColor: "rgba(124,58,237,0.18)",
+    borderColor: "rgba(124,58,237,0.45)",
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  assignmentButtonText: {
+    color: TEXT,
+    fontWeight: "900",
+    fontSize: 12,
+  },
   tableHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -1008,26 +1244,164 @@ assignmentButtonText: {
     marginTop: 3,
   },
   searchBox: {
+    backgroundColor: CARD,
+    borderColor: BORDER,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 12,
+  },
+  clearSearchButton: {
+    alignSelf: "flex-start",
+    marginTop: 10,
+    backgroundColor: FIELD,
+    borderColor: BORDER,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  clearSearchText: {
+    color: TEXT,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  summaryCard: {
   backgroundColor: CARD,
-  borderColor: BORDER,
   borderWidth: 1,
-  borderRadius: 18,
+  borderColor: BORDER,
+  borderRadius: 20,
   padding: 14,
+  marginBottom: 18,
+},
+summaryHeader: {
+  flexDirection: "row",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
   marginBottom: 12,
 },
-clearSearchButton: {
-  alignSelf: "flex-start",
-  marginTop: 10,
+summaryTitle: {
+  color: TEXT,
+  fontSize: 18,
+  fontWeight: "900",
+},
+summarySubtitle: {
+  color: SUBTLE,
+  marginTop: 4,
+  fontWeight: "700",
+},
+summaryLayout: {
+  flexDirection: "row",
+  gap: 12,
+  flexWrap: "wrap",
+},
+summaryLeft: {
+  flex: 1,
+  minWidth: 280,
+},
+summaryRight: {
+  flex: 1.2,
+  minWidth: 320,
+},
+summaryStatsGrid: {
+  flexDirection: "row",
+  flexWrap: "wrap",
+  gap: 10,
+},
+summaryStat: {
+  flex: 1,
+  minWidth: 160,
   backgroundColor: FIELD,
   borderColor: BORDER,
   borderWidth: 1,
-  borderRadius: 999,
-  paddingHorizontal: 12,
-  paddingVertical: 8,
+  borderRadius: 16,
+  padding: 12,
 },
-clearSearchText: {
+summaryStatValue: {
+  color: TEXT,
+  fontSize: 17,
+  fontWeight: "900",
+},
+summaryStatLabel: {
+  color: SUBTLE,
+  fontSize: 11,
+  fontWeight: "900",
+  marginTop: 4,
+  textTransform: "uppercase",
+},
+summaryStatSubvalue: {
+  color: ACCENT_2,
+  fontSize: 12,
+  fontWeight: "900",
+  marginTop: 4,
+},
+weeklyCard: {
+  backgroundColor: FIELD,
+  borderColor: BORDER,
+  borderWidth: 1,
+  borderRadius: 16,
+  padding: 12,
+},
+weeklyHeader: {
+  flexDirection: "row",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 10,
+  marginBottom: 12,
+},
+weeklyTitle: {
   color: TEXT,
   fontWeight: "900",
-  fontSize: 12,
+  fontSize: 14,
+},
+weeklySubtitle: {
+  color: SUBTLE,
+  fontWeight: "700",
+  fontSize: 11,
+  marginTop: 2,
+},
+weeklyTotal: {
+  color: ACCENT_2,
+  fontWeight: "900",
+  fontSize: 14,
+},
+weeklyBars: {
+  flexDirection: "row",
+  alignItems: "flex-end",
+  justifyContent: "space-between",
+  gap: 8,
+  minHeight: 126,
+},
+weeklyDay: {
+  flex: 1,
+  alignItems: "center",
+  gap: 5,
+},
+weeklyBarTrack: {
+  width: "100%",
+  maxWidth: 34,
+  height: 82,
+  borderRadius: 999,
+  backgroundColor: "rgba(255,255,255,0.07)",
+  overflow: "hidden",
+  justifyContent: "flex-end",
+},
+weeklyBarFill: {
+  width: "100%",
+  backgroundColor: ACCENT,
+  borderRadius: 999,
+},
+weeklyDayLabel: {
+  color: SUBTLE,
+  fontWeight: "900",
+  fontSize: 11,
+},
+weeklyDayValue: {
+  color: TEXT,
+  fontWeight: "900",
+  fontSize: 10,
+},
+weeklyFullWidth: {
+  marginTop: 12,
 },
 });
