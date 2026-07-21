@@ -46,6 +46,11 @@ type ReportRow = {
   description?: string | null;
 };
 
+type ChartDatum = {
+  label: string;
+  value: number;
+};
+
 function formatDate(value?: string | null) {
   if (!value) return "";
   const parts = value.split("-");
@@ -141,6 +146,136 @@ function downloadCsv(filename: string, rows: ReportRow[]) {
   link.click();
 
   URL.revokeObjectURL(url);
+}
+
+function toNumber(value: any) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function groupTop(rows: ReportRow[], field: "project_name" | "item_name" | "user_name") {
+  const map = new Map<string, number>();
+
+  for (const row of rows) {
+    const label = String(row[field] || "Sin nombre").trim() || "Sin nombre";
+    map.set(label, (map.get(label) || 0) + toNumber(row.hours));
+  }
+
+  return Array.from(map.entries())
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5);
+}
+
+function ChartCard({
+  title,
+  subtitle,
+  data,
+}: {
+  title: string;
+  subtitle?: string;
+  data: ChartDatum[];
+}) {
+  const max = Math.max(...data.map((item) => item.value), 0);
+
+  return (
+    <View style={styles.chartCard}>
+      <View style={styles.chartHead}>
+        <Text style={styles.chartTitle}>{title}</Text>
+        {!!subtitle && <Text style={styles.chartSubtitle}>{subtitle}</Text>}
+      </View>
+
+      {data.length === 0 || max <= 0 ? (
+        <View style={styles.chartEmpty}>
+          <Text style={styles.chartEmptyText}>Sin datos</Text>
+        </View>
+      ) : (
+        <View style={styles.chartRows}>
+          {data.map((item) => {
+            const percent = Math.max(4, Math.round((item.value / max) * 100));
+
+            return (
+              <View key={item.label} style={styles.chartRow}>
+                <View style={styles.chartLabelRow}>
+                  <Text style={styles.chartLabel} numberOfLines={1}>
+                    {item.label}
+                  </Text>
+
+                  <Text style={styles.chartValue}>
+                    {formatTimeValue(item.value)}
+                  </Text>
+                </View>
+
+                <View style={styles.barTrack}>
+                  <View style={[styles.barFill, { width: `${percent}%` }]} />
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function BalanceCard({
+  real,
+  assigned,
+}: {
+  real: number;
+  assigned: number;
+}) {
+  const total = real + assigned;
+  const realPercent = total > 0 ? Math.round((real / total) * 100) : 0;
+  const assignedPercent = total > 0 ? 100 - realPercent : 0;
+
+  return (
+    <View style={styles.chartCard}>
+      <View style={styles.chartHead}>
+        <Text style={styles.chartTitle}>Realizadas vs asignadas</Text>
+        <Text style={styles.chartSubtitle}>Registros visibles</Text>
+      </View>
+
+      {total <= 0 ? (
+        <View style={styles.chartEmpty}>
+          <Text style={styles.chartEmptyText}>Sin datos</Text>
+        </View>
+      ) : (
+        <View>
+          <View style={styles.balanceTrack}>
+            <View
+              style={[
+                styles.balanceReal,
+                { width: `${Math.max(realPercent, 3)}%` },
+              ]}
+            />
+            <View
+              style={[
+                styles.balanceAssigned,
+                { width: `${Math.max(assignedPercent, 3)}%` },
+              ]}
+            />
+          </View>
+
+          <View style={styles.balanceLegend}>
+            <View style={styles.balanceItem}>
+              <View style={styles.dotReal} />
+              <Text style={styles.balanceText}>
+                Realizadas {formatTimeValue(real)}
+              </Text>
+            </View>
+
+            <View style={styles.balanceItem}>
+              <View style={styles.dotAssigned} />
+              <Text style={styles.balanceText}>
+                Asignadas {formatTimeValue(assigned)}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
+    </View>
+  );
 }
 
 function SelectDropdown({
@@ -359,6 +494,30 @@ export default function AdminReportsPanel({
     return visibleRows.reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
   }, [visibleRows]);
 
+  const visibleRealHours = useMemo(() => {
+    return visibleRows
+      .filter((entry) => entry.kind === "real")
+      .reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
+  }, [visibleRows]);
+
+  const visibleAssignedHours = useMemo(() => {
+    return visibleRows
+      .filter((entry) => entry.kind === "assigned")
+      .reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
+  }, [visibleRows]);
+
+  const topProjects = useMemo(() => {
+    return groupTop(visibleRows, "project_name");
+  }, [visibleRows]);
+
+  const topItems = useMemo(() => {
+    return groupTop(visibleRows, "item_name");
+  }, [visibleRows]);
+
+  const topUsers = useMemo(() => {
+    return groupTop(visibleRows, "user_name");
+  }, [visibleRows]);
+
   const isFetching = qReports.isFetching || qAssignments.isFetching;
 
   function toggleDropdown(name: "user" | "project" | "item") {
@@ -387,12 +546,12 @@ export default function AdminReportsPanel({
     setOpenDropdown(null);
   }
 
-function exportReport() {
-  const today = new Date().toISOString().slice(0, 10);
-  const filename = `reporte-horas-${today}.csv`;
+  function exportReport() {
+    const today = new Date().toISOString().slice(0, 10);
+    const filename = `reporte-horas-${today}.csv`;
 
-  downloadCsv(filename, visibleRows);
-}
+    downloadCsv(filename, visibleRows);
+  }
 
   return (
     <View>
@@ -418,6 +577,41 @@ function exportReport() {
             <Text style={styles.statValue}>{total}</Text>
             <Text style={styles.statLabel}>Registros</Text>
           </View>
+        </View>
+
+        <View style={styles.visualHeader}>
+          <View>
+            <Text style={styles.visualTitle}>Resumen visual</Text>
+            <Text style={styles.visualSubtitle}>
+              Top 5 basado en registros visibles
+            </Text>
+          </View>
+
+          <Text style={styles.visualTotal}>
+            {formatTimeValue(visibleHours)} hrs visibles
+          </Text>
+        </View>
+
+        <View style={styles.visualGrid}>
+          <BalanceCard real={visibleRealHours} assigned={visibleAssignedHours} />
+
+          <ChartCard
+            title="Top proyectos"
+            subtitle="Mayor dedicacion"
+            data={topProjects}
+          />
+
+          <ChartCard
+            title="Top items"
+            subtitle="Mas trabajados"
+            data={topItems}
+          />
+
+          <ChartCard
+            title="Top usuarios"
+            subtitle="Carga visible"
+            data={topUsers}
+          />
         </View>
 
         <Text style={styles.label}>Buscador rapido</Text>
@@ -500,25 +694,25 @@ function exportReport() {
         </View>
 
         <View style={styles.actions}>
-  <Pressable style={styles.primaryButton} onPress={applyFilters}>
-    <Text style={styles.primaryButtonText}>Aplicar filtros</Text>
-  </Pressable>
+          <Pressable style={styles.primaryButton} onPress={applyFilters}>
+            <Text style={styles.primaryButtonText}>Aplicar filtros</Text>
+          </Pressable>
 
-  <Pressable style={styles.secondaryButton} onPress={clearFilters}>
-    <Text style={styles.secondaryText}>Limpiar</Text>
-  </Pressable>
+          <Pressable style={styles.secondaryButton} onPress={clearFilters}>
+            <Text style={styles.secondaryText}>Limpiar</Text>
+          </Pressable>
 
-  <Pressable
-    style={[
-      styles.exportButton,
-      visibleRows.length === 0 && styles.exportButtonDisabled,
-    ]}
-    disabled={visibleRows.length === 0}
-    onPress={exportReport}
-  >
-    <Text style={styles.exportButtonText}>Exportar CSV</Text>
-  </Pressable>
-</View>
+          <Pressable
+            style={[
+              styles.exportButton,
+              visibleRows.length === 0 && styles.exportButtonDisabled,
+            ]}
+            disabled={visibleRows.length === 0}
+            onPress={exportReport}
+          >
+            <Text style={styles.exportButtonText}>Exportar CSV</Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.listHeader}>
@@ -661,6 +855,144 @@ const styles = StyleSheet.create({
     color: SUBTLE,
     fontWeight: "800",
     marginTop: 2,
+  },
+  visualHeader: {
+    marginTop: 18,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  visualTitle: {
+    color: TEXT,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  visualSubtitle: {
+    color: SUBTLE,
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  visualTotal: {
+    color: ACCENT_2,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  visualGrid: {
+    flexDirection: "row",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  chartCard: {
+    flex: 1,
+    minWidth: 220,
+    backgroundColor: FIELD,
+    borderColor: BORDER,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 12,
+  },
+  chartHead: {
+    marginBottom: 10,
+  },
+  chartTitle: {
+    color: TEXT,
+    fontWeight: "900",
+    fontSize: 13,
+  },
+  chartSubtitle: {
+    color: SUBTLE,
+    fontWeight: "700",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  chartRows: {
+    gap: 8,
+  },
+  chartRow: {
+    gap: 5,
+  },
+  chartLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  chartLabel: {
+    color: TEXT,
+    fontWeight: "800",
+    fontSize: 12,
+    flex: 1,
+  },
+  chartValue: {
+    color: ACCENT_2,
+    fontWeight: "900",
+    fontSize: 11,
+  },
+  barTrack: {
+    height: 7,
+    backgroundColor: "rgba(255,255,255,0.07)",
+    borderRadius: 999,
+    overflow: "hidden",
+  },
+  barFill: {
+    height: 7,
+    backgroundColor: ACCENT,
+    borderRadius: 999,
+  },
+  chartEmpty: {
+    minHeight: 96,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chartEmptyText: {
+    color: SUBTLE,
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  balanceTrack: {
+    height: 13,
+    backgroundColor: "rgba(255,255,255,0.07)",
+    borderRadius: 999,
+    overflow: "hidden",
+    flexDirection: "row",
+    marginTop: 4,
+  },
+  balanceReal: {
+    height: 13,
+    backgroundColor: ACCENT_2,
+  },
+  balanceAssigned: {
+    height: 13,
+    backgroundColor: ACCENT,
+  },
+  balanceLegend: {
+    gap: 8,
+    marginTop: 14,
+  },
+  balanceItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  dotReal: {
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: ACCENT_2,
+  },
+  dotAssigned: {
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: ACCENT,
+  },
+  balanceText: {
+    color: TEXT,
+    fontWeight: "800",
+    fontSize: 12,
   },
   label: {
     color: SUBTLE,
@@ -879,19 +1211,19 @@ const styles = StyleSheet.create({
     color: "#c4b5fd",
   },
   exportButton: {
-  marginTop: 16,
-  backgroundColor: "rgba(34,211,238,0.12)",
-  borderColor: "rgba(34,211,238,0.38)",
-  borderWidth: 1,
-  borderRadius: 12,
-  paddingVertical: 14,
-  paddingHorizontal: 16,
-},
-exportButtonDisabled: {
-  opacity: 0.45,
-},
-exportButtonText: {
-  color: ACCENT_2,
-  fontWeight: "900",
-},
+    marginTop: 16,
+    backgroundColor: "rgba(34,211,238,0.12)",
+    borderColor: "rgba(34,211,238,0.38)",
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  exportButtonDisabled: {
+    opacity: 0.45,
+  },
+  exportButtonText: {
+    color: ACCENT_2,
+    fontWeight: "900",
+  },
 });
