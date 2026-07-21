@@ -32,6 +32,11 @@ type DropdownOption = {
   sublabel?: string | null;
 };
 
+type ChartDatum = {
+  label: string;
+  value: number;
+};
+
 function todayLocal() {
   const d = new Date();
   const y = d.getFullYear();
@@ -63,7 +68,44 @@ function formatHours(value: any) {
   const m = totalMinutes % 60;
   return `${h}:${String(m).padStart(2, "0")}`;
 }
+function toNumber(value: any) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
 
+function groupAssignmentsTop(
+  rows: WorkAssignment[],
+  field: "user" | "project" | "item"
+): ChartDatum[] {
+  const map = new Map<string, number>();
+
+  for (const row of rows) {
+    let label = "Sin nombre";
+
+    if (field === "user") {
+      label =
+        row.assigned_user_name ||
+        row.assigned_user_email ||
+        row.assigned_user_id ||
+        "Usuario";
+    }
+
+    if (field === "project") {
+      label = row.project_name || "Sin proyecto";
+    }
+
+    if (field === "item") {
+      label = row.item_name || "Sin item";
+    }
+
+    map.set(label, (map.get(label) || 0) + toNumber(row.estimated_hours));
+  }
+
+  return Array.from(map.entries())
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5);
+}
 function memberLabel(member?: WorkspaceMember | null) {
   if (!member) return "Selecciona un usuario";
 
@@ -74,6 +116,135 @@ function memberLabel(member?: WorkspaceMember | null) {
   return name || email || "Usuario";
 }
 
+function PlanningStat({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <View style={styles.planningStat}>
+      <Text style={styles.planningStatValue} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={styles.planningStatLabel} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function MiniBarChart({
+  title,
+  subtitle,
+  data,
+}: {
+  title: string;
+  subtitle: string;
+  data: ChartDatum[];
+}) {
+  const max = Math.max(...data.map((item) => item.value), 0);
+
+  return (
+    <View style={styles.chartCard}>
+      <View style={styles.chartHeader}>
+        <Text style={styles.chartTitle}>{title}</Text>
+        <Text style={styles.chartSubtitle}>{subtitle}</Text>
+      </View>
+
+      {data.length === 0 || max <= 0 ? (
+        <View style={styles.chartEmpty}>
+          <Text style={styles.chartEmptyText}>Sin datos</Text>
+        </View>
+      ) : (
+        <View style={styles.chartRows}>
+          {data.map((item) => {
+            const percent = Math.max(4, Math.round((item.value / max) * 100));
+
+            return (
+              <View key={item.label} style={styles.chartRow}>
+                <View style={styles.chartLabelRow}>
+                  <Text style={styles.chartLabel} numberOfLines={1}>
+                    {item.label}
+                  </Text>
+
+                  <Text style={styles.chartValue}>
+                    {formatHours(item.value)}
+                  </Text>
+                </View>
+
+                <View style={styles.barTrack}>
+                  <View style={[styles.barFill, { width: `${percent}%` }]} />
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function PlanningSummary({
+  totalHours,
+  totalUsers,
+  totalProjects,
+  totalRecords,
+  topUsers,
+  topProjects,
+  topItems,
+}: {
+  totalHours: number;
+  totalUsers: number;
+  totalProjects: number;
+  totalRecords: number;
+  topUsers: ChartDatum[];
+  topProjects: ChartDatum[];
+  topItems: ChartDatum[];
+}) {
+  return (
+    <View style={styles.planningCard}>
+      <View style={styles.planningHeader}>
+        <View>
+          <Text style={styles.planningTitle}>Planificacion pendiente</Text>
+          <Text style={styles.planningSubtitle}>
+            Resumen de horas asignadas sin realizar
+          </Text>
+        </View>
+
+        <Text style={styles.planningTotal}>{formatHours(totalHours)}</Text>
+      </View>
+
+      <View style={styles.planningStatsGrid}>
+        <PlanningStat label="Total pendiente" value={formatHours(totalHours)} />
+        <PlanningStat label="Usuarios con carga" value={totalUsers} />
+        <PlanningStat label="Proyectos activos" value={totalProjects} />
+        <PlanningStat label="Registros" value={totalRecords} />
+      </View>
+
+      <View style={styles.chartGrid}>
+        <MiniBarChart
+          title="Top usuarios"
+          subtitle="Mayor carga pendiente"
+          data={topUsers}
+        />
+
+        <MiniBarChart
+          title="Top proyectos"
+          subtitle="Mayor planificacion"
+          data={topProjects}
+        />
+
+        <MiniBarChart
+          title="Top items"
+          subtitle="Mas asignados"
+          data={topItems}
+        />
+      </View>
+    </View>
+  );
+}
 function SelectDropdown({
   label,
   value,
@@ -174,7 +345,32 @@ export default function AdminAssignmentsPanel({
 
   const members = qMembers.data ?? [];
   const assignments = qAssignments.data?.rows ?? [];
+const totalAssignedHours = useMemo(() => {
+  return assignments.reduce(
+    (sum, item) => sum + toNumber(item.estimated_hours),
+    0
+  );
+}, [assignments]);
 
+const assignedUsersCount = useMemo(() => {
+  return new Set(assignments.map((item) => item.assigned_user_id)).size;
+}, [assignments]);
+
+const assignedProjectsCount = useMemo(() => {
+  return new Set(assignments.map((item) => item.project_id)).size;
+}, [assignments]);
+
+const topUsers = useMemo(() => {
+  return groupAssignmentsTop(assignments, "user");
+}, [assignments]);
+
+const topProjects = useMemo(() => {
+  return groupAssignmentsTop(assignments, "project");
+}, [assignments]);
+
+const topItems = useMemo(() => {
+  return groupAssignmentsTop(assignments, "item");
+}, [assignments]);
   const userOptions = useMemo<DropdownOption[]>(
     () =>
       members.map((m) => ({
@@ -261,6 +457,15 @@ export default function AdminAssignmentsPanel({
 
   return (
     <View>
+           <PlanningSummary
+      totalHours={totalAssignedHours}
+      totalUsers={assignedUsersCount}
+      totalProjects={assignedProjectsCount}
+      totalRecords={assignments.length}
+      topUsers={topUsers}
+      topProjects={topProjects}
+      topItems={topItems}
+    />
       <View style={styles.formCard}>
         <Text style={styles.sectionTitle}>Asignar horas</Text>
         <Text style={styles.help}>
@@ -623,4 +828,133 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginTop: 2,
   },
+  planningCard: {
+  backgroundColor: CARD,
+  borderColor: BORDER,
+  borderWidth: 1,
+  borderRadius: 20,
+  padding: 14,
+  marginBottom: 18,
+},
+planningHeader: {
+  flexDirection: "row",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: 12,
+  marginBottom: 12,
+},
+planningTitle: {
+  color: TEXT,
+  fontSize: 18,
+  fontWeight: "900",
+},
+planningSubtitle: {
+  color: SUBTLE,
+  marginTop: 4,
+  fontWeight: "700",
+},
+planningTotal: {
+  color: ACCENT_2,
+  fontWeight: "900",
+  fontSize: 18,
+},
+planningStatsGrid: {
+  flexDirection: "row",
+  flexWrap: "wrap",
+  gap: 10,
+},
+planningStat: {
+  flex: 1,
+  minWidth: 150,
+  backgroundColor: FIELD,
+  borderColor: BORDER,
+  borderWidth: 1,
+  borderRadius: 16,
+  padding: 12,
+},
+planningStatValue: {
+  color: TEXT,
+  fontSize: 20,
+  fontWeight: "900",
+},
+planningStatLabel: {
+  color: SUBTLE,
+  fontSize: 11,
+  fontWeight: "900",
+  marginTop: 4,
+  textTransform: "uppercase",
+},
+chartGrid: {
+  flexDirection: "row",
+  flexWrap: "wrap",
+  gap: 10,
+  marginTop: 12,
+},
+chartCard: {
+  flex: 1,
+  minWidth: 240,
+  backgroundColor: FIELD,
+  borderColor: BORDER,
+  borderWidth: 1,
+  borderRadius: 16,
+  padding: 12,
+},
+chartHeader: {
+  marginBottom: 10,
+},
+chartTitle: {
+  color: TEXT,
+  fontWeight: "900",
+  fontSize: 13,
+},
+chartSubtitle: {
+  color: SUBTLE,
+  fontWeight: "700",
+  fontSize: 11,
+  marginTop: 2,
+},
+chartRows: {
+  gap: 8,
+},
+chartRow: {
+  gap: 5,
+},
+chartLabelRow: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+},
+chartLabel: {
+  color: TEXT,
+  fontWeight: "800",
+  fontSize: 12,
+  flex: 1,
+},
+chartValue: {
+  color: ACCENT_2,
+  fontWeight: "900",
+  fontSize: 11,
+},
+barTrack: {
+  height: 7,
+  backgroundColor: "rgba(255,255,255,0.07)",
+  borderRadius: 999,
+  overflow: "hidden",
+},
+barFill: {
+  height: 7,
+  backgroundColor: ACCENT,
+  borderRadius: 999,
+},
+chartEmpty: {
+  minHeight: 82,
+  alignItems: "center",
+  justifyContent: "center",
+},
+chartEmptyText: {
+  color: SUBTLE,
+  fontWeight: "800",
+  fontSize: 12,
+},
 });
