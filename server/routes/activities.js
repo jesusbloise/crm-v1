@@ -8,6 +8,12 @@ const {
   canWrite,
   canDelete,
 } = require("../lib/authorize");
+const { getUserRole } = require("../lib/authorize");
+const {
+  linkedContactVisibilityFilter,
+  canAccessContactLinks,
+} = require("../lib/contactAccess");
+
 const crypto = require("crypto");
 
 // mailers
@@ -76,156 +82,244 @@ function setsEqual(a, b) {
   for (const v of a) if (!b.has(v)) return false;
   return true;
 }
+const ACTIVITY_SELECT = `
+  SELECT
+    a.*,
+    cu.name AS created_by_name,
+    cu.email AS created_by_email,
+    au.name AS assigned_to_name,
+    au.email AS assigned_to_email,
+    au2.name AS assigned_to_2_name,
+    au2.email AS assigned_to_2_email,
+    ct.name AS contact_name
+  FROM activities a
+  LEFT JOIN users cu ON cu.id = a.created_by
+  LEFT JOIN users au ON au.id = a.assigned_to
+  LEFT JOIN users au2 ON au2.id = a.assigned_to_2
+  LEFT JOIN contacts ct
+    ON ct.id = a.contact_id
+   AND ct.tenant_id = a.tenant_id
+`;
 
-/** GET /activities (filtros opcionales) */
+async function activityReadFilter(req) {
+  const userId = resolveUserId(req);
+
+  if (!userId || !req.tenantId) {
+    return { sql: "FALSE", params: [] };
+  }
+
+  const linked = linkedContactVisibilityFilter(req, "a");
+  const role = String(await getUserRole(userId) || "").toLowerCase();
+
+  if (role === "admin" || role === "owner") {
+    // El rol no permite saltarse la privacidad del contacto.
+    return linked;
+  }
+
+  if (role !== "member") {
+    return { sql: "FALSE", params: [] };
+  }
+
+  return {
+    sql: `
+      (
+        ${linked.sql}
+        AND (
+          NULLIF(a.contact_id, '') IS NOT NULL
+          OR EXISTS (
+            SELECT 1
+            FROM deals activity_deal
+            WHERE activity_deal.id = a.deal_id
+              AND activity_deal.tenant_id = a.tenant_id
+              AND NULLIF(activity_deal.contact_id, '') IS NOT NULL
+          )
+          OR a.created_by = ?
+          OR a.assigned_to = ?
+          OR a.assigned_to_2 = ?
+        )
+      )
+    `,
+    params: [...linked.params, userId, userId, userId],
+  };
+}
+/**
+ * Valida acceso del autor y de los usuarios asignados.
+ * No comparte el contacto automáticamente.
+ */
+async function validateActivityAccess(req, activity) {
+  const userId = resolveUserId(req);
+
+  if (!userId || !req.tenantId) {
+    const err = new Error("unauthorized");
+    err.status = 401;
+    err.code = "unauthorized";
+    throw err;
+  }
+
+  const canAccess = await canAccessContactLinks(
+    req,
+    activity.contact_id,
+    activity.deal_id
+  );
+
+  if (!canAccess) {
+    const err = new Error("Contacto u oportunidad inexistente o sin acceso.");
+    err.status = 400;
+    err.code = "invalid_contact_links";
+    throw err;
+  }
+
+  const assignedIds = [
+    ...new Set(
+      [activity.assigned_to, activity.assigned_to_2].filter(Boolean)
+    ),
+  ];
+
+  for (const assignedId of assignedIds) {
+    // El asignado debe estar activo y pertenecer al workspace.
+    const member = await db.prepare(`
+      SELECT u.id
+      FROM users u
+      WHERE u.id = ?
+        AND COALESCE(u.active, TRUE) = TRUE
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM tenant_memberships tm
+            WHERE tm.tenant_id = ? AND tm.user_id = u.id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM memberships m
+            WHERE m.tenant_id = ? AND m.user_id = u.id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM tenants t
+            WHERE t.id = ? AND t.created_by = u.id
+          )
+        )
+      LIMIT 1
+    `).get(
+      assignedId,
+      req.tenantId,
+      req.tenantId,
+      req.tenantId
+    );
+
+    if (!member) {
+      const err = new Error(
+        "Los usuarios asignados deben estar activos y pertenecer al workspace."
+      );
+      err.status = 400;
+      err.code = "invalid_assignees";
+      throw err;
+    }
+
+    // Consulta los permisos del asignado, sin darle privilegios de admin.
+    const recipientReq = {
+      tenantId: req.tenantId,
+      user: { id: assignedId },
+      auth: { sub: assignedId },
+    };
+
+    const recipientCanAccess = await canAccessContactLinks(
+      recipientReq,
+      activity.contact_id,
+      activity.deal_id
+    );
+
+    if (!recipientCanAccess) {
+      const err = new Error(
+        "Comparte primero el contacto con todos los usuarios asignados."
+      );
+      err.status = 400;
+      err.code = "assignee_without_contact_access";
+      throw err;
+    }
+  }
+}
+/** GET /activities */
 router.get(
   "/activities",
   wrap(async (req, res) => {
-    const {
-      deal_id,
-      contact_id,
-      account_id,
-      lead_id,
-      status,
-      remind_after,
-    } = req.query || {};
-    const limit = Math.min(parseInt(req.query?.limit, 10) || 100, 200);
-
-    const userId = resolveUserId(req);
-
-    // rol global
-    let userRole = "member";
-    if (userId) {
-      const roleRow = await resolveRow(
-        db.prepare(`SELECT role FROM users WHERE id = ? LIMIT 1`).get(userId)
-      );
-      if (roleRow?.role) userRole = String(roleRow.role).toLowerCase();
+    if (!resolveUserId(req) || !req.tenantId) {
+      return res.status(401).json({ error: "unauthorized" });
     }
 
-    const clauses = ["a.tenant_id = ?"];
-    const params = [req.tenantId];
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(requestedLimit, 200))
+      : 100;
 
-    if (deal_id) {
-      clauses.push("a.deal_id = ?");
-      params.push(String(deal_id));
+    const filter = await activityReadFilter(req);
+    const clauses = [filter.sql];
+    const params = [...filter.params];
+
+    for (const field of [
+      "deal_id",
+      "contact_id",
+      "account_id",
+      "lead_id",
+      "status",
+    ]) {
+      const value = coerceStr(req.query[field]);
+
+      if (value) {
+        clauses.push(`a.${field} = ?`);
+        params.push(value);
+      }
     }
-    if (contact_id) {
-      clauses.push("a.contact_id = ?");
-      params.push(String(contact_id));
-    }
-    if (account_id) {
-      clauses.push("a.account_id = ?");
-      params.push(String(account_id));
-    }
-    if (lead_id) {
-      clauses.push("a.lead_id = ?");
-      params.push(String(lead_id));
-    }
-    if (status) {
-      clauses.push("a.status = ?");
-      params.push(String(status));
-    }
-    if (remind_after) {
+
+    if (
+      req.query.remind_after !== undefined &&
+      req.query.remind_after !== ""
+    ) {
+      const value = Number(req.query.remind_after);
+
+      if (!Number.isFinite(value)) {
+        return res.status(400).json({ error: "invalid_remind_after" });
+      }
+
       clauses.push("a.remind_at_ms > ?");
-      params.push(Number(remind_after));
+      params.push(value);
     }
 
-    // member: solo sus actividades
-    if (userRole === "member" && userId) {
-      clauses.push(
-        "(a.created_by = ? OR a.assigned_to = ? OR a.assigned_to_2 = ?)"
-      );
-      params.push(userId, userId, userId);
-    }
-
-    const sql = `
-      SELECT 
-        a.*,
-        cu.name  AS created_by_name,
-        cu.email AS created_by_email,
-        au.name  AS assigned_to_name,
-        au.email AS assigned_to_email,
-        au2.name  AS assigned_to_2_name,
-        au2.email AS assigned_to_2_email,
-
-        -- ✅ NUEVO: nombre real del contacto
-        ct.name AS contact_name
-      FROM activities a
-      LEFT JOIN users cu  ON cu.id  = a.created_by
-      LEFT JOIN users au  ON au.id  = a.assigned_to
-      LEFT JOIN users au2 ON au2.id = a.assigned_to_2
-
-      -- ✅ NUEVO JOIN: contacts (mismo tenant)
-      LEFT JOIN contacts ct
-        ON ct.id = a.contact_id
-       AND ct.tenant_id = a.tenant_id
-
+    const rows = await db.prepare(`
+      ${ACTIVITY_SELECT}
       WHERE ${clauses.join(" AND ")}
       ORDER BY a.updated_at DESC, a.id ASC
       LIMIT ?
-    `;
+    `).all(...params, limit);
 
-    const rows = await db.prepare(sql).all(...params, limit);
-
-    console.log(
-      "GET /activities -> role:",
-      userRole,
-      "user:",
-      userId,
-      "rows:",
-      rows.map((r) => ({
-        id: r.id,
-        title: r.title,
-        created_by: r.created_by,
-        assigned_to: r.assigned_to,
-        assigned_to_2: r.assigned_to_2,
-        contact_id: r.contact_id,
-        contact_name: r.contact_name,
-      }))
-    );
-
-    res.json(rows);
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(rows);
   })
 );
 
 /** GET /activities/:id */
 router.get(
   "/activities/:id",
-  canRead("activities"),
   wrap(async (req, res) => {
-    const row = await resolveRow(
-      db
-        .prepare(
-          `
-          SELECT 
-            a.*,
-            cu.name  AS created_by_name,
-            cu.email AS created_by_email,
-            au.name  AS assigned_to_name,
-            au.email AS assigned_to_email,
-            au2.name  AS assigned_to_2_name,
-            au2.email AS assigned_to_2_email,
+    if (!resolveUserId(req) || !req.tenantId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
 
-            -- ✅ NUEVO: nombre real del contacto
-            ct.name AS contact_name
-          FROM activities a
-          LEFT JOIN users cu  ON cu.id  = a.created_by
-          LEFT JOIN users au  ON au.id  = a.assigned_to
-          LEFT JOIN users au2 ON au2.id = a.assigned_to_2
+    const filter = await activityReadFilter(req);
 
-          -- ✅ NUEVO JOIN: contacts (mismo tenant)
-          LEFT JOIN contacts ct
-            ON ct.id = a.contact_id
-           AND ct.tenant_id = a.tenant_id
+    const row = await db.prepare(`
+      ${ACTIVITY_SELECT}
+      WHERE a.id = ?
+        AND ${filter.sql}
+      LIMIT 1
+    `).get(req.params.id, ...filter.params);
 
-          WHERE a.id = ? AND a.tenant_id = ?
-        `
-        )
-        .get(req.params.id, req.tenantId)
-    );
+    if (!row) {
+      return res.status(404).json({ error: "not_found" });
+    }
 
-    if (!row) return res.status(404).json({ error: "not_found" });
-    res.json(row);
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(row);
   })
 );
 
@@ -233,7 +327,6 @@ router.get(
 router.post(
   "/activities",
   wrap(async (req, res) => {
-    console.log("POST /activities body:", req.body, "tenant:", req.tenantId);
 
     let {
       type,
@@ -296,6 +389,13 @@ router.post(
 
     const norm = normalizeAssignees(assigned_to, assigned_to_2);
 
+    await validateActivityAccess(req, {
+  contact_id,
+  deal_id,
+  assigned_to: norm.assigned_to,
+  assigned_to_2: norm.assigned_to_2,
+});
+
     await db
       .prepare(
         `
@@ -344,15 +444,6 @@ router.post(
       created_at: now,
       updated_at: now,
     };
-
-    console.log("Nueva activity creada:", {
-      id: created.id,
-      title: created.title,
-      assigned_to: created.assigned_to,
-      assigned_to_2: created.assigned_to_2,
-      tenant: created.tenant_id,
-    });
-
     notifyActivityCreated(created).catch((err) => {
       console.error("Error enviando emails de actividad:", err);
     });
@@ -366,22 +457,29 @@ router.patch(
   "/activities/:id",
   canWrite("activities"),
   wrap(async (req, res) => {
-    const found = await resolveRow(
-      db
-        .prepare(`SELECT * FROM activities WHERE id = ? AND tenant_id = ?`)
-        .get(req.params.id, req.tenantId)
-    );
+    const readFilter = await activityReadFilter(req);
 
-    if (!found) return res.status(404).json({ error: "not_found" });
+    const found = await db.prepare(`
+      SELECT a.*
+      FROM activities a
+      WHERE a.id = ?
+        AND ${readFilter.sql}
+      LIMIT 1
+    `).get(req.params.id, ...readFilter.params);
+
+    if (!found) {
+      return res.status(404).json({ error: "not_found" });
+    }
 
     const body = req.body || {};
-    const hasProp = (name) => Object.prototype.hasOwnProperty.call(body, name);
+    const hasProp = (name) =>
+      Object.prototype.hasOwnProperty.call(body, name);
 
     const notifyAssignees =
-      body?.notify_assignees === true ||
-      body?.notify_assignees === "true" ||
-      body?.notify_assignees === 1 ||
-      body?.notify_assignees === "1";
+      body.notify_assignees === true ||
+      body.notify_assignees === "true" ||
+      body.notify_assignees === 1 ||
+      body.notify_assignees === "1";
 
     const beforeNorm = normalizeAssignees(
       found.assigned_to ?? null,
@@ -391,7 +489,9 @@ router.patch(
     const final = {
       type: found.type || "task",
       title: found.title || "Sin título",
-      status: VALID_STATUS.has(found.status) ? found.status : "open",
+      status: VALID_STATUS.has(found.status)
+        ? found.status
+        : "open",
       notes: found.notes ?? null,
       account_id: found.account_id ?? null,
       contact_id: found.contact_id ?? null,
@@ -404,194 +504,265 @@ router.patch(
     };
 
     if (hasProp("type")) {
-      const t = coerceStr(body.type);
-      if (t) final.type = t;
+      const value = coerceStr(body.type);
+      if (value) final.type = value;
     }
+
     if (hasProp("title")) {
-      const t = coerceStr(body.title);
-      if (t && t.length > 0) final.title = t;
+      const value = coerceStr(body.title);
+      if (value) final.title = value;
     }
+
     if (hasProp("status")) {
-      const s = coerceStr(body.status);
-      if (s && VALID_STATUS.has(s)) final.status = s;
+      const value = coerceStr(body.status);
+      if (value && VALID_STATUS.has(value)) {
+        final.status = value;
+      }
     }
-    if (hasProp("notes")) final.notes = coerceStr(body.notes);
 
-    if (hasProp("account_id")) final.account_id = coerceStr(body.account_id);
-    if (hasProp("contact_id")) final.contact_id = coerceStr(body.contact_id);
-    if (hasProp("lead_id")) final.lead_id = coerceStr(body.lead_id);
-    if (hasProp("deal_id")) final.deal_id = coerceStr(body.deal_id);
+    if (hasProp("notes")) {
+      final.notes = coerceStr(body.notes);
+    }
 
-    if (hasProp("assigned_to")) final.assigned_to = coerceStr(body.assigned_to);
-    if (hasProp("assigned_to_2"))
-      final.assigned_to_2 = coerceStr(body.assigned_to_2);
+    for (const field of [
+      "account_id",
+      "contact_id",
+      "lead_id",
+      "deal_id",
+      "assigned_to",
+      "assigned_to_2",
+    ]) {
+      if (hasProp(field)) {
+        final[field] = coerceStr(body[field]) || null;
+      }
+    }
 
-    const finalNorm = normalizeAssignees(final.assigned_to, final.assigned_to_2);
+    // Mantener los vínculos que determinan la privacidad.
+    // Una actividad sin vínculo sí puede recibir uno.
+    for (const field of ["contact_id", "deal_id"]) {
+      const previous = found[field] || null;
+      const next = final[field] || null;
+
+      if (previous && previous !== next) {
+        return res.status(400).json({
+          error: "activity_privacy_link_locked",
+          message:
+            "No puedes quitar ni cambiar el contacto o la oportunidad " +
+            "de esta actividad porque determinan su privacidad.",
+        });
+      }
+    }
+
+    const finalNorm = normalizeAssignees(
+      final.assigned_to,
+      final.assigned_to_2
+    );
+
     final.assigned_to = finalNorm.assigned_to;
     final.assigned_to_2 = finalNorm.assigned_to_2;
 
-    if (hasProp("due_date")) final.due_date = coerceNum(body.due_date);
-    if (hasProp("remind_at_ms")) final.remind_at_ms = coerceNum(body.remind_at_ms);
+    if (hasProp("due_date")) {
+      final.due_date = coerceNum(body.due_date);
+    }
+
+    if (hasProp("remind_at_ms")) {
+      final.remind_at_ms = coerceNum(body.remind_at_ms);
+    }
 
     const checkFk = async (table, value, field) => {
       if (!value) return;
-      const exists = await resolveRow(
-        db
-          .prepare(
-            `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
-          )
-          .get(value, req.tenantId)
-      );
-      if (!exists) throw new Error(`invalid_${field}`);
+
+      const exists = await db.prepare(`
+        SELECT 1
+        FROM ${table}
+        WHERE id = ?
+          AND tenant_id = ?
+        LIMIT 1
+      `).get(value, req.tenantId);
+
+      if (!exists) {
+        const error = new Error(`invalid_${field}`);
+        error.status = 400;
+        throw error;
+      }
     };
 
-    try {
-      await checkFk("accounts", final.account_id, "account_id");
-      await checkFk("contacts", final.contact_id, "contact_id");
-      await checkFk("leads", final.lead_id, "lead_id");
-      await checkFk("deals", final.deal_id, "deal_id");
-    } catch (e) {
-      return res.status(400).json({ error: e.message });
-    }
+    await checkFk("accounts", final.account_id, "account_id");
+    await checkFk("contacts", final.contact_id, "contact_id");
+    await checkFk("leads", final.lead_id, "lead_id");
+    await checkFk("deals", final.deal_id, "deal_id");
 
-    const updated_at = Date.now();
+    // Comprueba acceso del actor y de los usuarios asignados.
+    await validateActivityAccess(req, final);
 
-    await db
-      .prepare(
-        `
-        UPDATE activities SET
-          type = ?, title = ?, due_date = ?, remind_at_ms = ?, status = ?, notes = ?,
-          account_id = ?, contact_id = ?, lead_id = ?, deal_id = ?,
-          assigned_to = ?, assigned_to_2 = ?, updated_at = ?
-        WHERE id = ? AND tenant_id = ?
-      `
-      )
-      .run(
-        final.type,
-        final.title,
-        final.due_date ?? null,
-        final.remind_at_ms ?? null,
-        final.status,
-        final.notes ?? null,
-        final.account_id ?? null,
-        final.contact_id ?? null,
-        final.lead_id ?? null,
-        final.deal_id ?? null,
-        final.assigned_to ?? null,
-        final.assigned_to_2 ?? null,
-        updated_at,
-        req.params.id,
-        req.tenantId
-      );
-
-    // Traer el registro actualizado con joins (para UI)
-    const updated = await resolveRow(
-      db
-        .prepare(
-          `
-          SELECT 
-            a.*,
-            cu.name  AS created_by_name,
-            cu.email AS created_by_email,
-            au.name  AS assigned_to_name,
-            au.email AS assigned_to_email,
-            au2.name  AS assigned_to_2_name,
-            au2.email AS assigned_to_2_email,
-
-            -- ✅ NUEVO
-            ct.name AS contact_name
-          FROM activities a
-          LEFT JOIN users cu  ON cu.id  = a.created_by
-          LEFT JOIN users au  ON au.id  = a.assigned_to
-          LEFT JOIN users au2 ON au2.id = a.assigned_to_2
-          LEFT JOIN contacts ct
-            ON ct.id = a.contact_id
-           AND ct.tenant_id = a.tenant_id
-          WHERE a.id = ? AND a.tenant_id = ?
-        `
-        )
-        .get(req.params.id, req.tenantId)
+    const updatedAt = Math.max(
+      Date.now(),
+      Number(found.updated_at) + 1
     );
 
-    const afterNorm = normalizeAssignees(final.assigned_to, final.assigned_to_2);
-    const assignmentChanged = !setsEqual(assigneeSet(beforeNorm), assigneeSet(afterNorm));
+    // Volver a comprobar visibilidad al escribir.
+    // updated_at evita sobrescribir otra edición concurrente.
+    const writeFilter = await activityReadFilter(req);
 
-    // Notificar reasignación (correo)
-    if (
-      assignmentChanged &&
-      notifyAssignees &&
-      typeof notifyActivityReassigned === "function"
-    ) {
-      const changedBy = resolveUserId(req);
+    const info = await db.prepare(`
+      UPDATE activities AS a
+      SET
+        type = ?,
+        title = ?,
+        due_date = ?,
+        remind_at_ms = ?,
+        status = ?,
+        notes = ?,
+        account_id = ?,
+        contact_id = ?,
+        lead_id = ?,
+        deal_id = ?,
+        assigned_to = ?,
+        assigned_to_2 = ?,
+        updated_at = ?
+      WHERE a.id = ?
+        AND a.updated_at = ?
+        AND ${writeFilter.sql}
+    `).run(
+      final.type,
+      final.title,
+      final.due_date ?? null,
+      final.remind_at_ms ?? null,
+      final.status,
+      final.notes ?? null,
+      final.account_id ?? null,
+      final.contact_id ?? null,
+      final.lead_id ?? null,
+      final.deal_id ?? null,
+      final.assigned_to ?? null,
+      final.assigned_to_2 ?? null,
+      updatedAt,
+      req.params.id,
+      found.updated_at,
+      ...writeFilter.params
+    );
 
-      const emailActivity = await resolveRow(
-        db
-          .prepare(
-            `
-            SELECT 
-              a.*,
-              cu.name  AS created_by_name,
-              cu.email AS created_by_email,
-              au.name  AS assigned_to_name,
-              au.email AS assigned_to_email,
-              au2.name  AS assigned_to_2_name,
-              au2.email AS assigned_to_2_email,
+    if (info.changes === 0) {
+      const currentFilter = await activityReadFilter(req);
 
-              -- ✅ NUEVO
-              ct.name AS contact_name
-            FROM activities a
-            LEFT JOIN users cu  ON cu.id  = a.created_by
-            LEFT JOIN users au  ON au.id  = a.assigned_to
-            LEFT JOIN users au2 ON au2.id = a.assigned_to_2
-            LEFT JOIN contacts ct
-              ON ct.id = a.contact_id
-             AND ct.tenant_id = a.tenant_id
-            WHERE a.id = ? AND a.tenant_id = ?
-          `
-          )
-          .get(req.params.id, req.tenantId)
-      );
+      const current = await db.prepare(`
+        SELECT 1
+        FROM activities a
+        WHERE a.id = ?
+          AND ${currentFilter.sql}
+        LIMIT 1
+      `).get(req.params.id, ...currentFilter.params);
 
-      const safeEmailRow =
-        emailActivity || unwrapRow(updated) || unwrapRow(found) || null;
+      if (!current) {
+        return res.status(404).json({ error: "not_found" });
+      }
 
-      const activityForEmail = {
-        ...(safeEmailRow || {}),
-        id: safeEmailRow?.id ?? req.params.id,
-        tenant_id: req.tenantId,
-      };
-
-      notifyActivityReassigned({
-        tenant_id: req.tenantId,
-        activity: activityForEmail,
-        before: beforeNorm,
-        after: afterNorm,
-        changed_by: changedBy,
-      }).catch((err) => {
-        console.error("Error enviando correo de reasignación:", err);
+      return res.status(409).json({
+        error: "activity_changed",
+        message:
+          "La actividad cambió mientras la editabas. " +
+          "Recarga los datos antes de volver a guardar.",
       });
     }
 
-    res.json(updated || { ...found, ...final, updated_at });
+    const responseFilter = await activityReadFilter(req);
+
+    const updated = await db.prepare(`
+      SELECT
+        a.*,
+        cu.name AS created_by_name,
+        cu.email AS created_by_email,
+        au.name AS assigned_to_name,
+        au.email AS assigned_to_email,
+        au2.name AS assigned_to_2_name,
+        au2.email AS assigned_to_2_email,
+        ct.name AS contact_name
+      FROM activities a
+      LEFT JOIN users cu ON cu.id = a.created_by
+      LEFT JOIN users au ON au.id = a.assigned_to
+      LEFT JOIN users au2 ON au2.id = a.assigned_to_2
+      LEFT JOIN contacts ct
+        ON ct.id = a.contact_id
+        AND ct.tenant_id = a.tenant_id
+      WHERE a.id = ?
+        AND ${responseFilter.sql}
+      LIMIT 1
+    `).get(req.params.id, ...responseFilter.params);
+
+    // Nunca devolver una copia anterior sin comprobar permisos.
+    if (!updated) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    const afterNorm = normalizeAssignees(
+      updated.assigned_to ?? null,
+      updated.assigned_to_2 ?? null
+    );
+    const assignmentChanged = !setsEqual(
+      assigneeSet(beforeNorm),
+      assigneeSet(afterNorm)
+    );
+
+    const normalizeTimestamp = (value) => {
+      if (value == null || value === "") return null;
+
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    };
+
+    const dateChanged =
+      normalizeTimestamp(found.due_date) !==
+        normalizeTimestamp(updated.due_date) ||
+      normalizeTimestamp(found.remind_at_ms) !==
+        normalizeTimestamp(updated.remind_at_ms);
+
+    // Reprogramar siempre avisa a los asignados actuales.
+    // Reasignar sin cambiar fechas conserva la confirmación existente.
+    if (
+      (dateChanged || (assignmentChanged && notifyAssignees)) &&
+      typeof notifyActivityReassigned === "function"
+    ) {
+      notifyActivityReassigned({
+        tenant_id: req.tenantId,
+        activity: updated,
+        before: {
+          ...beforeNorm,
+          due_date: found.due_date,
+          remind_at_ms: found.remind_at_ms,
+        },
+        after: {
+          ...afterNorm,
+          due_date: updated.due_date,
+          remind_at_ms: updated.remind_at_ms,
+        },
+        changed_by: resolveUserId(req),
+      }).catch((err) => {
+        console.error(
+          "Error enviando correo de actualización:",
+          err.message
+        );
+      });
+    }
+    return res.json(updated);
   })
 );
-
 router.delete(
   "/activities/:id",
   canDelete("activities"),
   wrap(async (req, res) => {
-    const row = await resolveRow(
-      db
-        .prepare(`SELECT id FROM activities WHERE id = ? AND tenant_id = ?`)
-        .get(req.params.id, req.tenantId)
-    );
-    if (!row) return res.status(404).json({ error: "not_found" });
+    const filter = await activityReadFilter(req);
 
-    await db
-      .prepare(`DELETE FROM activities WHERE id = ? AND tenant_id = ?`)
-      .run(req.params.id, req.tenantId);
+    const info = await db.prepare(`
+      DELETE FROM activities AS a
+      WHERE a.id = ?
+        AND ${filter.sql}
+    `).run(req.params.id, ...filter.params);
 
-    res.json({ ok: true });
+    if (info.changes === 0) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    return res.json({ ok: true });
   })
 );
 

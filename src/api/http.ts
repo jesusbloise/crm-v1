@@ -82,10 +82,8 @@ async function request<T = Json>(
   }
 
   if (typeof __DEV__ !== "undefined" && __DEV__) {
-    console.log("🌐 HTTP →", finalInit.method || "GET", url);
-    console.log("🧩 Headers:", headers);
-    if (finalInit.body) console.log("📦 Body:", finalInit.body);
-  }
+  console.log("🌐 HTTP →", finalInit.method || "GET", path.split("?")[0]);
+}
 
   let res: Response;
   try {
@@ -120,7 +118,10 @@ async function request<T = Json>(
       (data && typeof data === "object" && ((data as any).message || (data as any).detail)) ||
       (typeof code === "string" && code) ||
       `HTTP ${res.status}`;
-    console.error("❌ HTTP Error Response:", { status: res.status, code, message, data });
+    console.error("❌ HTTP Error Response:", {
+  status: res.status,
+  code,
+});
     throw new ApiError(String(message), { status: res.status, code, body: data });
   }
 

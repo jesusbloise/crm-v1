@@ -2,7 +2,6 @@
 const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
-const { requireTenantRole } = require("../lib/tenant");
 const {
   resolveUserId,
   canRead,
@@ -10,265 +9,430 @@ const {
   canDelete,
   getOwnershipFilter,
 } = require("../lib/authorize");
+const {
+  contactVisibilityFilter,
+  getVisibleContact,
+} = require("../lib/contactAccess");
 
 const router = Router();
 
-/** Helpers */
-function coerceStr(v, fallback = null) {
-  if (typeof v === "string") return v.trim();
-  return v == null ? fallback : String(v);
+function coerceStr(value, fallback = null) {
+  if (typeof value === "string") return value.trim();
+  return value == null ? fallback : String(value);
+}
+
+function hasProp(object, field) {
+  return Object.prototype.hasOwnProperty.call(object, field);
 }
 
 /**
- * GET /deals
- * Lista de deals del tenant actual.
- * Opcional: ?limit=100
+ * Mantiene los permisos existentes de las oportunidades.
+ * Además, exige acceso al contacto vinculado.
  */
+function dealContactFilter(req) {
+  const contact = contactVisibilityFilter(req, "visible_contact");
+
+  if (!resolveUserId(req) || !req.tenantId) {
+    return { sql: "FALSE", params: [] };
+  }
+
+  return {
+    sql: `
+      (
+        d.tenant_id = ?
+        AND (
+          NULLIF(d.contact_id, '') IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM contacts visible_contact
+            WHERE visible_contact.id = d.contact_id
+              AND visible_contact.tenant_id = d.tenant_id
+              AND ${contact.sql}
+          )
+        )
+      )
+    `,
+    params: [req.tenantId, ...contact.params],
+  };
+}
+
+/**
+ * Ejecuta SQL con placeholders ? en un cliente de transacción.
+ * El SQL siempre procede de constantes del backend.
+ */
+function transactionQuery(client, sql, params = []) {
+  let index = 0;
+  const pgSql = sql.replace(/\?/g, () => `$${++index}`);
+  return client.query(pgSql, params);
+}
+
+async function findVisibleDeal(req, id) {
+  const filter = dealContactFilter(req);
+
+  return db.prepare(`
+    SELECT d.*
+    FROM deals d
+    WHERE d.id = ?
+      AND ${filter.sql}
+    LIMIT 1
+  `).get(id, ...filter.params);
+}
+
+/** GET /deals */
 router.get(
   "/deals",
   wrap(async (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200);
-    const ownership = await getOwnershipFilter(req);
-    const rows = await db
-      .prepare(
-        `
-        SELECT *
-        FROM deals
-        WHERE tenant_id = ? ${ownership}
-        ORDER BY updated_at DESC, id ASC
-        LIMIT ?
-      `
-      )
-      .all(req.tenantId, limit);
-    res.json(rows);
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(requestedLimit, 200))
+      : 100;
+
+    const filter = dealContactFilter(req);
+    const ownership = await getOwnershipFilter(req, "d");
+
+    const rows = await db.prepare(`
+      SELECT d.*
+      FROM deals d
+      WHERE ${filter.sql}
+        ${ownership}
+      ORDER BY d.updated_at DESC, d.id ASC
+      LIMIT ?
+    `).all(...filter.params, limit);
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(rows);
   })
 );
 
-/**
- * GET /deals/:id
- * Detalle de deal dentro del tenant.
- */
+/** GET /deals/:id */
 router.get(
   "/deals/:id",
   canRead("deals"),
   wrap(async (req, res) => {
-    const row = await db
-      .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
-      .get(req.params.id, req.tenantId);
-    if (!row) return res.status(404).json({ error: "not_found" });
-    res.json(row);
+    const row = await findVisibleDeal(req, req.params.id);
+
+    if (!row) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(row);
   })
 );
 
-/**
- * POST /deals
- * Crea deal (owner/admin).
- * Body: { id, title, amount?, stage?, account_id?, contact_id?, close_date? }
- */
+/** POST /deals */
 router.post(
   "/deals",
   wrap(async (req, res) => {
-    let {
-      id,
-      title,
-      amount,
-      stage,
-      account_id,
-      contact_id,
-      close_date,
-    } = req.body || {};
+    const body = req.body || {};
+    const userId = resolveUserId(req);
 
-    id = coerceStr(id, "");
-    title = coerceStr(title, "");
-    stage = coerceStr(stage, "nuevo");
-    account_id = coerceStr(account_id, null);
-    contact_id = coerceStr(contact_id, null);
-    close_date = close_date ?? null; // puede ser timestamp o string, lo guardamos tal cual
+    if (!userId || !req.tenantId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const id = coerceStr(body.id, "");
+    const title = coerceStr(body.title, "");
+    const stage = coerceStr(body.stage, "nuevo") || "nuevo";
+    const accountId = coerceStr(body.account_id) || null;
+    const contactId = coerceStr(body.contact_id) || null;
 
     if (!id || !title) {
-      return res.status(400).json({ error: "id_and_title_required" });
+      return res.status(400).json({
+        error: "id_and_title_required",
+      });
     }
+
     if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
       return res.status(400).json({ error: "invalid_deal_id" });
     }
 
-    // ID único por tenant
-    const exists = await db
-      .prepare(`SELECT 1 FROM deals WHERE id = ? AND tenant_id = ? LIMIT 1`)
-      .get(id, req.tenantId);
-    if (exists) return res.status(409).json({ error: "deal_exists" });
+    const exists = await db.prepare(`
+      SELECT 1
+      FROM deals
+      WHERE id = ? AND tenant_id = ?
+      LIMIT 1
+    `).get(id, req.tenantId);
 
-    // Validar FKs en el mismo tenant
-    if (account_id) {
-      const acc = await db
-        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(account_id, req.tenantId);
-      if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-    }
-    if (contact_id) {
-      const c = await db
-        .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(contact_id, req.tenantId);
-      if (!c) return res.status(400).json({ error: "invalid_contact_id" });
+    if (exists) {
+      return res.status(409).json({ error: "deal_exists" });
     }
 
-    const userId = resolveUserId(req);
+    if (accountId) {
+      const account = await db.prepare(`
+        SELECT 1
+        FROM accounts
+        WHERE id = ? AND tenant_id = ?
+        LIMIT 1
+      `).get(accountId, req.tenantId);
+
+      if (!account) {
+        return res.status(400).json({
+          error: "invalid_account_id",
+        });
+      }
+    }
+
+    if (contactId) {
+      const contact = await getVisibleContact(req, contactId);
+
+      if (!contact) {
+        return res.status(400).json({
+          error: "invalid_contact_id",
+        });
+      }
+    }
+
     const now = Date.now();
-    await db.prepare(
-      `
-      INSERT INTO deals
-        (id, title, amount, stage, account_id, contact_id, close_date, tenant_id, created_by, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    `
-    ).run(
-      id,
-      title,
-      amount ?? null,
-      stage,
-      account_id ?? null,
-      contact_id ?? null,
-      close_date ?? null,
-      req.tenantId,
-      userId,
-      now,
-      now
-    );
 
-    const created = await db
-      .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
-      .get(id, req.tenantId);
+    try {
+      await db.prepare(`
+        INSERT INTO deals (
+          id, title, amount, stage, account_id, contact_id,
+          close_date, tenant_id, created_by, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        title,
+        body.amount ?? null,
+        stage,
+        accountId,
+        contactId,
+        body.close_date ?? null,
+        req.tenantId,
+        userId,
+        now,
+        now
+      );
+    } catch (err) {
+      if (err.code === "23505") {
+        return res.status(409).json({ error: "deal_exists" });
+      }
+      throw err;
+    }
 
-    res.status(201).json(created);
+    const created = await findVisibleDeal(req, id);
+
+    if (!created) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(201).json(created);
   })
 );
 
-/**
- * PATCH /deals/:id
- * Actualiza deal (owner/admin).
- * Automatización: si pasa a "propuesta", crea una activity "Enviar propuesta" a 24h.
- */
+/** PATCH /deals/:id */
 router.patch(
   "/deals/:id",
   canWrite("deals"),
   wrap(async (req, res) => {
-    const found = await db
-      .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
-      .get(req.params.id, req.tenantId);
-    if (!found) return res.status(404).json({ error: "not_found" });
+    const found = await findVisibleDeal(req, req.params.id);
 
-    // Validar FKs si vienen
-    let account_id =
-      typeof req.body?.account_id === "string"
-        ? req.body.account_id.trim()
-        : found.account_id;
-    let contact_id =
-      typeof req.body?.contact_id === "string"
-        ? req.body.contact_id.trim()
-        : found.contact_id;
-
-    if (account_id) {
-      const acc = await db
-        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(account_id, req.tenantId);
-      if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-    }
-    if (contact_id) {
-      const c = await db
-        .prepare(`SELECT 1 FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(contact_id, req.tenantId);
-      if (!c) return res.status(400).json({ error: "invalid_contact_id" });
+    if (!found) {
+      return res.status(404).json({ error: "not_found" });
     }
 
-    const prevStage = found.stage;
+    const body = req.body || {};
 
-    const next = {
-      ...found,
-      ...(req.body || {}),
-      title:
-        typeof req.body?.title === "string"
-          ? req.body.title.trim()
-          : found.title,
-      stage:
-        typeof req.body?.stage === "string"
-          ? req.body.stage.trim()
-          : found.stage,
-      account_id,
-      contact_id,
-      updated_at: Date.now(),
-    };
+    const accountId = hasProp(body, "account_id")
+      ? coerceStr(body.account_id) || null
+      : found.account_id || null;
 
-    await db.prepare(
-      `
-      UPDATE deals SET
-        title = ?,
-        amount = ?,
-        stage = ?,
-        account_id = ?,
-        contact_id = ?,
-        close_date = ?,
-        updated_at = ?
-      WHERE id = ? AND tenant_id = ?
-    `
-    ).run(
-      next.title,
-      next.amount ?? null,
-      next.stage ?? "nuevo",
-      next.account_id ?? null,
-      next.contact_id ?? null,
-      next.close_date ?? null,
-      next.updated_at,
-      req.params.id,
-      req.tenantId
+    const contactId = hasProp(body, "contact_id")
+      ? coerceStr(body.contact_id) || null
+      : found.contact_id || null;
+
+    // El contacto determina también la privacidad de las
+    // actividades y notas vinculadas a esta oportunidad.
+    if (
+      found.contact_id &&
+      contactId !== found.contact_id
+    ) {
+      return res.status(400).json({
+        error: "deal_privacy_link_locked",
+        message:
+          "No puedes quitar ni cambiar el contacto de esta " +
+          "oportunidad porque determina su privacidad y la " +
+          "de sus actividades y notas.",
+      });
+    }
+
+    const title = hasProp(body, "title")
+      ? coerceStr(body.title, "")
+      : found.title;
+
+    const stage = hasProp(body, "stage")
+      ? coerceStr(body.stage, "")
+      : found.stage;
+
+    if (!title || !stage) {
+      return res.status(400).json({
+        error: "title_and_stage_required",
+      });
+    }
+
+    if (accountId) {
+      const account = await db.prepare(`
+        SELECT 1
+        FROM accounts
+        WHERE id = ? AND tenant_id = ?
+        LIMIT 1
+      `).get(accountId, req.tenantId);
+
+      if (!account) {
+        return res.status(400).json({
+          error: "invalid_account_id",
+        });
+      }
+    }
+
+    if (contactId) {
+      const contact = await getVisibleContact(req, contactId);
+
+      if (!contact) {
+        return res.status(400).json({
+          error: "invalid_contact_id",
+        });
+      }
+    }
+
+    const amount = hasProp(body, "amount")
+      ? body.amount ?? null
+      : found.amount ?? null;
+
+    const closeDate = hasProp(body, "close_date")
+      ? body.close_date ?? null
+      : found.close_date ?? null;
+
+    const updatedAt = Math.max(
+      Date.now(),
+      Number(found.updated_at) + 1
     );
 
-    // Automatización: al pasar a "propuesta" creamos una actividad (mismo tenant)
-    if (prevStage !== "propuesta" && next.stage === "propuesta") {
-      const in24h = Date.now() + 24 * 60 * 60 * 1000;
-      const aid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const client = await db.pool.connect();
 
-      await db.prepare(
-        `
-        INSERT INTO activities
-          (id, type, title, due_date, status, deal_id, tenant_id, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
-      `
-      ).run(
-        aid,
-        "task",
-        "Enviar propuesta",
-        in24h,
-        "open",
+    try {
+      await client.query("BEGIN");
+
+      const filter = dealContactFilter(req);
+
+      const result = await transactionQuery(client, `
+        UPDATE deals AS d
+        SET
+          title = ?,
+          amount = ?,
+          stage = ?,
+          account_id = ?,
+          contact_id = ?,
+          close_date = ?,
+          updated_at = ?
+        WHERE d.id = ?
+          AND d.updated_at = ?
+          AND ${filter.sql}
+        RETURNING d.id
+      `, [
+        title,
+        amount,
+        stage,
+        accountId,
+        contactId,
+        closeDate,
+        updatedAt,
         req.params.id,
-        req.tenantId,
-        Date.now(),
-        Date.now()
-      );
+        found.updated_at,
+        ...filter.params,
+      ]);
+
+      if (result.rowCount === 0) {
+        await client.query("ROLLBACK");
+
+        const current = await findVisibleDeal(
+          req,
+          req.params.id
+        );
+
+        if (!current) {
+          return res.status(404).json({ error: "not_found" });
+        }
+
+        return res.status(409).json({
+          error: "deal_changed",
+          message:
+            "La oportunidad cambió mientras la editabas. " +
+            "Recarga los datos antes de volver a guardar.",
+        });
+      }
+
+      if (
+        found.stage !== "propuesta" &&
+        stage === "propuesta"
+      ) {
+        const now = Date.now();
+        const activityId =
+          Math.random().toString(36).slice(2) +
+          now.toString(36);
+
+        await transactionQuery(client, `
+          INSERT INTO activities (
+            id, type, title, due_date, status,
+            deal_id, tenant_id, created_by,
+            created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          activityId,
+          "task",
+          "Enviar propuesta",
+          now + 24 * 60 * 60 * 1000,
+          "open",
+          req.params.id,
+          req.tenantId,
+          resolveUserId(req),
+          now,
+          now,
+        ]);
+      }
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
     }
 
-    const updated = await db
-      .prepare(`SELECT * FROM deals WHERE id = ? AND tenant_id = ?`)
-      .get(req.params.id, req.tenantId);
+    const updated = await findVisibleDeal(req, req.params.id);
 
-    res.json(updated);
+    if (!updated) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(updated);
   })
 );
 
-/**
- * DELETE /deals/:id
- * Elimina deal (owner/admin).
- */
+/** DELETE /deals/:id */
 router.delete(
   "/deals/:id",
   canDelete("deals"),
   wrap(async (req, res) => {
-    const info = await db
-      .prepare(`DELETE FROM deals WHERE id = ? AND tenant_id = ?`)
-      .run(req.params.id, req.tenantId);
+    const filter = dealContactFilter(req);
 
-    if (info.changes === 0) return res.status(404).json({ error: "not_found" });
-    res.json({ ok: true });
+    const info = await db.prepare(`
+      DELETE FROM deals AS d
+      WHERE d.id = ?
+        AND ${filter.sql}
+    `).run(req.params.id, ...filter.params);
+
+    if (info.changes === 0) {
+      return res.status(404).json({ error: "not_found" });
+    }
+
+    return res.json({ ok: true });
   })
 );
 
 module.exports = router;
-

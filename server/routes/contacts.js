@@ -2,7 +2,6 @@
 const { Router } = require("express");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
-const { requireTenantRole } = require("../lib/tenant");
 const {
   canRead,
   canWrite,
@@ -10,6 +9,10 @@ const {
   getOwnershipFilter,
   resolveUserId,
 } = require("../lib/authorize");
+const {
+  contactVisibilityFilter,
+  getVisibleContact,
+} = require("../lib/contactAccess");
 
 const router = Router();
 
@@ -43,474 +46,49 @@ async function getGlobalRole(userId) {
 
 /**
  * GET /contacts
- * Lista contactos del tenant actual.
- *
- * Soporta:
- *  - ?workspaceId=xxx  → filtra contactos cuyo account pertenece a ese workspace
- *
- * ✅ IMPORTANTE:
- * - YA NO LIMITAMOS, porque estabas perdiendo contactos en el front.
- * - Más adelante hacemos paginación real con cursor (pro), pero por ahora: TODOS.
+ * Lista únicamente los contactos visibles del workspace activo.
  */
 router.get(
   "/contacts",
   canRead("contacts"),
   wrap(async (req, res) => {
-    // const limit = Math.min(parseInt(req.query.limit, 10) || 100, 200); // ❌ ya no
     const workspaceId =
       typeof req.query.workspaceId === "string"
         ? req.query.workspaceId.trim()
         : "";
 
-    let rows;
+    const filter = contactVisibilityFilter(req, "c");
+    const clauses = [filter.sql];
+    const params = [...filter.params];
 
     if (workspaceId) {
-      rows = await db
-        .prepare(
-          `
-          SELECT 
-            c.*,
-            u.name  AS created_by_name,
-            u.email AS created_by_email
-          FROM contacts c
-          LEFT JOIN users u    ON c.created_by = u.id
-          LEFT JOIN accounts a ON c.account_id = a.id
-          WHERE 
-            c.tenant_id = ?
+      clauses.push(`
+        EXISTS (
+          SELECT 1
+          FROM accounts a
+          WHERE a.id = c.account_id
+            AND a.tenant_id = c.tenant_id
             AND a.workspace_id = ?
-          ORDER BY c.updated_at DESC, c.id ASC
-        `
         )
-        .all(req.tenantId, workspaceId);
-    } else {
-      rows = await db
-        .prepare(
-          `
-          SELECT 
-            c.*,
-            u.name  AS created_by_name,
-            u.email AS created_by_email
-          FROM contacts c
-          LEFT JOIN users u ON c.created_by = u.id
-          WHERE c.tenant_id = ?
-          ORDER BY c.updated_at DESC, c.id ASC
-        `
-        )
-        .all(req.tenantId);
+      `);
+      params.push(workspaceId);
     }
 
-    res.json(rows);
+    const rows = await db.prepare(`
+      SELECT
+        c.*,
+        u.name AS created_by_name,
+        u.email AS created_by_email
+      FROM contacts c
+      LEFT JOIN users u ON u.id = c.created_by
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY c.updated_at DESC, c.id ASC
+    `).all(...params);
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(rows);
   })
 );
-
-/**
- * GET /contacts/:id
- */
-router.get(
-  "/contacts/:id",
-  wrap(async (req, res) => {
-    const row = await db
-      .prepare(
-        `
-        SELECT 
-          c.*,
-          u.name  AS created_by_name,
-          u.email AS created_by_email
-        FROM contacts c
-        LEFT JOIN users u ON c.created_by = u.id
-        WHERE c.id = ? AND c.tenant_id = ?
-      `
-      )
-      .get(req.params.id, req.tenantId);
-
-    if (!row) return res.status(404).json({ error: "not_found" });
-
-    res.json(row);
-  })
-);
-
-/**
- * GET /contacts-all
- * TODOS los contactos sin filtro de tenant
- * (esto sí lo limitamos porque puede ser gigante)
- */
-router.get(
-  "/contacts-all",
-  canRead("contacts"),
-  wrap(async (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 5000);
-
-    const rows = await db
-      .prepare(
-        `
-        SELECT 
-          c.*,
-          u.name  AS created_by_name,
-          u.email AS created_by_email
-        FROM contacts c
-        LEFT JOIN users u ON c.created_by = u.id
-        ORDER BY c.updated_at DESC, c.id ASC
-        LIMIT ?
-      `
-      )
-      .all(limit);
-
-    console.log("[contacts-all] rows:", rows.length);
-
-    res.json(rows);
-  })
-);
-
-/**
- * POST /contacts/import
- * Import batch (desde CSV parseado en frontend)
- */
-router.post(
-  "/contacts/import",
-  canWrite("contacts"),
-  wrap(async (req, res) => {
-    const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
-    if (!rows) return res.status(400).json({ error: "rows_required" });
-
-    const userId = resolveUserId(req);
-    if (!userId) return res.status(401).json({ error: "unauthorized" });
-
-    // 🔒 Solo admin/owner
-    const role = await getGlobalRole(userId);
-    if (role !== "admin" && role !== "owner") {
-      return res.status(403).json({ error: "forbidden" });
-    }
-
-    const now = Date.now();
-
-    const results = {
-      received: rows.length,
-      created: 0,
-      skipped: 0,
-      errors: 0,
-      items: [],
-    };
-
-    const incomingEmails = rows
-      .map((r) => normalizeEmail(r?.email))
-      .filter(Boolean);
-
-    const existingEmailSet = new Set();
-
-    if (incomingEmails.length > 0) {
-      const uniq = Array.from(new Set(incomingEmails));
-      const chunkSize = 200;
-
-      for (let i = 0; i < uniq.length; i += chunkSize) {
-        const chunk = uniq.slice(i, i + chunkSize);
-        const placeholders = chunk.map(() => "?").join(",");
-
-        const found = await db
-          .prepare(
-            `
-            SELECT email
-            FROM contacts
-            WHERE tenant_id = ?
-              AND email IN (${placeholders})
-          `
-          )
-          .all(req.tenantId, ...chunk);
-
-        for (const f of found) {
-          const em = normalizeEmail(f?.email);
-          if (em) existingEmailSet.add(em);
-        }
-      }
-    }
-
-    const seenInBatch = new Set();
-
-    const accountExists = (accountId) => {
-      if (!accountId) return false;
-      const row = db
-        .prepare(
-          `SELECT 1 AS one FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`
-        )
-        .get(accountId, req.tenantId);
-      return !!row;
-    };
-
-    for (let idx = 0; idx < rows.length; idx++) {
-      try {
-        const raw = rows[idx] || {};
-
-        const name = coerceStr(raw.name);
-        if (!name) {
-          results.skipped++;
-          results.items.push({ index: idx, ok: false, reason: "missing_name" });
-          continue;
-        }
-
-        const email = normalizeEmail(raw.email);
-        const phone = coerceStr(raw.phone);
-        const company = coerceStr(raw.company);
-        const position = coerceStr(raw.position);
-        const client_type = safeClientType(raw.client_type);
-        let account_id = coerceStr(raw.account_id);
-
-        if (account_id && !accountExists(account_id)) account_id = null;
-
-        if (email && existingEmailSet.has(email)) {
-          results.skipped++;
-          results.items.push({
-            index: idx,
-            ok: false,
-            reason: "duplicate_email_db",
-            email,
-          });
-          continue;
-        }
-
-        if (email) {
-          if (seenInBatch.has(email)) {
-            results.skipped++;
-            results.items.push({
-              index: idx,
-              ok: false,
-              reason: "duplicate_email_csv",
-              email,
-            });
-            continue;
-          }
-          seenInBatch.add(email);
-        }
-
-        let id = coerceStr(raw.id);
-        if (!id) id = makeContactId();
-
-        if (!/^[a-zA-Z0-9_-]+$/.test(id)) id = makeContactId();
-
-        const existsById = db
-          .prepare(
-            `SELECT 1 AS one FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`
-          )
-          .get(id, req.tenantId);
-
-        if (existsById) id = makeContactId();
-
-        db.prepare(
-          `
-          INSERT INTO contacts
-            (id, name, email, phone, company, position, account_id, client_type, tenant_id, created_by, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        `
-        ).run(
-          id,
-          name,
-          email ?? null,
-          phone ?? null,
-          company ?? null,
-          position ?? null,
-          account_id ?? null,
-          client_type ?? null,
-          req.tenantId,
-          userId,
-          now,
-          now
-        );
-
-        if (email) existingEmailSet.add(email);
-
-        results.created++;
-        results.items.push({ index: idx, ok: true, id, name, email });
-      } catch (e) {
-        results.errors++;
-        results.items.push({
-          index: idx,
-          ok: false,
-          reason: "insert_failed",
-          message: String(e?.message || e),
-        });
-      }
-    }
-
-    return res.status(200).json({ ok: true, ...results });
-  })
-);
-
-/**
- * POST /contacts
- * Crear contacto
- */
-router.post(
-  "/contacts",
-  canWrite("contacts"),
-  wrap(async (req, res) => {
-    let { id, name, email, phone, company, position, account_id, client_type } =
-      req.body || {};
-
-    id = typeof id === "string" ? id.trim() : "";
-    name = typeof name === "string" ? name.trim() : "";
-    email = typeof email === "string" ? email.trim() : null;
-    phone = typeof phone === "string" ? phone.trim() : null;
-    company = typeof company === "string" ? company.trim() : null;
-    position = typeof position === "string" ? position.trim() : null;
-    account_id = typeof account_id === "string" ? account_id.trim() : null;
-    client_type = typeof client_type === "string" ? client_type.trim() : null;
-
-    const allowed = ["productora", "agencia", "directo", "proveedor", null];
-if (!allowed.includes(client_type)) client_type = null;
-
-    if (!id || !name)
-      return res.status(400).json({ error: "id_and_name_required" });
-
-    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-      return res.status(400).json({ error: "invalid_contact_id" });
-    }
-
-    const existing = await db
-      .prepare(
-        `SELECT 1 AS one FROM contacts WHERE id = ? AND tenant_id = ? LIMIT 1`
-      )
-      .get(id, req.tenantId);
-
-    if (existing) return res.status(409).json({ error: "contact_exists" });
-
-    if (account_id) {
-      const acc = await db
-        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(account_id, req.tenantId);
-      if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-    }
-
-    const userId = resolveUserId(req);
-    const now = Date.now();
-
-    await db
-      .prepare(
-        `
-      INSERT INTO contacts
-        (id, name, email, phone, company, position, account_id, client_type, tenant_id, created_by, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    `
-      )
-      .run(
-        id,
-        name,
-        email ?? null,
-        phone ?? null,
-        company ?? null,
-        position ?? null,
-        account_id ?? null,
-        client_type ?? null,
-        req.tenantId,
-        userId,
-        now,
-        now
-      );
-
-    const created = await db
-      .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
-      .get(id, req.tenantId);
-
-    res.setHeader("Location", `/contacts/${id}`);
-    return res.status(201).json({
-      ok: true,
-      message: "Contacto guardado",
-      contact: created,
-    });
-  })
-);
-
-/**
- * PATCH /contacts/:id
- */
-router.patch(
-  "/contacts/:id",
-  canWrite("contacts"),
-  wrap(async (req, res) => {
-    const found = await db
-      .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
-      .get(req.params.id, req.tenantId);
-
-    if (!found) return res.status(404).json({ error: "not_found" });
-
-    let {
-      name = found.name,
-      email = found.email,
-      phone = found.phone,
-      company = found.company,
-      position = found.position,
-      account_id = found.account_id,
-      client_type = found.client_type,
-    } = req.body || {};
-
-    name = typeof name === "string" ? name.trim() : found.name;
-    email = typeof email === "string" ? email.trim() : found.email;
-    phone = typeof phone === "string" ? phone.trim() : found.phone;
-    company = typeof company === "string" ? company.trim() : found.company;
-    position = typeof position === "string" ? position.trim() : found.position;
-    account_id =
-      typeof account_id === "string" ? account_id.trim() : found.account_id;
-    client_type =
-      typeof client_type === "string" ? client_type.trim() : found.client_type;
-
-    const allowed = ["productora", "agencia", "directo", "proveedor", null];
-if (!allowed.includes(client_type)) client_type = found.client_type;
-
-    if (account_id) {
-      const acc = await db
-        .prepare(`SELECT 1 FROM accounts WHERE id = ? AND tenant_id = ? LIMIT 1`)
-        .get(account_id, req.tenantId);
-      if (!acc) return res.status(400).json({ error: "invalid_account_id" });
-    }
-
-    const updated_at = Date.now();
-
-    await db
-      .prepare(
-        `
-      UPDATE contacts
-      SET 
-        name = ?, email = ?, phone = ?, company = ?, position = ?, 
-        account_id = ?, client_type = ?, updated_at = ?
-      WHERE id = ? AND tenant_id = ?
-    `
-      )
-      .run(
-        name,
-        email ?? null,
-        phone ?? null,
-        company ?? null,
-        position ?? null,
-        account_id ?? null,
-        client_type ?? null,
-        updated_at,
-        req.params.id,
-        req.tenantId
-      );
-
-    const updated = await db
-      .prepare(`SELECT * FROM contacts WHERE id = ? AND tenant_id = ?`)
-      .get(req.params.id, req.tenantId);
-
-    res.json(updated);
-  })
-);
-
-/**
- * DELETE /contacts/:id
- */
-router.delete(
-  "/contacts/:id",
-  canDelete("contacts"),
-  wrap(async (req, res) => {
-    const info = await db
-      .prepare(`DELETE FROM contacts WHERE id = ? AND tenant_id = ?`)
-      .run(req.params.id, req.tenantId);
-
-    if (info.changes === 0)
-      return res.status(404).json({ error: "not_found" });
-
-    res.json({ ok: true });
-  })
-);
-
 /**
  * GET /contacts/export-all-csv
  */
@@ -537,8 +115,11 @@ router.get(
       if (Number.isFinite(n) && n > 0) sinceMs = n;
     }
 
-    const clauses = ["1=1"];
-    const params = [];
+    const filter = contactVisibilityFilter(req, "contacts");
+    const clauses = [filter.sql];
+    const params = [...filter.params];
+
+    res.setHeader("Cache-Control", "no-store");
 
     if (sinceMs > 0) {
       clauses.push("updated_at > ?");
@@ -609,7 +190,815 @@ router.get(
     res.send(csv);
   })
 );
+/**
+ * GET /contacts/:id
+ * No revela si un contacto sin acceso existe.
+ */
+router.get(
+  "/contacts/:id",
+  wrap(async (req, res) => {
+    const filter = contactVisibilityFilter(req, "c");
 
+    const row = await db.prepare(`
+      SELECT
+        c.*,
+        u.name AS created_by_name,
+        u.email AS created_by_email
+      FROM contacts c
+      LEFT JOIN users u ON u.id = c.created_by
+      WHERE c.id = ?
+        AND ${filter.sql}
+      LIMIT 1
+    `).get(req.params.id, ...filter.params);
+
+    if (!row) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    const userId = resolveUserId(req);
+const role = await getGlobalRole(userId);
+
+row.can_manage_sharing =
+  row.created_by === userId &&
+  (role === "admin" || role === "owner");
+
+if (row.can_manage_sharing) {
+  const shares = await db.prepare(`
+    SELECT user_id
+    FROM contact_shares
+    WHERE tenant_id = ? AND contact_id = ?
+    ORDER BY user_id
+  `).all(req.tenantId, row.id);
+
+  row.shared_user_ids = shares.map((share) => share.user_id);
+}
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(row);
+  })
+);
+/**
+ * GET /contacts-all
+ * Conserva el endpoint, respetando workspace y privacidad.
+ */
+router.get(
+  "/contacts-all",
+  canRead("contacts"),
+  wrap(async (req, res) => {
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(requestedLimit, 5000))
+      : 500;
+
+    const filter = contactVisibilityFilter(req, "c");
+
+    const rows = await db.prepare(`
+      SELECT
+        c.*,
+        u.name AS created_by_name,
+        u.email AS created_by_email
+      FROM contacts c
+      LEFT JOIN users u ON u.id = c.created_by
+      WHERE ${filter.sql}
+      ORDER BY c.updated_at DESC, c.id ASC
+      LIMIT ?
+    `).all(...filter.params, limit);
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(rows);
+  })
+);
+
+/**
+ * POST /contacts/import
+ * Importación CSV exclusiva para admin/owner.
+ *
+ * Conserva el comportamiento actual:
+ * los contactos importados se comparten con el workspace.
+ *
+ * La detección de duplicados solo consulta contactos visibles.
+ */
+router.post(
+  "/contacts/import",
+  canWrite("contacts"),
+  wrap(async (req, res) => {
+    const rows = Array.isArray(req.body?.rows)
+      ? req.body.rows
+      : null;
+
+    if (!rows) {
+      return res.status(400).json({ error: "rows_required" });
+    }
+
+    const userId = resolveUserId(req);
+
+    if (!userId || !req.tenantId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const role = await getGlobalRole(userId);
+
+    if (role !== "admin" && role !== "owner") {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+
+    const results = {
+      received: rows.length,
+      created: 0,
+      skipped: 0,
+      errors: 0,
+      items: [],
+    };
+
+    const incomingEmails = Array.from(
+      new Set(
+        rows
+          .map((row) => normalizeEmail(row?.email))
+          .filter(Boolean)
+      )
+    );
+
+    const existingEmailSet = new Set();
+    const chunkSize = 200;
+
+    for (
+      let offset = 0;
+      offset < incomingEmails.length;
+      offset += chunkSize
+    ) {
+      const chunk = incomingEmails.slice(
+        offset,
+        offset + chunkSize
+      );
+
+      const placeholders = chunk.map(() => "?").join(",");
+      const filter = contactVisibilityFilter(req, "c");
+
+      const found = await db.prepare(`
+        SELECT c.email
+        FROM contacts c
+        WHERE ${filter.sql}
+          AND LOWER(BTRIM(c.email)) IN (${placeholders})
+      `).all(...filter.params, ...chunk);
+
+      for (const contact of found) {
+        const email = normalizeEmail(contact.email);
+        if (email) existingEmailSet.add(email);
+      }
+    }
+
+    const seenInBatch = new Set();
+
+    const accountExists = async (accountId) => {
+      if (!accountId) return false;
+
+      const row = await db.prepare(`
+        SELECT 1
+        FROM accounts
+        WHERE id = ?
+          AND tenant_id = ?
+        LIMIT 1
+      `).get(accountId, req.tenantId);
+
+      return Boolean(row);
+    };
+
+    for (let index = 0; index < rows.length; index++) {
+      try {
+        const raw = rows[index] || {};
+        const name = coerceStr(raw.name);
+
+        if (!name) {
+          results.skipped++;
+          results.items.push({
+            index,
+            ok: false,
+            reason: "missing_name",
+          });
+          continue;
+        }
+
+        const email = normalizeEmail(raw.email);
+
+        if (email && seenInBatch.has(email)) {
+          results.skipped++;
+          results.items.push({
+            index,
+            ok: false,
+            reason: "duplicate_email_csv",
+            email,
+          });
+          continue;
+        }
+
+        if (email && existingEmailSet.has(email)) {
+          results.skipped++;
+          results.items.push({
+            index,
+            ok: false,
+            reason: "duplicate_email_db",
+            email,
+          });
+          continue;
+        }
+
+        let accountId = coerceStr(raw.account_id) || null;
+
+        if (accountId && !(await accountExists(accountId))) {
+          accountId = null;
+        }
+
+        // Cada importación crea un registro nuevo.
+        // No se consulta ni reutiliza el ID aportado por el CSV.
+        const id = makeContactId();
+        const now = Date.now();
+
+        await db.prepare(`
+          INSERT INTO contacts (
+            id,
+            name,
+            email,
+            phone,
+            company,
+            position,
+            account_id,
+            client_type,
+            tenant_id,
+            created_by,
+            created_at,
+            updated_at,
+            visibility
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          name,
+          email,
+          coerceStr(raw.phone),
+          coerceStr(raw.company),
+          coerceStr(raw.position),
+          accountId,
+          safeClientType(raw.client_type),
+          req.tenantId,
+          userId,
+          now,
+          now,
+          "workspace"
+        );
+
+        // Solo marcar el correo después de guardar correctamente.
+        if (email) seenInBatch.add(email);
+
+        results.created++;
+        results.items.push({
+          index,
+          ok: true,
+          id,
+          name,
+          email,
+        });
+      } catch (err) {
+        // No devolver mensajes SQL que puedan revelar datos
+        // de registros a los que el usuario no tiene acceso.
+        console.error("[contacts/import] Error de inserción:", {
+          index,
+          code: err.code || "unknown",
+        });
+
+        results.errors++;
+        results.items.push({
+          index,
+          ok: false,
+          reason: "insert_failed",
+          message: "No se pudo importar esta fila.",
+        });
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      ...results,
+    });
+  })
+);
+
+/**
+ * POST /contacts
+ * Admin/owner: debe elegir la visibilidad.
+ * Member: conserva la creación compartida en su workspace.
+ */
+router.post(
+  "/contacts",
+  canWrite("contacts"),
+  wrap(async (req, res) => {
+    const body = req.body || {};
+    const userId = resolveUserId(req);
+    const tenantId = req.tenantId;
+
+    if (!userId || !tenantId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const id = coerceStr(body.id);
+    const name = coerceStr(body.name);
+    const email = normalizeEmail(body.email);
+    const phone = coerceStr(body.phone);
+    const company = coerceStr(body.company);
+    const position = coerceStr(body.position);
+    const accountId = coerceStr(body.account_id);
+    const clientType = safeClientType(body.client_type);
+
+    if (!id || !name) {
+      return res.status(400).json({ error: "id_and_name_required" });
+    }
+
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      return res.status(400).json({ error: "invalid_contact_id" });
+    }
+
+    const admin = req.isAdmin === true;
+    let visibility = coerceStr(body.visibility);
+
+    if (admin) {
+      if (!["private", "workspace", "selected"].includes(visibility)) {
+        return res.status(400).json({
+          error: "visibility_required",
+          message: "Selecciona quién puede ver este contacto.",
+        });
+      }
+    } else {
+      if (visibility && visibility !== "workspace") {
+        return res.status(403).json({
+          error: "visibility_admin_required",
+        });
+      }
+
+      visibility = "workspace";
+    }
+
+    const rawSharedIds = body.shared_user_ids ?? [];
+
+    if (
+      !Array.isArray(rawSharedIds) ||
+      rawSharedIds.length > 200 ||
+      rawSharedIds.some(
+        (value) => typeof value !== "string" || !value.trim()
+      )
+    ) {
+      return res.status(400).json({ error: "invalid_shared_user_ids" });
+    }
+
+    const sharedIds = [
+      ...new Set(rawSharedIds.map((value) => value.trim())),
+    ].filter((value) => value !== userId);
+
+    if (visibility === "selected" && sharedIds.length === 0) {
+      return res.status(400).json({
+        error: "shared_users_required",
+        message: "Selecciona al menos otro usuario del workspace.",
+      });
+    }
+
+    if (visibility !== "selected" && sharedIds.length > 0) {
+      return res.status(400).json({
+        error: "shared_users_not_allowed",
+        message: "La lista de usuarios solo aplica a Usuarios seleccionados.",
+      });
+    }
+
+    const client = await db.pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      if (accountId) {
+        const account = await client.query(
+          `SELECT id
+           FROM accounts
+           WHERE id = $1 AND tenant_id = $2
+           LIMIT 1`,
+          [accountId, tenantId]
+        );
+
+        if (account.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "invalid_account_id" });
+        }
+      }
+
+      if (visibility === "selected") {
+        // Misma definición de integrantes que /workspace/members.
+        // No incluye administradores ajenos automáticamente.
+        const members = await client.query(
+          `
+          SELECT u.id
+          FROM users u
+          JOIN (
+            SELECT user_id
+            FROM tenant_memberships
+            WHERE tenant_id = $1
+
+            UNION
+
+            SELECT user_id
+            FROM memberships
+            WHERE tenant_id = $1
+
+            UNION
+
+            SELECT created_by AS user_id
+            FROM tenants
+            WHERE id = $1
+          ) members ON members.user_id = u.id
+          WHERE u.id = ANY($2::text[])
+            AND COALESCE(u.active, TRUE) = TRUE
+          `,
+          [tenantId, sharedIds]
+        );
+
+        if (members.rows.length !== sharedIds.length) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: "invalid_shared_users",
+            message:
+              "Los usuarios seleccionados deben estar activos y pertenecer al workspace.",
+          });
+        }
+      }
+
+      const now = Date.now();
+
+      const inserted = await client.query(
+        `
+        INSERT INTO contacts (
+          id, name, email, phone, company, position,
+          account_id, client_type, tenant_id, created_by,
+          created_at, updated_at, visibility
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10, $11, $12, $13
+        )
+        RETURNING *
+        `,
+        [
+          id,
+          name,
+          email,
+          phone,
+          company,
+          position,
+          accountId,
+          clientType,
+          tenantId,
+          userId,
+          now,
+          now,
+          visibility,
+        ]
+      );
+
+      if (visibility === "selected") {
+        await client.query(
+          `
+          INSERT INTO contact_shares (
+            tenant_id, contact_id, user_id, created_at
+          )
+          SELECT $1, $2, selected.user_id, $4
+          FROM unnest($3::text[]) AS selected(user_id)
+          `,
+          [tenantId, id, sharedIds, now]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Location", `/contacts/${id}`);
+
+      return res.status(201).json({
+        ok: true,
+        message: "Contacto guardado",
+        contact: {
+          ...inserted.rows[0],
+          shared_user_ids: visibility === "selected" ? sharedIds : [],
+        },
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+
+      if (err.code === "23505") {
+        return res.status(409).json({ error: "contact_exists" });
+      }
+
+      throw err;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+/**
+ * PATCH /contacts/:id
+ * Conserva los permisos de edición existentes.
+ * Solo el creador, siendo admin/owner, modifica la visibilidad.
+ */
+router.patch(
+  "/contacts/:id",
+  canWrite("contacts"),
+  wrap(async (req, res) => {
+    const body = req.body || {};
+    const userId = resolveUserId(req);
+    const tenantId = req.tenantId;
+
+    if (!userId || !tenantId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const has = (key) =>
+      Object.prototype.hasOwnProperty.call(body, key);
+
+    const changesSharing =
+      has("visibility") || has("shared_user_ids");
+
+    const client = await db.pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      // Bloquea el contacto mientras se actualizan sus datos y permisos.
+      const filter = contactVisibilityFilter(req, "c");
+
+      let parameterIndex = 0;
+      const sql = `
+        SELECT c.*
+        FROM contacts c
+        WHERE c.id = ?
+          AND ${filter.sql}
+        FOR UPDATE OF c
+      `.replace(/\?/g, () => `$${++parameterIndex}`);
+
+      const result = await client.query(
+        sql,
+        [req.params.id, ...filter.params]
+      );
+
+      const found = result.rows[0];
+
+      if (!found) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "not_found" });
+      }
+
+      const admin = req.isAdmin === true;
+
+      // Revalida ownership después de adquirir el bloqueo.
+      if (!admin && found.created_by !== userId) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ error: "forbidden_not_owner" });
+      }
+
+      const managesSharing =
+        admin && found.created_by === userId;
+
+      if (changesSharing && !managesSharing) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          error: "sharing_forbidden",
+          message:
+            "Solo el administrador que creó el contacto puede cambiar su visibilidad.",
+        });
+      }
+
+      const name = has("name") ? coerceStr(body.name) : found.name;
+
+      if (!name) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "name_required" });
+      }
+
+      const email = has("email")
+        ? normalizeEmail(body.email)
+        : found.email;
+
+      const phone = has("phone")
+        ? coerceStr(body.phone)
+        : found.phone;
+
+      const company = has("company")
+        ? coerceStr(body.company)
+        : found.company;
+
+      const position = has("position")
+        ? coerceStr(body.position)
+        : found.position;
+
+      const accountId = has("account_id")
+        ? coerceStr(body.account_id) || null
+        : found.account_id;
+
+      const clientType = has("client_type")
+        ? safeClientType(body.client_type)
+        : found.client_type;
+
+      if (accountId) {
+        const account = await client.query(
+          `SELECT id FROM accounts
+           WHERE id = $1 AND tenant_id = $2
+           LIMIT 1`,
+          [accountId, tenantId]
+        );
+
+        if (account.rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "invalid_account_id" });
+        }
+      }
+
+      const visibility = has("visibility")
+        ? coerceStr(body.visibility)
+        : found.visibility;
+
+      if (!["private", "workspace", "selected"].includes(visibility)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "invalid_visibility" });
+      }
+
+      let sharedIds = [];
+
+      if (changesSharing) {
+        if (has("shared_user_ids")) {
+          const rawIds = body.shared_user_ids;
+
+          if (
+            !Array.isArray(rawIds) ||
+            rawIds.length > 200 ||
+            rawIds.some(
+              (value) => typeof value !== "string" || !value.trim()
+            )
+          ) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+              error: "invalid_shared_user_ids",
+            });
+          }
+
+          sharedIds = [
+            ...new Set(rawIds.map((value) => value.trim())),
+          ].filter((value) => value !== userId);
+        } else if (visibility === "selected") {
+          const existingShares = await client.query(
+            `SELECT user_id FROM contact_shares
+             WHERE tenant_id = $1 AND contact_id = $2`,
+            [tenantId, found.id]
+          );
+
+          sharedIds = existingShares.rows
+            .map((share) => share.user_id)
+            .filter((id) => id !== userId);
+        }
+
+        if (visibility !== "selected" && sharedIds.length > 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: "shared_users_not_allowed",
+          });
+        }
+
+        if (visibility === "selected") {
+          if (sharedIds.length === 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+              error: "shared_users_required",
+              message: "Selecciona al menos otro usuario del workspace.",
+            });
+          }
+
+          const members = await client.query(
+            `
+            SELECT u.id
+            FROM users u
+            JOIN (
+              SELECT user_id FROM tenant_memberships
+              WHERE tenant_id = $1
+
+              UNION
+
+              SELECT user_id FROM memberships
+              WHERE tenant_id = $1
+
+              UNION
+
+              SELECT created_by AS user_id FROM tenants
+              WHERE id = $1
+            ) members ON members.user_id = u.id
+            WHERE u.id = ANY($2::text[])
+              AND COALESCE(u.active, TRUE) = TRUE
+            `,
+            [tenantId, sharedIds]
+          );
+
+          if (members.rows.length !== sharedIds.length) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+              error: "invalid_shared_users",
+              message:
+                "Los usuarios deben estar activos y pertenecer al workspace.",
+            });
+          }
+        }
+      }
+
+      const now = Date.now();
+
+      const updated = await client.query(
+        `
+        UPDATE contacts
+        SET name = $1, email = $2, phone = $3,
+            company = $4, position = $5,
+            account_id = $6, client_type = $7,
+            visibility = $8, updated_at = $9
+        WHERE id = $10 AND tenant_id = $11
+        RETURNING *
+        `,
+        [
+          name, email, phone, company, position,
+          accountId, clientType, visibility, now,
+          found.id, tenantId,
+        ]
+      );
+
+      if (changesSharing) {
+        await client.query(
+          `DELETE FROM contact_shares
+           WHERE tenant_id = $1 AND contact_id = $2`,
+          [tenantId, found.id]
+        );
+
+        if (visibility === "selected") {
+          await client.query(
+            `
+            INSERT INTO contact_shares (
+              tenant_id, contact_id, user_id, created_at
+            )
+            SELECT $1, $2, selected.user_id, $4
+            FROM unnest($3::text[]) AS selected(user_id)
+            `,
+            [tenantId, found.id, sharedIds, now]
+          );
+        }
+      }
+
+      const contact = updated.rows[0];
+      contact.can_manage_sharing = managesSharing;
+
+      if (managesSharing) {
+        const shares = await client.query(
+          `SELECT user_id FROM contact_shares
+           WHERE tenant_id = $1 AND contact_id = $2
+           ORDER BY user_id`,
+          [tenantId, found.id]
+        );
+
+        contact.shared_user_ids = shares.rows.map(
+          (share) => share.user_id
+        );
+      }
+
+      await client.query("COMMIT");
+
+      res.setHeader("Cache-Control", "no-store");
+      return res.json(contact);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+/**
+ * DELETE /contacts/:id
+ */
+router.delete(
+  "/contacts/:id",
+  canDelete("contacts"),
+  wrap(async (req, res) => {
+
+    const found = await getVisibleContact(req, req.params.id);
+
+    if (!found) {
+      return res.status(404).json({ error: "not_found" });
+    }
+    const info = await db
+      .prepare(`DELETE FROM contacts WHERE id = ? AND tenant_id = ?`)
+      .run(req.params.id, req.tenantId);
+
+    if (info.changes === 0)
+      return res.status(404).json({ error: "not_found" });
+
+    res.json({ ok: true });
+  })
+);
 module.exports = router;
-
-

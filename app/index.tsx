@@ -64,7 +64,10 @@ export default function Home() {
   // Data conteos
   const qDeals = useQuery({ queryKey: ["deals"], queryFn: listDeals });
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
-  const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+  const qCon = useQuery({
+  queryKey: ["contacts"],
+  queryFn: () => listContacts(),
+});
   const qLeads = useQuery({ queryKey: ["leads"], queryFn: listLeads });
 
   // Data de actividades (para la lista principal)

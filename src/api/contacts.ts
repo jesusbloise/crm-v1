@@ -1,4 +1,5 @@
 // src/api/contacts.ts
+import { authFetch } from "@/src/api/auth";
 import { api } from "@/src/api/http";
 
 export type ClientType =
@@ -8,8 +9,20 @@ export type ClientType =
   | "proveedor"
   | null;
 
+export type ContactVisibility =
+  | "private"
+  | "workspace"
+  | "selected";
+
+export type SharingSelection = {
+  visibility: ContactVisibility | null;
+  shared_user_ids: string[];
+};
+
 export type Contact = {
   id: string;
+  tenant_id?: string;
+
   name: string;
   email?: string | null;
   phone?: string | null;
@@ -17,50 +30,88 @@ export type Contact = {
   position?: string | null;
   client_type?: ClientType;
   account_id?: string | null;
+
   created_by?: string;
   created_by_name?: string;
   created_by_email?: string;
+
   created_at: number;
   updated_at: number;
+
+  visibility?: ContactVisibility;
+  shared_user_ids?: string[];
+  can_manage_sharing?: boolean;
 };
 
 /* =========================
-   Listado / CRUD existente
-   ========================= */
+   Listado
+========================= */
 
 export async function listContacts(params?: {
-  /** si lo pasas explícito, se envía. si no, NO se manda y el server devuelve todo */
   limit?: number;
   workspaceId?: string;
 }): Promise<Contact[]> {
-  const workspaceId = params?.workspaceId?.trim();
+  const query = new URLSearchParams();
 
-  const qs = new URLSearchParams();
-
-  // ✅ NO default a 100.
-  // ✅ Solo envía limit si viene explícito (y es válido).
-  if (typeof params?.limit === "number" && Number.isFinite(params.limit) && params.limit > 0) {
-    qs.set("limit", String(params.limit));
+  if (
+    typeof params?.limit === "number" &&
+    Number.isFinite(params.limit) &&
+    params.limit > 0
+  ) {
+    query.set("limit", String(params.limit));
   }
 
-  if (workspaceId) qs.set("workspaceId", workspaceId);
+  const workspaceId = params?.workspaceId?.trim();
 
-  const q = qs.toString();
-  return api.get(q ? `/contacts?${q}` : "/contacts");
+  if (workspaceId) {
+    query.set("workspaceId", workspaceId);
+  }
+
+  const queryString = query.toString();
+
+  return api.get<Contact[]>(
+    queryString ? `/contacts?${queryString}` : "/contacts"
+  );
 }
 
-// 👇 vista admin (todos los tenants)
+/**
+ * Contactos visibles del workspace activo.
+ * El backend aplica los permisos de privacidad.
+ */
 export async function listAllContacts(): Promise<Contact[]> {
-  return api.get("/contacts-all");
+  return api.get<Contact[]>("/contacts-all");
 }
+
+/* =========================
+   CRUD
+========================= */
 
 export async function getContact(id: string): Promise<Contact> {
-  return api.get(`/contacts/${id}`);
+  return api.get<Contact>(
+    `/contacts/${encodeURIComponent(id)}`
+  );
 }
 
+/**
+ * Si se indica tenantId, crea el contacto en ese workspace
+ * sin cambiar la sesión ni el workspace activo.
+ */
 export async function createContact(
-  input: Omit<Contact, "created_at" | "updated_at">
+  input: Omit<Contact, "created_at" | "updated_at">,
+  tenantId?: string
 ): Promise<void> {
+  if (tenantId) {
+    await authFetch("/contacts", {
+      method: "POST",
+      headers: {
+        "X-Tenant-Id": tenantId,
+      },
+      body: JSON.stringify(input),
+    });
+
+    return;
+  }
+
   await api.post("/contacts", input);
 }
 
@@ -68,16 +119,21 @@ export async function updateContact(
   id: string,
   patch: Partial<Contact>
 ): Promise<void> {
-  await api.patch(`/contacts/${id}`, patch);
+  await api.patch(
+    `/contacts/${encodeURIComponent(id)}`,
+    patch
+  );
 }
 
 export async function deleteContact(id: string): Promise<void> {
-  await api.delete(`/contacts/${id}`);
+  await api.delete(
+    `/contacts/${encodeURIComponent(id)}`
+  );
 }
 
 /* =========================
-   🚀 IMPORTAR CONTACTOS CSV
-   ========================= */
+   Importación CSV
+========================= */
 
 export type ImportContactRow = {
   id?: string;
@@ -96,6 +152,7 @@ export type ImportContactsResult = {
   created: number;
   skipped: number;
   errors: number;
+
   items: Array<{
     index: number;
     ok: boolean;
@@ -110,6 +167,8 @@ export type ImportContactsResult = {
 export async function importContacts(
   rows: ImportContactRow[]
 ): Promise<ImportContactsResult> {
-  return api.post("/contacts/import", { rows });
+  return api.post<ImportContactsResult>(
+    "/contacts/import",
+    { rows }
+  );
 }
-

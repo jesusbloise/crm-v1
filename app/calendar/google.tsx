@@ -59,7 +59,11 @@ export default function GoogleCalendarScreen() {
   const [request, response, promptAsync] = AuthSession.useAuthRequest(
     {
       clientId,
-      scopes: ["https://www.googleapis.com/auth/calendar.events"],
+      scopes: [
+  "openid",
+  "profile",
+  "https://www.googleapis.com/auth/calendar.events",
+],
       redirectUri,
       responseType: AuthSession.ResponseType.Token,
       usePKCE: false,
@@ -86,109 +90,204 @@ export default function GoogleCalendarScreen() {
     }
   }
 
-  // 1) Al montar, intentamos recuperar un token guardado
+   // 1) Recuperar la conexión guardada.
   useEffect(() => {
+    let cancelled = false;
+
+    const cleanOAuthHash = () => {
+      if (Platform.OS !== "web") return;
+
+      window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname + window.location.search
+      );
+    };
+
+    const synchronizeQueue = async () => {
+      try {
+        await flushCalendarQueue();
+      } catch (error: unknown) {
+        const code = (error as { code?: string })?.code;
+
+        if (cancelled) return;
+
+        if (code === "not_connected") {
+          setAccessToken(null);
+          setError(
+            "Google Calendar necesita que vuelvas a conectarlo."
+          );
+        } else if (code === "session_changed") {
+          setAccessToken(null);
+          setError(
+            "La sesión o el workspace cambió. Vuelve a abrir el calendario."
+          );
+        } else {
+          // La conexión puede seguir siendo válida.
+          // La cola conserva las actividades pendientes.
+          console.warn(
+            "Google Calendar: no se pudo completar la sincronización."
+          );
+        }
+      }
+    };
+
     const loadToken = async () => {
       try {
-        // ✅ WEB: si volvemos desde Google, el token viene en el hash (#access_token=...)
         if (Platform.OS === "web") {
           const hash = window.location.hash || "";
+
           if (hash.includes("access_token=")) {
-            const params = new URLSearchParams(hash.replace(/^#/, ""));
+            const params = new URLSearchParams(
+              hash.replace(/^#/, "")
+            );
+
             const token = params.get("access_token");
-            const expiresInSec = Number(params.get("expires_in") ?? 3600);
+            const expiresInSec = Number(
+              params.get("expires_in") ?? 3600
+            );
 
-            if (token) {
-              try {
-                await saveGoogleAccessToken(token, expiresInSec);
+            // Retirar el token de la URL incluso si guardar falla.
+            cleanOAuthHash();
 
-                // ✅ token recién conectado => vaciar cola
-                await flushCalendarQueue();
-              } catch (e) {
-                console.warn("No se pudo guardar token / vaciar cola:", e);
-              }
-
-              setAccessToken(token);
-              setError(null);
-
-              // ✅ limpiar URL (quita el token del hash)
-              window.history.replaceState(
-                {},
-                document.title,
-                window.location.pathname + window.location.search
+            if (!token) {
+              throw new Error(
+                "No se recibió un token válido de Google."
               );
-
-              setLoadingToken(false);
-              return; // ya tenemos token, no seguimos
             }
+
+            await saveGoogleAccessToken(token, expiresInSec);
+
+            if (cancelled) return;
+
+            setAccessToken(token);
+            setError(null);
+
+            await synchronizeQueue();
+            return;
           }
         }
 
         const token = await loadGoogleAccessToken();
-        if (token) {
-          setAccessToken(token);
 
-          // ✅ Si ya había token, intentamos vaciar la cola en background
-          // (si falla, no rompe nada)
-          flushCalendarQueue().catch((e) =>
-            console.log("flushCalendarQueue (loadToken) error:", e)
-          );
+        if (cancelled) return;
+
+        setAccessToken(token);
+
+        if (token) {
+          setError(null);
+          await synchronizeQueue();
         }
-      } catch (e) {
-        console.warn("Error leyendo token de Google Calendar:", e);
+      } catch (error: unknown) {
+        if (cancelled) return;
+
+        setAccessToken(null);
+        setError(
+          error instanceof Error
+            ? error.message
+            : "No se pudo recuperar la conexión de Google Calendar."
+        );
       } finally {
-        setLoadingToken(false);
+        if (!cancelled) setLoadingToken(false);
       }
     };
-    loadToken();
+
+    void loadToken();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  useEffect(() => {
-    if (accessToken && loadingToken) {
-      setLoadingToken(false);
-    }
-  }, [accessToken, loadingToken]);
-
-  // 2) Respuesta OAuth
+  // 2) Respuesta del flujo OAuth.
   useEffect(() => {
     if (!response) return;
 
+    let cancelled = false;
+
     if (response.type === "success") {
-      const auth = response.params as any;
-      if (auth.access_token) {
-        const token = auth.access_token as string;
-        const expiresInSec = Number(auth.expires_in ?? 3600);
+      const auth = response.params;
+      const token = auth.access_token;
+      const expiresInSec = Number(auth.expires_in ?? 3600);
 
-        (async () => {
-          try {
-            await saveGoogleAccessToken(token, expiresInSec);
+      if (Platform.OS === "web") {
+        window.history.replaceState(
+          {},
+          document.title,
+          window.location.pathname + window.location.search
+        );
+      }
 
-            // ✅ token recién conectado => vaciar cola
-            await flushCalendarQueue();
-          } catch (e) {
-            console.warn("No se pudo guardar token / vaciar cola:", e);
-          }
+      if (typeof token !== "string" || !token.trim()) {
+        setError("No se recibió access_token desde Google.");
+        setLoadingToken(false);
+        return;
+      }
+
+      const connect = async () => {
+        setLoadingToken(true);
+
+        try {
+          // Si esto falla, no mostrar la conexión como exitosa.
+          await saveGoogleAccessToken(token, expiresInSec);
+
+          if (cancelled) return;
 
           setAccessToken(token);
           setError(null);
 
-          // ✅ en web, limpiamos hash si existe
-          if (Platform.OS === "web") {
-            window.history.replaceState(
-              {},
-              document.title,
-              window.location.pathname + window.location.search
-            );
+          try {
+            await flushCalendarQueue();
+          } catch (error: unknown) {
+            if (cancelled) return;
+
+            const code = (error as { code?: string })?.code;
+
+            if (code === "not_connected") {
+              setAccessToken(null);
+              setError(
+                "Google Calendar necesita que vuelvas a conectarlo."
+              );
+            } else if (code === "session_changed") {
+              setAccessToken(null);
+              setError(
+                "La sesión o el workspace cambió. Vuelve a abrir el calendario."
+              );
+            } else {
+              // No confundir un fallo de sincronización
+              // con un fallo al guardar la conexión.
+              console.warn(
+                "Google Calendar: quedaron actividades pendientes de sincronizar."
+              );
+            }
           }
-        })();
-      } else {
-        setError("No se recibió access_token desde Google.");
-      }
+        } catch (error: unknown) {
+          if (cancelled) return;
+
+          setAccessToken(null);
+          setError(
+            error instanceof Error
+              ? error.message
+              : "No se pudo guardar la conexión de Google Calendar."
+          );
+        } finally {
+          if (!cancelled) setLoadingToken(false);
+        }
+      };
+
+      void connect();
     } else if (response.type === "error") {
       setError("Error en el flujo de autenticación con Google.");
-    } else if (response.type === "dismiss") {
+    } else if (
+      response.type === "dismiss" ||
+      response.type === "cancel"
+    ) {
       setError("Conexión cancelada.");
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [response]);
 
   // 3) Cuando tenemos token, cargamos eventos

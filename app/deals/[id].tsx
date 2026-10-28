@@ -61,7 +61,10 @@ export default function DealDetail() {
     enabled: !!dealId,
   });
   const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
-  const qCon = useQuery({ queryKey: ["contacts"], queryFn: listContacts });
+ const qCon = useQuery({
+  queryKey: ["contacts"],
+  queryFn: () => listContacts(),
+});
 
   // Estado editable del deal
   const [title, setTitle] = useState("");

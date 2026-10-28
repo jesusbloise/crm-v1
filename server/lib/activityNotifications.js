@@ -1,473 +1,301 @@
 // server/lib/activityNotifications.js
 const db = require("../db/connection");
 const { sendMail } = require("./mailer");
+const {
+  linkedContactVisibilityFilter,
+} = require("./contactAccess");
 
-function formatDate(ms) {
-  if (!ms) return "—";
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("es-CL");
+function uniq(values) {
+  return [...new Set((values || []).filter(Boolean))];
 }
 
-function uniq(arr) {
-  return Array.from(new Set((arr || []).filter(Boolean)));
+function assigneeIds(activity) {
+  return uniq([
+    activity?.assigned_to,
+    activity?.assigned_to_2,
+  ]);
 }
 
-function arrEqAsSet(a, b) {
-  const sa = new Set((a || []).filter(Boolean));
-  const sb = new Set((b || []).filter(Boolean));
-  if (sa.size !== sb.size) return false;
-  for (const x of sa) if (!sb.has(x)) return false;
-  return true;
-}
-function unwrapRow(x) {
-  if (!x) return null;
-  if (Array.isArray(x?.rows)) return x.rows[0] ?? null;
-  if (x?.row) return x.row;
-  return x;
-}
-
-async function getUsersByIds(userIds) {
-  const ids = uniq(userIds);
-  if (!ids.length) return [];
-
-  const placeholders = ids.map(() => "?").join(",");
-  const rows = await db
-    .prepare(
-      `
-      SELECT id, name, email
-      FROM users
-      WHERE id IN (${placeholders})
-    `
-    )
-    .all(...ids);
-
-  const users = Array.isArray(rows) ? rows : rows?.rows || [];
-  return users.map((u) => ({
-    id: u.id,
-    name: u.name || null,
-    email: u.email ? String(u.email).trim() : null,
-  }));
-}
-
-async function getContactLabel(activity) {
-  let contactLabel = "Cliente sin nombre";
-  if (activity?.contact_id) {
-    const contact = await db
-      .prepare(
-        `
-        SELECT name, email
-        FROM contacts
-        WHERE id = ? AND tenant_id = ?
-        LIMIT 1
-      `
-      )
-      .get(activity.contact_id, activity.tenant_id);
-
-    if (contact) {
-      contactLabel =
-        contact.name ||
-        contact.email ||
-        `Contacto ${String(activity.contact_id).substring(0, 8)}`;
-    }
-  }
-  return contactLabel;
-}
-
-/**
- * Recibe el objeto activity completo (el mismo que devolvemos en el POST),
- * busca los usuarios asignados en la tabla `users`, toma sus emails
- * y les envía el correo.
- */
-async function notifyActivityCreated(activity) {
-  if (!activity) {
-    console.log("notifyActivityCreated: actividad vacía");
-    return;
+function formatDate(value) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
   }
 
-  const userIds = [];
-  if (activity.assigned_to) userIds.push(activity.assigned_to);
-  if (activity.assigned_to_2 && activity.assigned_to_2 !== activity.assigned_to) {
-    userIds.push(activity.assigned_to_2);
-  }
+  // PostgreSQL puede devolver BIGINT como string.
+  const date = new Date(Number(value));
 
-  if (!userIds.length) {
-    console.log(
-      "notifyActivityCreated: actividad sin usuarios asignados, no se envía correo",
-      {
-        assigned_to: activity.assigned_to,
-        assigned_to_2: activity.assigned_to_2,
-      }
-    );
-    return;
-  }
-
-  const users = await getUsersByIds(userIds);
-
-  const recipients = users
-    .filter((u) => u.email && u.email.length > 0)
-    .map((u) => ({
-      id: u.id,
-      email: u.email,
-      name: u.name || u.email,
-    }));
-
-  if (!recipients.length) {
-    console.log("notifyActivityCreated: usuarios asignados sin email, no se envía correo", {
-      assigned_to: activity.assigned_to,
-      assigned_to_2: activity.assigned_to_2,
-      users,
-    });
-    return;
-  }
-
-  const contactLabel = await getContactLabel(activity);
-
-  const createdAt = formatDate(activity.created_at);
-  const dueDate = formatDate(activity.due_date);
-
-  const baseText = `
-Se te ha asignado una nueva actividad en el CRM.
-
-Título: ${activity.title || "Sin título"}
-Tipo: ${activity.type || "task"}
-Estado: ${activity.status || "open"}
-Cliente / contacto: ${contactLabel}
-Fecha de creación: ${createdAt}
-Fecha de vencimiento: ${dueDate}
-
-Notas:
-${activity.notes || "—"}
-`;
-
-  const baseHtml = `
-<p>Se te ha asignado una nueva actividad en el CRM.</p>
-
-<p><strong>Título:</strong> ${activity.title || "Sin título"}</p>
-<p><strong>Tipo:</strong> ${activity.type || "task"}</p>
-<p><strong>Estado:</strong> ${activity.status || "open"}</p>
-<p><strong>Cliente / contacto:</strong> ${contactLabel}</p>
-<p><strong>Fecha de creación:</strong> ${createdAt}</p>
-<p><strong>Fecha de vencimiento:</strong> ${dueDate}</p>
-
-<p><strong>Notas:</strong><br/>${
-    activity.notes ? String(activity.notes).replace(/\n/g, "<br/>") : "—"
-  }</p>
-`;
-
-  const subject = `Nueva actividad: ${activity.title || "Sin título"}`;
-
-  for (const r of recipients) {
-    try {
-      await sendMail({
-        to: r.email,
-        subject,
-        text: `Hola ${r.name},\n\n${baseText}`,
-        html: `<p>Hola ${r.name},</p>${baseHtml}`,
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleString("es-CL", {
+        timeZone: "America/Santiago",
       });
-      console.log("✉️  Correo de actividad enviado a:", r.email);
-    } catch (err) {
-      console.error("❌ Error enviando correo a", r.email, err);
-    }
-  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
- * ✅ Notifica reasignación (PATCH) SOLO cuando el front lo confirma (notify_assignees=true).
- *
- * Anti-spam:
- * - Solo avisa a los NUEVOS asignados (los que antes no estaban y ahora sí).
- * - Si solo se desasigna, no manda correo.
- * - (Opcional recomendado) No se lo manda al usuario que hizo el cambio.
+ * Recupera el estado actual de la actividad y del destinatario.
+ * No utiliza los datos del evento anterior para construir el correo.
  */
-async function notifyActivityReassigned(payload) {
-  const { tenant_id, activity, before, after, changed_by } = payload || {};
+async function getAllowedDelivery(activityId, tenantId, recipientId) {
+  if (!activityId || !tenantId || !recipientId) return null;
 
-  if (!activity) {
-    console.log("notifyActivityReassigned: actividad vacía");
-    return;
-  }
-
-  // Asegurar tenant_id consistente para queries de contacto
-  const activityTenantId = activity.tenant_id ?? tenant_id ?? null;
-
-  const beforeIds = uniq([
-    before?.assigned_to ?? null,
-    before?.assigned_to_2 ?? null,
-  ]);
-  const afterIds = uniq([
-    after?.assigned_to ?? null,
-    after?.assigned_to_2 ?? null,
-  ]);
-
-  if (arrEqAsSet(beforeIds, afterIds)) {
-    console.log("notifyActivityReassigned: sin cambios reales de asignación", {
-      activity_id: activity.id,
-    });
-    return;
-  }
-
-  // ✅ SOLO nuevos asignados
-  let newAssignees = afterIds.filter((id) => !beforeIds.includes(id));
-
-  // ✅ (recomendado) evitar mandar a quien hizo el cambio
-  // if (changed_by) {
-  //   newAssignees = newAssignees.filter((id) => id !== changed_by);
-  // }
-
-  // if (!newAssignees.length) {
-  //   console.log("notifyActivityReassigned: no hay nuevos asignados a notificar", {
-  //     activity_id: activity.id,
-  //     reason: changed_by ? "solo desasignación o auto-asignación" : "solo desasignación",
-  //   });
-  //   return;
-  // }
-
-  const users = await getUsersByIds(newAssignees);
-  const recipients = users
-    .filter((u) => u.email && u.email.length > 0)
-    .map((u) => ({
-      id: u.id,
-      email: u.email,
-      name: u.name || u.email,
-    }));
-
-  if (!recipients.length) {
-    console.log("notifyActivityReassigned: nuevos asignados sin email, no se envía correo", {
-      activity_id: activity.id,
-      newAssignees,
-      users,
-    });
-    return;
-  }
-
-  // Quién hizo el cambio (opcional)
-  let changedByLabel = "Sistema";
-  if (changed_by) {
-    const u = await db
-      .prepare(`SELECT name, email FROM users WHERE id = ? LIMIT 1`)
-      .get(changed_by);
-    if (u) changedByLabel = u.name || u.email || changedByLabel;
-  }
-
-  // Contacto opcional
-  const activityForContact = {
-    ...activity,
-    tenant_id: activityTenantId,
+  const recipientReq = {
+    tenantId,
+    user: { id: recipientId },
+    auth: { sub: recipientId },
   };
-  const contactLabel = await getContactLabel(activityForContact);
 
-  const createdAt = formatDate(activity.created_at);
-  const dueDate = formatDate(activity.due_date);
+  const filter = linkedContactVisibilityFilter(recipientReq, "a");
 
-  const subject = `Actividad reasignada: ${activity.title || "Sin título"}`;
+  return db.prepare(`
+    SELECT
+      a.*,
+      recipient.name AS recipient_name,
+      recipient.email AS recipient_email,
+      COALESCE(
+        NULLIF(ct.name, ''),
+        ct.email,
+        NULLIF(dc.name, ''),
+        dc.email,
+        'Cliente sin nombre'
+      ) AS contact_label
+    FROM activities a
+    JOIN users recipient
+      ON recipient.id = ?
+    LEFT JOIN contacts ct
+      ON ct.id = a.contact_id
+     AND ct.tenant_id = a.tenant_id
+    LEFT JOIN deals d
+      ON d.id = a.deal_id
+     AND d.tenant_id = a.tenant_id
+    LEFT JOIN contacts dc
+      ON dc.id = d.contact_id
+     AND dc.tenant_id = d.tenant_id
+    WHERE a.id = ?
+      AND a.tenant_id = ?
+      AND (
+        a.assigned_to = recipient.id
+        OR a.assigned_to_2 = recipient.id
+      )
+      AND COALESCE(recipient.active, TRUE) = TRUE
+      AND NULLIF(BTRIM(recipient.email), '') IS NOT NULL
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM tenant_memberships tm
+          WHERE tm.tenant_id = a.tenant_id
+            AND tm.user_id = recipient.id
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM memberships m
+          WHERE m.tenant_id = a.tenant_id
+            AND m.user_id = recipient.id
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM tenants t
+          WHERE t.id = a.tenant_id
+            AND t.created_by = recipient.id
+        )
+      )
+      AND ${filter.sql}
+    LIMIT 1
+  `).get(
+    recipientId,
+    activityId,
+    tenantId,
+    ...filter.params
+  );
+}
 
-  const baseText = `
-Se te ha reasignado una actividad en el CRM.
-
-Título: ${activity.title || "Sin título"}
-Tipo: ${activity.type || "task"}
-Estado: ${activity.status || "open"}
-Cliente / contacto: ${contactLabel}
-Asignada por: ${changedByLabel}
-Fecha de creación: ${createdAt}
-Fecha de vencimiento: ${dueDate}
-
-Notas:
-${activity.notes || "—"}
-`;
-
-  const baseHtml = `
-<p>Se te ha reasignado una actividad en el CRM.</p>
-
-<p><strong>Título:</strong> ${activity.title || "Sin título"}</p>
-<p><strong>Tipo:</strong> ${activity.type || "task"}</p>
-<p><strong>Estado:</strong> ${activity.status || "open"}</p>
-<p><strong>Cliente / contacto:</strong> ${contactLabel}</p>
-<p><strong>Asignada por:</strong> ${changedByLabel}</p>
-<p><strong>Fecha de creación:</strong> ${createdAt}</p>
-<p><strong>Fecha de vencimiento:</strong> ${dueDate}</p>
-
-<p><strong>Notas:</strong><br/>${
-    activity.notes ? String(activity.notes).replace(/\n/g, "<br/>") : "—"
-  }</p>
-`;
-
-  for (const r of recipients) {
+async function sendActivityNotifications({
+  activityId,
+  tenantId,
+  recipientIds,
+  reassigned = false,
+  rescheduled = false,
+  changedByLabel = null,
+}) {
+  for (const recipientId of uniq(recipientIds)) {
     try {
+      // Comprobar cada destinatario justo antes de preparar su envío.
+      const activity = await getAllowedDelivery(
+        activityId,
+        tenantId,
+        recipientId
+      );
+
+      if (!activity) continue;
+
+      const name =
+        activity.recipient_name || activity.recipient_email;
+
+            const introduction = rescheduled
+        ? "Se ha actualizado la fecha u hora de una actividad que tienes asignada en el CRM."
+        : reassigned
+          ? "Se te ha reasignado una actividad en el CRM."
+          : "Se te ha asignado una nueva actividad en el CRM.";
+
+      const fields = [
+        ["Título", activity.title || "Sin título"],
+        ["Tipo", activity.type || "task"],
+        ["Estado", activity.status || "open"],
+        ["Cliente / contacto", activity.contact_label],
+      ];
+
+      if (reassigned && changedByLabel) {
+        fields.push(["Asignada por", changedByLabel]);
+      }
+
+      fields.push(
+        ["Fecha de creación", formatDate(activity.created_at)],
+        ["Fecha de vencimiento", formatDate(activity.due_date)]
+      );
+
+            if (activity.remind_at_ms != null) {
+        fields.push([
+          "Fecha del recordatorio",
+          formatDate(activity.remind_at_ms),
+        ]);
+      }
+
+      const notes = activity.notes || "—";
+
+      const text = [
+        `Hola ${name},`,
+        "",
+        introduction,
+        "",
+        ...fields.map(([label, value]) => `${label}: ${value}`),
+        "",
+        "Notas:",
+        notes,
+      ].join("\n");
+
+      const html = [
+        `<p>Hola ${escapeHtml(name)},</p>`,
+        `<p>${escapeHtml(introduction)}</p>`,
+        ...fields.map(
+          ([label, value]) =>
+            `<p><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>`
+        ),
+        `<p><strong>Notas:</strong><br/>${
+          escapeHtml(notes).replace(/\r?\n/g, "<br/>")
+        }</p>`,
+      ].join("\n");
+
+           const subjectPrefix = rescheduled
+        ? "Actividad reprogramada"
+        : reassigned
+          ? "Actividad reasignada"
+          : "Nueva actividad";
+
       await sendMail({
-        to: r.email,
-        subject,
-        text: `Hola ${r.name},\n\n${baseText}`,
-        html: `<p>Hola ${r.name},</p>${baseHtml}`,
-      });
-      console.log("✉️  Correo de reasignación enviado a:", r.email, {
-        activity_id: activity.id,
+        to: String(activity.recipient_email).trim(),
+        subject: `${subjectPrefix}: ${String(
+          activity.title || "Sin título"
+        ).replace(/[\r\n]/g, " ")}`,
+        text,
+        html,
       });
     } catch (err) {
-      console.error("❌ Error enviando correo (reasignación) a", r.email, err);
+      // Evita registrar contenido privado o respuestas completas del proveedor.
+      console.error("[activityNotifications] Falló un envío", {
+        activity_id: activityId,
+        code: err.code || "notification_failed",
+      });
     }
   }
+}
+
+async function notifyActivityCreated(activity) {
+  if (!activity?.id || !activity?.tenant_id) return;
+
+  return sendActivityNotifications({
+    activityId: activity.id,
+    tenantId: activity.tenant_id,
+    recipientIds: assigneeIds(activity),
+  });
+}
+
+async function notifyActivityReassigned(payload) {
+  const {
+    tenant_id,
+    activity,
+    before,
+    after,
+    changed_by,
+  } = payload || {};
+
+  if (!activity?.id) return;
+
+  const tenantId = activity.tenant_id || tenant_id;
+  if (!tenantId) return;
+
+  if (
+    tenant_id &&
+    activity.tenant_id &&
+    tenant_id !== activity.tenant_id
+  ) {
+    return;
+  }
+
+  const normalizeTimestamp = (value) => {
+    if (value == null || value === "") return null;
+
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+
+  const dateChanged =
+    normalizeTimestamp(before?.due_date) !==
+      normalizeTimestamp(after?.due_date) ||
+    normalizeTimestamp(before?.remind_at_ms) !==
+      normalizeTimestamp(after?.remind_at_ms);
+
+  const beforeIds = new Set(assigneeIds(before));
+  const afterIds = assigneeIds(after);
+
+  const recipientIds = dateChanged
+    ? afterIds
+    : afterIds.filter((id) => !beforeIds.has(id));
+
+  if (!recipientIds.length) return;
+
+  let changedByLabel = "Sistema";
+
+  if (changed_by) {
+    const user = await db.prepare(`
+      SELECT name, email
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    `).get(changed_by);
+
+    changedByLabel =
+      user?.name || user?.email || changedByLabel;
+  }
+
+  return sendActivityNotifications({
+    activityId: activity.id,
+    tenantId,
+    recipientIds,
+    reassigned: true,
+    rescheduled: dateChanged,
+    changedByLabel,
+  });
 }
 
 module.exports = {
   notifyActivityCreated,
   notifyActivityReassigned,
 };
-
-
-// // server/lib/activityNotifications.js
-// const db = require("../db/connection");
-// const { sendMail } = require("./mailer");
-
-// function formatDate(ms) {
-//   if (!ms) return "—";
-//   const d = new Date(ms);
-//   if (Number.isNaN(d.getTime())) return "—";
-//   return d.toLocaleString();
-// }
-
-// /**
-//  * Recibe el objeto activity completo (el mismo que devolvemos en el POST),
-//  * busca los usuarios asignados en la tabla `users`, toma sus emails
-//  * y les envía el correo.
-//  */
-// async function notifyActivityCreated(activity) {
-//   if (!activity) {
-//     console.log("notifyActivityCreated: actividad vacía");
-//     return;
-//   }
-
-//   const userIds = [];
-//   if (activity.assigned_to) userIds.push(activity.assigned_to);
-//   if (
-//     activity.assigned_to_2 &&
-//     activity.assigned_to_2 !== activity.assigned_to
-//   ) {
-//     userIds.push(activity.assigned_to_2);
-//   }
-
-//   if (!userIds.length) {
-//     console.log(
-//       "notifyActivityCreated: actividad sin usuarios asignados, no se envía correo",
-//       {
-//         assigned_to: activity.assigned_to,
-//         assigned_to_2: activity.assigned_to_2,
-//       }
-//     );
-//     return;
-//   }
-
-//   // 🔍 Buscamos esos usuarios en la tabla `users`
-//   const placeholders = userIds.map(() => "?").join(",");
-//   const res = await db
-//     .prepare(
-//       `
-//       SELECT id, name, email
-//       FROM users
-//       WHERE id IN (${placeholders})
-//     `
-//     )
-//     .all(...userIds);
-
-//   const users = Array.isArray(res) ? res : res?.rows || [];
-
-//   const recipients = users
-//     .filter(
-//       (u) =>
-//         u.email &&
-//         String(u.email).trim().length > 0 // solo los que tienen email
-//     )
-//     .map((u) => ({
-//       id: u.id,
-//       email: String(u.email).trim(),
-//       name: u.name || String(u.email).trim(),
-//     }));
-
-//   if (!recipients.length) {
-//     console.log(
-//       "notifyActivityCreated: usuarios asignados sin email, no se envía correo",
-//       {
-//         assigned_to: activity.assigned_to,
-//         assigned_to_2: activity.assigned_to_2,
-//         users,
-//       }
-//     );
-//     return;
-//   }
-
-//   // 🔍 Info del cliente/contacto (opcional, para el cuerpo del correo)
-//   let contactLabel = "Cliente sin nombre";
-//   if (activity.contact_id) {
-//     const contact = await db
-//       .prepare(
-//         `
-//         SELECT name, email
-//         FROM contacts
-//         WHERE id = ? AND tenant_id = ?
-//         LIMIT 1
-//       `
-//       )
-//       .get(activity.contact_id, activity.tenant_id);
-
-//     if (contact) {
-//       contactLabel =
-//         contact.name ||
-//         contact.email ||
-//         `Contacto ${String(activity.contact_id).substring(0, 8)}`;
-//     }
-//   }
-
-//   const createdAt = formatDate(activity.created_at);
-//   const dueDate = formatDate(activity.due_date);
-
-//   const baseText = `
-// Se te ha asignado una nueva actividad en el CRM.
-
-// Título: ${activity.title || "Sin título"}
-// Tipo: ${activity.type || "task"}
-// Estado: ${activity.status || "open"}
-// Cliente / contacto: ${contactLabel}
-// Fecha de creación: ${createdAt}
-// Fecha de vencimiento: ${dueDate}
-
-// Notas:
-// ${activity.notes || "—"}
-// `;
-
-//   const baseHtml = `
-// <p>Se te ha asignado una nueva actividad en el CRM.</p>
-
-// <p><strong>Título:</strong> ${activity.title || "Sin título"}</p>
-// <p><strong>Tipo:</strong> ${activity.type || "task"}</p>
-// <p><strong>Estado:</strong> ${activity.status || "open"}</p>
-// <p><strong>Cliente / contacto:</strong> ${contactLabel}</p>
-// <p><strong>Fecha de creación:</strong> ${createdAt}</p>
-// <p><strong>Fecha de vencimiento:</strong> ${dueDate}</p>
-
-// <p><strong>Notas:</strong><br/>${
-//     activity.notes ? activity.notes.replace(/\n/g, "<br/>") : "—"
-//   }</p>
-// `;
-
-//   const subject = `Nueva actividad: ${activity.title || "Sin título"}`;
-
-//   // 📩 Un correo por destinatario
-//   for (const r of recipients) {
-//     try {
-//       await sendMail({
-//         to: r.email,
-//         subject,
-//         text: `Hola ${r.name},\n\n${baseText}`,
-//         html: `<p>Hola ${r.name},</p>${baseHtml}`,
-//       });
-//       console.log("✉️  Correo de actividad enviado a:", r.email);
-//     } catch (err) {
-//       console.error("❌ Error enviando correo a", r.email, err);
-//     }
-//   }
-// }
-
-// module.exports = {
-//   notifyActivityCreated,
-// };

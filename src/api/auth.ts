@@ -124,7 +124,7 @@ export async function authFetch<T = Json>(path: string, init: RequestInit = {}) 
   }
 
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       await clearToken().catch(() => {});
       await clearActiveTenant().catch(() => {});
       await clearMeCached().catch(() => {});
@@ -247,12 +247,20 @@ export type WorkspaceMember = {
 };
 
 export async function fetchWorkspaceMembers(): Promise<WorkspaceMember[]> {
-  const res = await authFetch<{
-    ok?: boolean;
-    items: WorkspaceMember[];
-  }>("/tenants/members", { method: "GET" });
+  const members = await authFetch<
+    Array<{
+      id: string;
+      name: string | null;
+      email: string | null;
+    }>
+  >("/workspace/members", { method: "GET" });
 
-  return res?.items ?? [];
+  return members.map((member) => ({
+    id: member.id,
+    name: member.name,
+    email: member.email,
+    role: null,
+  }));
 }
 
 export async function switchTenant(tenant_id: string) {
@@ -478,4 +486,50 @@ export async function getSessionFromToken(): Promise<{
   }
 }
 
+export type AuthStorageScope = {
+  userId: string;
+  tenantId: string;
+  storageKey: string;
+};
 
+export async function getAuthStorageScope(): Promise<AuthStorageScope | null> {
+  const tokenBefore = await getToken();
+  if (!tokenBefore) return null;
+
+  try {
+    const parts = tokenBefore.split(".");
+    if (parts.length !== 3) return null;
+
+    const payload = JSON.parse(base64UrlDecode(parts[1]));
+
+    if (
+      typeof payload.sub !== "string" ||
+      !payload.sub.trim() ||
+      typeof payload.exp !== "number" ||
+      !Number.isFinite(payload.exp) ||
+      payload.exp * 1000 <= Date.now()
+    ) {
+      return null;
+    }
+
+    const tenantId = await getActiveTenant();
+
+    // No mezclar una lectura con un cambio de sesión en curso.
+    if ((await getToken()) !== tokenBefore) return null;
+    if (!tenantId) return null;
+
+    const userId = payload.sub;
+
+    return {
+      userId,
+      tenantId,
+      storageKey: [
+        encodeURIComponent(base()),
+        encodeURIComponent(userId),
+        encodeURIComponent(tenantId),
+      ].join(":"),
+    };
+  } catch {
+    return null;
+  }
+}
