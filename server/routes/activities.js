@@ -109,10 +109,12 @@ async function activityReadFilter(req) {
   }
 
   const linked = linkedContactVisibilityFilter(req, "a");
-  const role = String(await getUserRole(userId) || "").toLowerCase();
+  const role = String(
+    (await getUserRole(userId)) || ""
+  ).toLowerCase();
 
   if (role === "admin" || role === "owner") {
-    // El rol no permite saltarse la privacidad del contacto.
+    // Consulta general, respetando la privacidad del contacto.
     return linked;
   }
 
@@ -125,21 +127,18 @@ async function activityReadFilter(req) {
       (
         ${linked.sql}
         AND (
-          NULLIF(a.contact_id, '') IS NOT NULL
-          OR EXISTS (
-            SELECT 1
-            FROM deals activity_deal
-            WHERE activity_deal.id = a.deal_id
-              AND activity_deal.tenant_id = a.tenant_id
-              AND NULLIF(activity_deal.contact_id, '') IS NOT NULL
-          )
-          OR a.created_by = ?
+          a.created_by = ?
           OR a.assigned_to = ?
           OR a.assigned_to_2 = ?
         )
       )
     `,
-    params: [...linked.params, userId, userId, userId],
+    params: [
+      ...linked.params,
+      userId,
+      userId,
+      userId,
+    ],
   };
 }
 /**
