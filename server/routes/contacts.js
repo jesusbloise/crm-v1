@@ -46,16 +46,39 @@ async function getGlobalRole(userId) {
 
 /**
  * GET /contacts
- * Lista únicamente los contactos visibles del workspace activo.
+ * Lista contactos visibles del workspace activo.
+ * Con ?q= busca por nombre, empresa o correo.
  */
 router.get(
   "/contacts",
   canRead("contacts"),
   wrap(async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+
     const workspaceId =
       typeof req.query.workspaceId === "string"
         ? req.query.workspaceId.trim()
         : "";
+
+    const hasSearch = Object.prototype.hasOwnProperty.call(
+      req.query,
+      "q"
+    );
+
+    if (hasSearch && typeof req.query.q !== "string") {
+      return res.status(400).json({ error: "invalid_search" });
+    }
+
+    const search = hasSearch ? req.query.q.trim() : "";
+
+    if (search.length > 120) {
+      return res.status(400).json({ error: "search_too_long" });
+    }
+
+    // Evita búsquedas amplias antes de escribir dos caracteres.
+    if (hasSearch && search.length < 2) {
+      return res.json([]);
+    }
 
     const filter = contactVisibilityFilter(req, "c");
     const clauses = [filter.sql];
@@ -74,6 +97,38 @@ router.get(
       params.push(workspaceId);
     }
 
+    if (hasSearch) {
+      // Escapa comodines para buscar el texto escrito literalmente.
+      const escaped = search.replace(/[!%_]/g, (char) => `!${char}`);
+      const pattern = `%${escaped}%`;
+
+      clauses.push(`
+        (
+          COALESCE(c.name, '') ILIKE ? ESCAPE '!'
+          OR COALESCE(c.company, '') ILIKE ? ESCAPE '!'
+          OR COALESCE(c.email, '') ILIKE ? ESCAPE '!'
+        )
+      `);
+
+      params.push(pattern, pattern, pattern);
+    }
+
+    let limitSql = "";
+
+    if (hasSearch || req.query.limit !== undefined) {
+      const requestedLimit = Number(req.query.limit);
+      const maximum = hasSearch ? 20 : 5000;
+      const fallback = hasSearch ? 20 : 500;
+
+      const limit =
+        Number.isInteger(requestedLimit) && requestedLimit > 0
+          ? Math.min(requestedLimit, maximum)
+          : fallback;
+
+      limitSql = "LIMIT ?";
+      params.push(limit);
+    }
+
     const rows = await db.prepare(`
       SELECT
         c.*,
@@ -83,9 +138,9 @@ router.get(
       LEFT JOIN users u ON u.id = c.created_by
       WHERE ${clauses.join(" AND ")}
       ORDER BY c.updated_at DESC, c.id ASC
+      ${limitSql}
     `).all(...params);
 
-    res.setHeader("Cache-Control", "no-store");
     return res.json(rows);
   })
 );

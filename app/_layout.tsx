@@ -13,12 +13,15 @@ import {
   AppState,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { listOpenActivitiesWithReminder } from "@/src/api/activities";
 import {
   me as apiMe,
   clearActiveTenant,
@@ -29,8 +32,6 @@ import {
   setActiveTenant,
 } from "@/src/api/auth";
 import { ToastProvider } from "@/src/ui/Toast";
-
-import { listOpenActivitiesWithReminder } from "@/src/api/activities";
 import * as Notifs from "@/src/utils/notifications";
 
 if (__DEV__) {
@@ -44,60 +45,21 @@ const COLORS = {
   subtle: "#a9b0bd",
   border: "#272a33",
   accent: "#7c3aed",
-  accent2: "#22d3ee",
+};
+
+const WEB = {
+  background: "#f5f6fa",
+  surface: "#ffffff",
+  text: "#202536",
+  muted: "#737b8e",
+  border: "#e7e9f0",
+  accent: "#7551c8",
+  accentSoft: "#f0ebfb",
 };
 
 const TAB_HEIGHT = 60;
+const SIDEBAR_WIDTH = 224;
 const queryClient = new QueryClient();
-
-function useAppFocusSync() {
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (state) => {
-      if (Platform.OS !== "web") focusManager.setFocused(state === "active");
-    });
-    // @ts-ignore
-    return () => sub?.remove?.();
-  }, []);
-}
-
-/** iOS DEV fetch shim para llamar al backend por IP LAN en Expo Go */
-function setupIOSDevFetchShim() {
-  if (!__DEV__ || Platform.OS !== "ios") return;
-
-  const origFetch = global.fetch as typeof fetch;
-  const hostUri =
-    (Constants as any)?.expoConfig?.hostUri ||
-    (Constants as any)?.manifest2?.extra?.expoGo?.hostUri ||
-    (Constants as any)?.manifest?.debuggerHost ||
-    "";
-  const lanHost = typeof hostUri === "string" ? hostUri.split(":")[0] : null;
-  if (!lanHost) return;
-
-  const BAD_HOSTNAMES = ["localhost", "127.0.0.1"];
-  const HOST_RE = /^https?:\/\/([^\/:]+)(:\d+)?(\/.*)?$/i;
-
-  // @ts-ignore
-  global.fetch = (async (input: any, init?: RequestInit) => {
-    let url = typeof input === "string" ? input : input?.url;
-    if (typeof url === "string") {
-      const m = url.match(HOST_RE);
-      if (m) {
-        const originalHost = m[1];
-        const originalPort = m[2] || "";
-        const restPath = m[3] || "/";
-        if (BAD_HOSTNAMES.includes(originalHost)) {
-          const schema = url.startsWith("https://") ? "https" : "http";
-          const rewritten = `${schema}://${lanHost}${originalPort}${restPath}`;
-          input =
-            typeof input === "string"
-              ? rewritten
-              : new Request(rewritten, input);
-        }
-      }
-    }
-    return origFetch(input, init);
-  }) as any;
-}
 
 type MeInfo = {
   id?: string;
@@ -111,119 +73,493 @@ type TenantInfo = {
   name?: string;
 };
 
-/** ===== JWT decode (sin libs) ===== */
-function base64UrlToString(input: string) {
-  const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = base64.length % 4 ? "=".repeat(4 - (base64.length % 4)) : "";
-  const b64 = base64 + pad;
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentProps<typeof Feather>["name"];
+};
 
-  // web
-  // @ts-ignore
-  if (typeof globalThis.atob === "function") {
-    // @ts-ignore
-    return globalThis.atob(b64);
+const DESKTOP_ITEMS: NavItem[] = [
+  { href: "/", label: "Resumen", icon: "home" },
+  { href: "/contacts", label: "Contactos", icon: "users" },
+  { href: "/accounts", label: "Cuentas", icon: "folder" },
+  { href: "/leads", label: "Leads", icon: "user-plus" },
+  { href: "/deals", label: "Oportunidades", icon: "briefcase" },
+  { href: "/tasks", label: "Actividades", icon: "check-square" },
+  { href: "/calendar", label: "Calendario", icon: "calendar" },
+];
+
+function routeIsActive(pathname: string, href: string) {
+  if (href === "/") return pathname === "/" || pathname === "";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function pageTitle(pathname: string) {
+  if (pathname === "/contacts/new") return "Nuevo contacto";
+  if (pathname === "/contacts/all") return "Listado de contactos";
+  if (pathname.startsWith("/contacts/")) return "Detalle de contacto";
+
+  if (pathname === "/accounts/new") return "Nueva cuenta";
+  if (pathname.startsWith("/accounts/")) return "Detalle de cuenta";
+
+  if (pathname === "/leads/new") return "Nuevo lead";
+  if (pathname.startsWith("/leads/")) return "Detalle de lead";
+
+  if (pathname === "/deals/new") return "Nueva oportunidad";
+  if (pathname.startsWith("/deals/")) return "Detalle de oportunidad";
+
+  if (pathname === "/tasks/new") return "Nueva actividad";
+  if (pathname.startsWith("/tasks/")) return "Detalle de actividad";
+
+  if (pathname === "/calendar/google") return "Google Calendar";
+  if (pathname === "/calendar/ics") return "Calendario ICS";
+
+  if (pathname === "/profile") return "Mi perfil";
+  if (pathname.startsWith("/more")) return "Configuración";
+
+  return (
+    DESKTOP_ITEMS.find((item) =>
+      routeIsActive(pathname, item.href)
+    )?.label || "CRM"
+  );
+}
+
+function userInitials(me: MeInfo | null) {
+  const name = me?.name || me?.email || "Usuario";
+
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0] || "")
+    .join("")
+    .toUpperCase();
+}
+
+function roleLabel(role?: string) {
+  switch ((role || "").toLowerCase()) {
+    case "owner":
+      return "Propietario";
+    case "admin":
+      return "Administrador";
+    case "member":
+      return "Miembro";
+    default:
+      return "Usuario";
+  }
+}
+
+function useAppFocusSync() {
+  useEffect(() => {
+    const subscription = AppState.addEventListener(
+      "change",
+      (state) => {
+        if (Platform.OS !== "web") {
+          focusManager.setFocused(state === "active");
+        }
+      }
+    );
+
+    return () => subscription.remove();
+  }, []);
+}
+
+/** Conserva el ajuste de desarrollo para iOS en LAN. */
+let iosFetchShimInstalled = false;
+
+function setupIOSDevFetchShim() {
+  if (
+    !__DEV__ ||
+    Platform.OS !== "ios" ||
+    iosFetchShimInstalled
+  ) {
+    return;
   }
 
-  // RN / node-like
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const originalFetch = global.fetch as typeof fetch;
+
+  const hostUri =
+    (Constants as any)?.expoConfig?.hostUri ||
+    (Constants as any)?.manifest2?.extra?.expoGo?.hostUri ||
+    (Constants as any)?.manifest?.debuggerHost ||
+    "";
+
+  const lanHost =
+    typeof hostUri === "string" ? hostUri.split(":")[0] : null;
+
+  if (!lanHost) return;
+
+  const badHostnames = ["localhost", "127.0.0.1"];
+  const hostPattern = /^https?:\/\/([^/:]+)(:\d+)?(\/.*)?$/i;
+
+  global.fetch = (async (
+    input: any,
+    init?: RequestInit
+  ) => {
+    const url = typeof input === "string" ? input : input?.url;
+
+    if (typeof url === "string") {
+      const match = url.match(hostPattern);
+
+      if (match && badHostnames.includes(match[1])) {
+        const schema = url.startsWith("https://") ? "https" : "http";
+        const rewritten =
+          `${schema}://${lanHost}${match[2] || ""}${match[3] || "/"}`;
+
+        input =
+          typeof input === "string"
+            ? rewritten
+            : new Request(rewritten, input);
+      }
+    }
+
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  iosFetchShimInstalled = true;
+}
+
+/** JWT decode para presentación inicial. */
+function base64UrlToString(input: string) {
+  const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padding =
+    base64.length % 4 ? "=".repeat(4 - (base64.length % 4)) : "";
+  const value = base64 + padding;
+
+  if (typeof globalThis.atob === "function") {
+    return globalThis.atob(value);
+  }
+
   const { Buffer } = require("buffer");
-  return Buffer.from(b64, "base64").toString("utf8");
+  return Buffer.from(value, "base64").toString("utf8");
 }
 
 function decodeJwt(token: string): any | null {
   try {
     const parts = token.split(".");
     if (parts.length < 2) return null;
-    const json = base64UrlToString(parts[1]);
-    return JSON.parse(json);
+
+    return JSON.parse(base64UrlToString(parts[1]));
   } catch {
     return null;
   }
 }
 
-function TenantPill({ me, tenant }: { me: any; tenant: any }) {
+/** Indicador que conserva la cabecera móvil. */
+function TenantPill({
+  me,
+  tenant,
+}: {
+  me: MeInfo | null;
+  tenant: TenantInfo | null;
+}) {
   const userLabel = me?.name || me?.email || "Usuario";
-  const wsLabel = tenant?.name || tenant?.id || "Workspace";
-  const roleLabel = (me?.role || "").toString().toLowerCase();
+  const workspaceLabel = tenant?.name || tenant?.id || "Workspace";
+  const role = roleLabel(me?.role);
 
   return (
     <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Abrir usuario y workspace"
       onPress={() => router.push("/more")}
       style={{
         flexDirection: "row",
         alignItems: "center",
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 999,
-        backgroundColor: "rgba(124,58,237,0.12)",
+        gap: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+        borderRadius: 9,
+        backgroundColor: "#f0ebfb",
         borderWidth: 1,
-        borderColor: "rgba(124,58,237,0.45)",
-        maxWidth: 320,
+        borderColor: "#daceef",
+        maxWidth: 220,
+        flexShrink: 1,
       }}
     >
-      <Feather name="user" size={16} color="#7c3aed" />
-      <View style={{ marginLeft: 8, flex: 1 }}>
+      <Feather name="user" size={16} color="#7551c8" />
+
+      <View style={{ flexShrink: 1, minWidth: 0, gap: 2 }}>
         <Text
           numberOfLines={1}
-          style={{ color: "#e8ecf1", fontWeight: "700", fontSize: 12 }}
+          style={{
+            color: "#202536",
+            fontWeight: "600",
+            fontSize: 12,
+          }}
         >
           {userLabel}
         </Text>
-        <Text numberOfLines={1} style={{ color: "#7c3aed", fontSize: 11 }}>
-          {wsLabel}
-          {roleLabel ? ` · ${roleLabel}` : ""}
+
+        <Text
+          numberOfLines={1}
+          style={{
+            color: "#7551c8",
+            fontSize: 10,
+          }}
+        >
+          {workspaceLabel} · {role}
         </Text>
       </View>
     </Pressable>
   );
 }
+function DesktopSidebar({
+  pathname,
+  me,
+  tenant,
+}: {
+  pathname: string;
+  me: MeInfo | null;
+  tenant: TenantInfo | null;
+}) {
+  const workspaceLabel =
+    tenant?.name || tenant?.id || "Workspace";
+
+  const renderItem = (item: NavItem) => {
+    const active = routeIsActive(pathname, item.href);
+
+    return (
+      <Pressable
+        key={item.href}
+        accessibilityRole="button"
+        accessibilityLabel={item.label}
+        accessibilityState={{ selected: active }}
+        onPress={() => router.push(item.href as any)}
+        style={({ pressed, hovered }) => [
+          styles.sideItem,
+          active && styles.sideItemActive,
+          (pressed || hovered) && !active && styles.sideItemHover,
+        ]}
+      >
+        <Feather
+          name={item.icon}
+          size={18}
+          color={active ? WEB.accent : WEB.muted}
+        />
+
+        <Text
+          style={[
+            styles.sideItemText,
+            active && styles.sideItemTextActive,
+          ]}
+        >
+          {item.label}
+        </Text>
+
+        {active && <View style={styles.activeDot} />}
+      </Pressable>
+    );
+  };
+
+  return (
+    <View style={styles.sidebar}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Ir al resumen"
+        onPress={() => router.push("/")}
+        style={styles.brand}
+      >
+        <View style={styles.brandIcon}>
+          <Feather name="layers" size={22} color="#fff" />
+        </View>
+
+        <View>
+          <Text style={styles.brandName}>CRM</Text>
+          <Text style={styles.brandSubtitle}>Gestión comercial</Text>
+        </View>
+      </Pressable>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Administrar workspace"
+        onPress={() => router.push("/more")}
+        style={({ pressed, hovered }) => [
+          styles.workspaceCard,
+          (pressed || hovered) && styles.sideItemHover,
+        ]}
+      >
+        <View style={styles.workspaceIcon}>
+          <Feather name="briefcase" size={17} color={WEB.accent} />
+        </View>
+
+        <View style={styles.workspaceText}>
+          <Text style={styles.workspaceCaption}>WORKSPACE ACTIVO</Text>
+          <Text numberOfLines={1} style={styles.workspaceName}>
+            {workspaceLabel}
+          </Text>
+        </View>
+
+        <Feather name="chevron-down" size={15} color={WEB.muted} />
+      </Pressable>
+
+      <ScrollView
+        style={styles.sidebarScroll}
+        contentContainerStyle={styles.sidebarScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.navigationCaption}>ESPACIO DE TRABAJO</Text>
+        {DESKTOP_ITEMS.map(renderItem)}
+
+        <View style={styles.navigationDivider} />
+
+        <Text style={styles.navigationCaption}>PREFERENCIAS</Text>
+
+        {renderItem({
+          href: "/profile",
+          label: "Mi perfil",
+          icon: "user",
+        })}
+
+        {renderItem({
+          href: "/more",
+          label: "Configuración",
+          icon: "settings",
+        })}
+      </ScrollView>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Abrir mi perfil"
+        onPress={() => router.push("/profile")}
+        style={styles.sidebarUser}
+      >
+        <View style={styles.userAvatar}>
+          <Text style={styles.userAvatarText}>{userInitials(me)}</Text>
+        </View>
+
+        <View style={styles.workspaceText}>
+          <Text numberOfLines={1} style={styles.userName}>
+            {me?.name || me?.email || "Usuario"}
+          </Text>
+          <Text style={styles.userRole}>{roleLabel(me?.role)}</Text>
+        </View>
+
+        <Feather name="chevron-right" size={15} color={WEB.muted} />
+      </Pressable>
+    </View>
+  );
+}
+
+function DesktopHeader({ pathname }: { pathname: string }) {
+  const topLevelRoutes = [
+    "/",
+    "/contacts",
+    "/accounts",
+    "/leads",
+    "/deals",
+    "/tasks",
+    "/calendar",
+    "/more",
+    "/profile",
+  ];
+
+  const showBack = !topLevelRoutes.includes(pathname);
+
+  const goBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    const section = DESKTOP_ITEMS.find(
+      (item) =>
+        item.href !== "/" &&
+        routeIsActive(pathname, item.href)
+    );
+
+    router.replace((section?.href || "/") as any);
+  };
+
+  return (
+    <View style={styles.desktopHeader}>
+      <View style={styles.desktopHeaderLeft}>
+        {showBack && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Volver"
+            onPress={goBack}
+            style={({ pressed, hovered }) => [
+              styles.backButton,
+              (pressed || hovered) && styles.sideItemHover,
+            ]}
+          >
+            <Feather name="arrow-left" size={18} color={WEB.text} />
+          </Pressable>
+        )}
+
+        <Text numberOfLines={1} style={styles.desktopPageTitle}>
+          {pageTitle(pathname)}
+        </Text>
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Abrir configuración del workspace"
+        onPress={() => router.push("/more")}
+        style={styles.headerSettings}
+      >
+        <Feather name="settings" size={16} color={WEB.muted} />
+        <Text style={styles.headerSettingsText}>Configuración</Text>
+      </Pressable>
+    </View>
+  );
+}
 
 export default function RootLayout() {
   useAppFocusSync();
-  setupIOSDevFetchShim();
 
   const pathname = usePathname();
-  const inAuthFlow = pathname?.startsWith("/auth");
+  const inAuthFlow = pathname.startsWith("/auth");
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+
+  const desktop =
+    Platform.OS === "web" && width >= 1100 && !inAuthFlow;
 
   const [authReady, setAuthReady] = useState(false);
   const [me, setMe] = useState<MeInfo | null>(null);
   const [tenant, setTenant] = useState<TenantInfo | null>(null);
 
-  // 🔔 init notificaciones
+  useEffect(() => {
+    setupIOSDevFetchShim();
+  }, []);
+
+  // Conserva la inicialización existente de notificaciones.
   useEffect(() => {
     Notifs.initNotifications?.().catch(() => {});
   }, []);
 
-  // 🔁 re-agenda reminders
+  // Conserva la sincronización existente de recordatorios.
   useEffect(() => {
     if (typeof Notifs.reensurePendingReminders !== "function") return;
 
     Notifs.reensurePendingReminders(async () => {
       const list = await listOpenActivitiesWithReminder(Date.now());
-      return list.map((a) => ({
-        id: a.id,
-        title: a.title,
-        notes: a.notes ?? null,
-        remindAtMs: a.remindAtMs,
+
+      return list.map((activity) => ({
+        id: activity.id,
+        title: activity.title,
+        notes: activity.notes ?? null,
+        remindAtMs: activity.remindAtMs,
       }));
     }).catch(() => {});
   }, []);
 
-  /** ✅ BOOT: pinta SIEMPRE (JWT) + refresca con /auth/me */
+  // Presentación inicial desde JWT y actualización desde backend.
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const has = await isAuthenticated();
-        if (!has) {
+        const hasSession = await isAuthenticated();
+
+        if (!hasSession) {
           if (!inAuthFlow) router.replace("/auth/login");
           return;
         }
 
-        // 1) Pintado inmediato desde JWT (no depende del backend)
         const token = await getToken();
+
         if (token) {
           const decoded = decodeJwt(token);
           const jwtEmail = decoded?.email;
@@ -236,7 +572,9 @@ export default function RootLayout() {
           if (!cancelled) {
             setMe({ email: jwtEmail, role: jwtRole });
             setTenant(
-              effectiveTenant ? { id: effectiveTenant, name: effectiveTenant } : null
+              effectiveTenant
+                ? { id: effectiveTenant, name: effectiveTenant }
+                : null
             );
           }
 
@@ -245,9 +583,11 @@ export default function RootLayout() {
           }
         }
 
-        // 2) Refresca con backend para nombre real y tenant.name
-        const info = await apiMe().catch((e) => {
-          console.log("ME ERROR (boot) =>", e?.message || e);
+        const info = await apiMe().catch((error) => {
+          console.log(
+            "ME ERROR (boot) =>",
+            error?.message || error
+          );
           return null;
         });
 
@@ -258,15 +598,18 @@ export default function RootLayout() {
           return;
         }
 
-        const roleFromServer = (info as any)?.role;
+        const roleFromServer = info.role;
 
         if (!cancelled) {
-          setMe({ ...(info.user || {}), role: roleFromServer });
+          setMe({
+            ...(info.user || {}),
+            role: roleFromServer,
+          });
           setTenant(info.tenant || null);
         }
 
-        if ((info as any)?.active_tenant) {
-          await setActiveTenant((info as any).active_tenant);
+        if (info.active_tenant) {
+          await setActiveTenant(info.active_tenant);
         }
       } finally {
         if (!cancelled) setAuthReady(true);
@@ -276,58 +619,110 @@ export default function RootLayout() {
     return () => {
       cancelled = true;
     };
+    // Conserva el bootstrap de una ejecución del layout actual.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** ✅ Guard al navegar */
+  // Conserva el control de navegación según sesión.
   useEffect(() => {
     if (!authReady) return;
 
     (async () => {
-      const has = await isAuthenticated();
-      if (!has && !inAuthFlow) router.replace("/auth/login");
-      if (has && inAuthFlow) router.replace("/");
+      const hasSession = await isAuthenticated();
+
+      if (!hasSession && !inAuthFlow) {
+        router.replace("/auth/login");
+      }
+
+      if (hasSession && inAuthFlow) {
+        router.replace("/");
+      }
     })();
   }, [authReady, inAuthFlow, pathname]);
 
   if (!authReady) {
-    return <View style={{ flex: 1, backgroundColor: COLORS.bg }} />;
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor:
+            Platform.OS === "web" && width >= 1100
+              ? WEB.background
+              : COLORS.bg,
+        }}
+      />
+    );
   }
 
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <StatusBar style="light" />
+        <StatusBar style={desktop ? "dark" : "light"} />
 
-        <View style={styles.appContainer}>
-          <Stack
-            screenOptions={{
-              contentStyle: {
-                backgroundColor: COLORS.bg,
-                paddingBottom: inAuthFlow
-                  ? 0
-                  : TAB_HEIGHT + Math.max(insets.bottom, 8),
-              },
-              headerStyle: { backgroundColor: COLORS.bg },
-              headerTitleStyle: { color: COLORS.text, fontWeight: "800" },
-              headerTintColor: COLORS.text,
-              headerShadowVisible: false,
-              headerRight: () =>
-                inAuthFlow ? null : (
-                  <View style={{ paddingRight: 8, maxWidth: 360 }}>
-                    <TenantPill me={me} tenant={tenant} />
-                  </View>
-                ),
-            }}
-          >
-            <Stack.Screen name="index" options={{ title: "Inicio" }} />
-            <Stack.Screen
-              name="calendar/google"
-              options={{ title: "Google Calendar" }}
+        <View
+          style={[
+            styles.appContainer,
+            desktop && styles.desktopContainer,
+          ]}
+        >
+          {desktop && (
+            <DesktopSidebar
+              key="desktop-sidebar"
+              pathname={pathname}
+              me={me}
+              tenant={tenant}
             />
-          </Stack>
+          )}
 
-          {!inAuthFlow && <BottomBar bottomInset={insets.bottom} />}
+          <View key="main-content" style={styles.mainContent}>
+            {desktop && <DesktopHeader pathname={pathname} />}
+
+            <Stack
+              screenOptions={{
+                headerShown: !desktop,
+                contentStyle: {
+                  backgroundColor: desktop ? WEB.background : COLORS.bg,
+                  paddingBottom:
+                    inAuthFlow || desktop
+                      ? 0
+                      : TAB_HEIGHT + Math.max(insets.bottom, 8),
+                },
+                headerStyle: {
+                  backgroundColor: COLORS.bg,
+                },
+                headerTitleStyle: {
+                  color: COLORS.text,
+                  fontWeight: "800",
+                },
+                headerTintColor: COLORS.text,
+                headerShadowVisible: false,
+                headerRight: () =>
+                  inAuthFlow ? null : (
+                    <View
+                      style={{
+                        paddingRight: 8,
+                        maxWidth: 360,
+                      }}
+                    >
+                      <TenantPill me={me} tenant={tenant} />
+                    </View>
+                  ),
+              }}
+            >
+              <Stack.Screen
+                name="index"
+                options={{ title: "Inicio" }}
+              />
+              <Stack.Screen
+                name="calendar/google"
+                options={{ title: "Google Calendar" }}
+              />
+            </Stack>
+
+            {!inAuthFlow && !desktop && (
+              <BottomBar bottomInset={insets.bottom} />
+            )}
+          </View>
         </View>
       </ToastProvider>
     </QueryClientProvider>
@@ -337,19 +732,14 @@ export default function RootLayout() {
 function BottomBar({ bottomInset }: { bottomInset: number }) {
   const pathname = usePathname();
 
-  const items = [
-    { href: "/", label: "Resumen", icon: "home" as const },
-    { href: "/contacts", label: "Contactos", icon: "users" as const },
-    { href: "/deals", label: "Oportun.", icon: "briefcase" as const },
-    { href: "/tasks", label: "Activ.", icon: "check-square" as const },
-    { href: "/calendar", label: "Calend.", icon: "calendar" as const },
-    { href: "/more", label: "Más", icon: "grid" as const },
+  const items: NavItem[] = [
+    { href: "/", label: "Resumen", icon: "home" },
+    { href: "/contacts", label: "Contactos", icon: "users" },
+    { href: "/deals", label: "Oportun.", icon: "briefcase" },
+    { href: "/tasks", label: "Activ.", icon: "check-square" },
+    { href: "/calendar", label: "Calend.", icon: "calendar" },
+    { href: "/more", label: "Más", icon: "grid" },
   ];
-
-  const isActive = (href: string) => {
-    if (href === "/") return pathname === "/" || pathname === "";
-    return pathname === href || pathname.startsWith(href + "/");
-  };
 
   return (
     <View
@@ -361,12 +751,16 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
         },
       ]}
     >
-      {items.map((it) => {
-        const active = isActive(it.href);
+      {items.map((item) => {
+        const active = routeIsActive(pathname, item.href);
+
         return (
           <Pressable
-            key={it.href}
-            onPress={() => router.push(it.href as any)}
+            key={item.href}
+            accessibilityRole="button"
+            accessibilityLabel={item.label}
+            accessibilityState={{ selected: active }}
+            onPress={() => router.push(item.href as any)}
             style={({ pressed }) => [
               styles.tabItem,
               active && styles.tabItemActive,
@@ -378,18 +772,23 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
             }}
           >
             <Feather
-              name={it.icon}
+              name={item.icon}
               size={20}
               color={active ? COLORS.accent : COLORS.subtle}
             />
+
             <Text
               numberOfLines={1}
               style={[
                 styles.tabLabel,
-                { color: active ? COLORS.accent : COLORS.subtle },
+                {
+                  color: active
+                    ? COLORS.accent
+                    : COLORS.subtle,
+                },
               ]}
             >
-              {it.label}
+              {item.label}
             </Text>
           </Pressable>
         );
@@ -406,7 +805,9 @@ const shadow = Platform.select({
     shadowOffset: { width: 0, height: -6 },
   },
   android: { elevation: 16 },
-  web: { boxShadow: "0 -10px 24px rgba(0,0,0,0.35)" } as any,
+  web: {
+    boxShadow: "0 -10px 24px rgba(0,0,0,0.35)",
+  } as any,
 });
 
 const styles = StyleSheet.create({
@@ -414,6 +815,237 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.bg,
   },
+  desktopContainer: {
+    flexDirection: "row",
+    backgroundColor: WEB.background,
+  },
+  mainContent: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+  },
+
+  sidebar: {
+    width: SIDEBAR_WIDTH,
+    backgroundColor: WEB.surface,
+    borderRightWidth: 1,
+    borderRightColor: WEB.border,
+  },
+  brand: {
+    height: 82,
+    paddingHorizontal: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
+  brandIcon: {
+    width: 39,
+    height: 39,
+    borderRadius: 11,
+    backgroundColor: WEB.accent,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brandName: {
+    color: WEB.text,
+    fontSize: 20,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+  },
+  brandSubtitle: {
+    color: WEB.muted,
+    fontSize: 10,
+    marginTop: 2,
+  },
+  workspaceCard: {
+    marginHorizontal: 14,
+    marginBottom: 24,
+    padding: 11,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: WEB.border,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  workspaceIcon: {
+    width: 33,
+    height: 33,
+    backgroundColor: WEB.accentSoft,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  workspaceText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  workspaceCaption: {
+    color: WEB.muted,
+    fontSize: 8,
+    fontWeight: "700",
+    letterSpacing: 0.7,
+  },
+  workspaceName: {
+    color: WEB.text,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  sidebarScroll: {
+    flex: 1,
+  },
+  sidebarScrollContent: {
+    paddingHorizontal: 13,
+    paddingBottom: 20,
+    gap: 5,
+  },
+  navigationCaption: {
+    color: "#9299a9",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.9,
+    paddingHorizontal: 11,
+    marginBottom: 8,
+  },
+  sideItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    minHeight: 43,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 8,
+  },
+  sideItemActive: {
+    backgroundColor: WEB.accentSoft,
+  },
+  sideItemHover: {
+    backgroundColor: "#f5f6fa",
+  },
+  sideItemText: {
+    flex: 1,
+    color: WEB.muted,
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  sideItemTextActive: {
+    color: WEB.accent,
+    fontWeight: "700",
+  },
+  activeDot: {
+    height: 5,
+    width: 5,
+    borderRadius: 3,
+    backgroundColor: WEB.accent,
+  },
+  navigationDivider: {
+    height: 1,
+    backgroundColor: WEB.border,
+    marginHorizontal: 10,
+    marginVertical: 19,
+  },
+  sidebarUser: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    borderTopWidth: 1,
+    borderTopColor: WEB.border,
+  },
+  userAvatar: {
+    width: 35,
+    height: 35,
+    borderRadius: 10,
+    backgroundColor: WEB.accentSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  userAvatarText: {
+    color: WEB.accent,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  userName: {
+    color: WEB.text,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  userRole: {
+    color: WEB.muted,
+    fontSize: 10,
+  },
+
+  desktopHeader: {
+    height: 64,
+    backgroundColor: WEB.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: WEB.border,
+    paddingHorizontal: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 20,
+  },
+  desktopHeaderLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  desktopPageTitle: {
+    color: WEB.text,
+    fontSize: 14,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  backButton: {
+    height: 32,
+    width: 32,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerSettings: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 7,
+  },
+  headerSettingsText: {
+    color: WEB.muted,
+    fontSize: 12,
+  },
+
+  tenantPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(124,58,237,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(124,58,237,0.45)",
+    maxWidth: 320,
+  },
+  tenantPillContent: {
+    marginLeft: 8,
+    flex: 1,
+  },
+  tenantPillUser: {
+    color: COLORS.text,
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  tenantPillWorkspace: {
+    color: COLORS.accent,
+    fontSize: 11,
+  },
+
   tabBar: {
     position: "absolute",
     left: 0,
@@ -448,4 +1080,3 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 });
-

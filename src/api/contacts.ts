@@ -50,6 +50,7 @@ export type Contact = {
 export async function listContacts(params?: {
   limit?: number;
   workspaceId?: string;
+  q?: string;
 }): Promise<Contact[]> {
   const query = new URLSearchParams();
 
@@ -65,6 +66,10 @@ export async function listContacts(params?: {
 
   if (workspaceId) {
     query.set("workspaceId", workspaceId);
+  }
+
+  if (typeof params?.q === "string") {
+    query.set("q", params.q.trim());
   }
 
   const queryString = query.toString();

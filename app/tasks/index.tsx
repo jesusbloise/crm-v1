@@ -5,28 +5,29 @@ import { api } from "@/src/api/http";
 import { listTenantMembers, type TenantMember } from "@/src/api/tenants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQuery } from "@tanstack/react-query";
-import { Link, Stack, useFocusEffect } from "expo-router";
+import { Link, router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 
 /* Paleta */
-const BG = "#0F1115";
-const CARD = "#171923";
-const BORDER = "#2B3140";
-const TEXT = "#F3F4F6";
-const SUBTLE = "#A4ADBD";
-const PRIMARY = "#7C3AED";
-const SUCCESS = "#16a34a";
-
+const BG = "#f5f6fa";
+const CARD = "#ffffff";
+const BORDER = "#e7e9f0";
+const TEXT = "#202536";
+const SUBTLE = "#737b8e";
+const PRIMARY = "#7551c8";
+const SUCCESS = "#23744d";
 /* Maestro de completadas locales */
 const MASTER_COMPLETED_KEY = "completedActivities:v1:all";
 /* Maestro de EN PROCESO locales */
@@ -73,6 +74,8 @@ type TenantItem = {
 type TimeFilter = "all" | "day" | "week" | "month";
 
 export default function TasksList() {
+  const { width } = useWindowDimensions();
+  const desktop = Platform.OS === "web" && width >= 1100;
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
@@ -396,7 +399,24 @@ export default function TasksList() {
         }}
       />
 
-      <View style={styles.screen}>
+            <View style={styles.screen}>
+        <View style={styles.pageHeader}>
+          <View style={styles.pageHeading}>
+            <Text style={styles.pageTitle}>Actividades</Text>
+            <Text style={styles.pageDescription}>
+              Organiza el seguimiento y las tareas de tu equipo.
+            </Text>
+          </View>
+
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push("/tasks/new")}
+            style={styles.createButton}
+          >
+            <Text style={styles.createButtonText}>+ Nueva actividad</Text>
+          </Pressable>
+        </View>
+
         <View style={styles.filters}>
           {(["all", "open", "in_progress", "done", "canceled"] as Filter[]).map((f) => {
             const active = filter === f;
@@ -443,106 +463,138 @@ export default function TasksList() {
             keyboardType="numbers-and-punctuation"
           />
         )}
+                <View
+          style={[
+            styles.searchToolbar,
+            desktop && styles.searchToolbarDesktop,
+          ]}
+        >
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Buscar por título, usuario, cliente..."
+            placeholderTextColor={SUBTLE}
+            style={[
+              styles.searchInput,
+              desktop && styles.searchInputDesktop,
+            ]}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
 
-        <TextInput
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Buscar por título, usuario, cliente..."
-          placeholderTextColor={SUBTLE}
-          style={styles.searchInput}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
+          {isAdminOrOwner && memberChips.length > 0 && (
+            <View
+              style={[
+                styles.dropdownRow,
+                desktop && styles.dropdownRowDesktop,
+              ]}
+            >
+              <View style={styles.dropdownWrapper}>
+                <Pressable
+                  style={styles.dropdownTrigger}
+                  onPress={() => setAssigneeMenuOpen((v) => !v)}
+                >
+                  <Text style={styles.dropdownText} numberOfLines={1}>
+                    {assigneeActiveLabel}
+                  </Text>
+                  <Text style={styles.dropdownArrow}>
+                    {assigneeMenuOpen ? "▲" : "▼"}
+                  </Text>
+                </Pressable>
 
-        {isAdminOrOwner && memberChips.length > 0 && (
-          <View style={styles.dropdownRow}>
-            <View style={styles.dropdownWrapper}>
-              <Pressable
-                style={styles.dropdownTrigger}
-                onPress={() => setAssigneeMenuOpen((v) => !v)}
-              >
-                <Text style={styles.dropdownText} numberOfLines={1}>
-                  {assigneeActiveLabel}
-                </Text>
-                <Text style={styles.dropdownArrow}>{assigneeMenuOpen ? "▲" : "▼"}</Text>
-              </Pressable>
+                {assigneeMenuOpen && (
+                  <View style={styles.dropdownMenu}>
+                    {memberChips.map((m) => {
+                      const active = assigneeFilter === m.id;
 
-              {assigneeMenuOpen && (
-                <View style={styles.dropdownMenu}>
-                  {memberChips.map((m) => {
-                    const active = assigneeFilter === m.id;
-                    return (
-                      <Pressable
-                        key={m.id}
-                        style={[styles.dropdownOption, active && styles.dropdownOptionActive]}
-                        onPress={() => {
-                          setAssigneeFilter(m.id);
-                          setAssigneeMenuOpen(false);
-                        }}
-                      >
-                        <Text
+                      return (
+                        <Pressable
+                          key={m.id}
                           style={[
-                            styles.dropdownOptionText,
-                            active && styles.dropdownOptionTextActive,
+                            styles.dropdownOption,
+                            active && styles.dropdownOptionActive,
                           ]}
-                          numberOfLines={1}
+                          onPress={() => {
+                            setAssigneeFilter(m.id);
+                            setAssigneeMenuOpen(false);
+                          }}
                         >
-                          {m.id === "all" ? "Todas las personas" : m.label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              )}
+                          <Text
+                            style={[
+                              styles.dropdownOptionText,
+                              active && styles.dropdownOptionTextActive,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {m.id === "all" ? "Todas las personas" : m.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
             </View>
-          </View>
-        )}
+          )}
 
-        {isAdminOrOwner && tenants.length > 0 && (
-          <View style={styles.dropdownRow}>
-            <View style={styles.dropdownWrapper}>
-              <Pressable style={styles.dropdownTrigger} onPress={() => setWsMenuOpen((v) => !v)}>
-                <Text style={styles.dropdownText} numberOfLines={1}>
-                  {wsActiveLabel}
-                </Text>
-                <Text style={styles.dropdownArrow}>{wsMenuOpen ? "▲" : "▼"}</Text>
-              </Pressable>
+          {isAdminOrOwner && tenants.length > 0 && (
+            <View
+              style={[
+                styles.dropdownRow,
+                desktop && styles.dropdownRowDesktop,
+              ]}
+            >
+              <View style={styles.dropdownWrapper}>
+                <Pressable
+                  style={styles.dropdownTrigger}
+                  onPress={() => setWsMenuOpen((v) => !v)}
+                >
+                  <Text style={styles.dropdownText} numberOfLines={1}>
+                    {wsActiveLabel}
+                  </Text>
+                  <Text style={styles.dropdownArrow}>
+                    {wsMenuOpen ? "▲" : "▼"}
+                  </Text>
+                </Pressable>
 
-              {wsMenuOpen && (
-                <View style={styles.dropdownMenu}>
-                  {tenants.map((t) => {
-                    const active = activeTenant === t.id;
-                    const busy = busyWs === t.id;
-                    return (
-                      <Pressable
-                        key={t.id}
-                        style={[
-                          styles.dropdownOption,
-                          active && styles.dropdownOptionActive,
-                          busy && { opacity: 0.5 },
-                        ]}
-                        onPress={async () => {
-                          await onSelectWorkspace(t.id);
-                          setWsMenuOpen(false);
-                        }}
-                      >
-                        <Text
+                {wsMenuOpen && (
+                  <View style={styles.dropdownMenu}>
+                    {tenants.map((t) => {
+                      const active = activeTenant === t.id;
+                      const busy = busyWs === t.id;
+
+                      return (
+                        <Pressable
+                          key={t.id}
                           style={[
-                            styles.dropdownOptionText,
-                            active && styles.dropdownOptionTextActive,
+                            styles.dropdownOption,
+                            active && styles.dropdownOptionActive,
+                            busy && { opacity: 0.5 },
                           ]}
-                          numberOfLines={1}
+                          onPress={async () => {
+                            await onSelectWorkspace(t.id);
+                            setWsMenuOpen(false);
+                          }}
                         >
-                          {t.name || t.id}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              )}
+                          <Text
+                            style={[
+                              styles.dropdownOptionText,
+                              active && styles.dropdownOptionTextActive,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {t.name || t.id}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
             </View>
-          </View>
-        )}
+          )}
+        </View>
+
 
         {loadingRole && (
           <View style={{ marginTop: 6 }}>
@@ -563,6 +615,34 @@ export default function TasksList() {
           <FlatList
             data={data}
             keyExtractor={(item) => item.id}
+                        style={styles.list}
+            ListHeaderComponent={
+              <View>
+                <Text style={styles.resultCount}>
+                  {data.length} actividades en el resultado
+                </Text>
+
+                {desktop && (
+                  <View style={styles.tableHeader}>
+                    <Text style={[styles.columnHeading, styles.activityColumn]}>
+                      Actividad
+                    </Text>
+                    <Text style={[styles.columnHeading, styles.personColumn]}>
+                      Responsables
+                    </Text>
+                    <Text style={[styles.columnHeading, styles.contactColumn]}>
+                      Contacto
+                    </Text>
+                    <Text style={[styles.columnHeading, styles.dateColumn]}>
+                      Fecha del evento
+                    </Text>
+                    <Text style={[styles.columnHeading, styles.statusColumn]}>
+                      Estado
+                    </Text>
+                  </View>
+                )}
+              </View>
+            }
             refreshControl={<RefreshControl refreshing={q.isFetching} onRefresh={onRefresh} />}
             ListEmptyComponent={<Text style={styles.subtle}>No hay actividades</Text>}
             renderItem={({ item }) => (
@@ -573,7 +653,10 @@ export default function TasksList() {
                 localEventMap={localEventMap}
               />
             )}
-            contentContainerStyle={{ gap: 10, paddingBottom: 16 }}
+                        contentContainerStyle={{
+              gap: desktop ? 0 : 10,
+              paddingBottom: 20,
+            }}
           />
         )}
       </View>
@@ -681,6 +764,8 @@ function TaskCard({
   localEventMap: Record<string, number>;
 }) {
   const isDoneUI = item.status === "done" || completedMaster.has(item.id);
+    const { width } = useWindowDimensions();
+  const desktop = Platform.OS === "web" && width >= 1100;
   const isInProgressUI = !isDoneUI && inProgressMaster.has(item.id);
 
   const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
@@ -711,6 +796,74 @@ function TaskCard({
     getEventDateLabel(item) ||
     (localEventMap?.[item.id] ? formatEventLabelFromMs(localEventMap[item.id]) : null);
 
+      if (desktop) {
+    return (
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={`Abrir actividad: ${item.title}`}
+        onPress={() =>
+          router.push({
+            pathname: "/tasks/[id]",
+            params: { id: item.id },
+          })
+        }
+        style={({ pressed, hovered }) => [
+          styles.tableRow,
+          (hovered || pressed) && styles.tableRowHover,
+        ]}
+      >
+        <View style={styles.activityColumn}>
+          <Text style={styles.tableTitle} numberOfLines={2}>
+            {item.title || "Sin título"}
+          </Text>
+          <Text style={styles.tableSecondary} numberOfLines={1}>
+            {createdByLabel || "Sin información del creador"}
+          </Text>
+          {!!lastNoteBlock && (
+            <Text style={styles.tableSecondary} numberOfLines={1}>
+              {lastNoteBlock}
+            </Text>
+          )}
+        </View>
+
+        <Text
+          style={[styles.tableCell, styles.personColumn]}
+          numberOfLines={2}
+        >
+          {assignedNames.length ? assignedNames.join(" y ") : "Sin asignar"}
+        </Text>
+
+        <Text
+          style={[styles.tableCell, styles.contactColumn]}
+          numberOfLines={2}
+        >
+          {contactLabel || "—"}
+        </Text>
+
+        <Text
+          style={[styles.tableCell, styles.dateColumn]}
+          numberOfLines={2}
+        >
+          {eventDateLabel || "Sin fecha"}
+        </Text>
+
+        <View style={styles.statusColumn}>
+          <View
+            style={[
+              styles.statusBadge,
+              isDoneUI
+                ? styles.statusBadgeDone
+                : isInProgressUI
+                ? styles.statusBadgeProgress
+                : styles.statusBadgeOpen,
+            ]}
+          >
+            <Text style={styles.statusBadgeText}>{statusLabel}</Text>
+          </View>
+        </View>
+      </Pressable>
+    );
+  }
   return (
     <Link href={{ pathname: "/tasks/[id]", params: { id: item.id } }} asChild>
       <Pressable accessibilityRole="link" hitSlop={8}>
@@ -811,160 +964,278 @@ function formatDate(value: number | string | null | undefined): string {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, padding: 16, gap: 12 },
+  searchToolbar: {
+    gap: 10,
+    minWidth: 0,
+  },
 
-  filters: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  searchToolbarDesktop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+
+  searchInputDesktop: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  dropdownRowDesktop: {
+    width: 220,
+    flexShrink: 0,
+  },
+
+  screen: {
+    flex: 1,
+    minWidth: 0,
+    backgroundColor: BG,
+    padding: 20,
+    gap: 12,
+  },
+
+  pageHeader: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 14,
+    marginBottom: 6,
+  },
+  pageHeading: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  pageTitle: { color: TEXT, fontSize: 25, fontWeight: "700" },
+  pageDescription: { color: SUBTLE, fontSize: 13, lineHeight: 20 },
+  createButton: {
+    backgroundColor: PRIMARY,
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    minHeight: 42,
+    justifyContent: "center",
+  },
+  createButtonText: { color: "#ffffff", fontSize: 13, fontWeight: "600" },
+
+  filters: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+  },
   chip: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "#1a1b2a",
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 7,
+    backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
   },
-  chipActive: { backgroundColor: "rgba(124,58,237,0.20)", borderColor: PRIMARY },
-  chipText: { color: SUBTLE, fontWeight: "700", fontSize: 12 },
-  chipTextActive: { color: "#E9D5FF" },
+  chipActive: { backgroundColor: "#eee8f8", borderColor: "#b49bdc" },
+  chipText: { color: SUBTLE, fontWeight: "600", fontSize: 12 },
+  chipTextActive: { color: PRIMARY },
 
-  timeFiltersRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
+  timeFiltersRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+  },
   timeChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
-  },
-  timeChipActive: { backgroundColor: "rgba(124,58,237,0.20)", borderColor: PRIMARY },
-  timeChipText: { color: SUBTLE, fontSize: 11, fontWeight: "700" },
-  timeChipTextActive: { color: "#E9D5FF" },
-
-  dateFilterInput: {
-    marginBottom: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
     paddingHorizontal: 12,
     paddingVertical: 8,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: CARD,
+  },
+  timeChipActive: { backgroundColor: "#eee8f8", borderColor: "#b49bdc" },
+  timeChipText: { color: SUBTLE, fontSize: 12, fontWeight: "500" },
+  timeChipTextActive: { color: PRIMARY },
+
+  dateFilterInput: {
+    minHeight: 42,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#dce0e9",
+    backgroundColor: CARD,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     color: TEXT,
     fontSize: 13,
   },
-
   searchInput: {
-    marginBottom: 8,
-    borderRadius: 10,
+    minHeight: 44,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderColor: "#dce0e9",
+    backgroundColor: CARD,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     color: TEXT,
     fontSize: 14,
   },
 
-  dropdownRow: { marginBottom: 6 },
-  dropdownWrapper: { alignSelf: "flex-start", minWidth: 180 },
+  dropdownRow: { minWidth: 0 },
+  dropdownWrapper: { width: "100%", maxWidth: 360 },
   dropdownTrigger: {
+    minHeight: 42,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderRadius: 999,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
+    borderColor: "#dce0e9",
+    backgroundColor: CARD,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
+    gap: 10,
   },
-  dropdownText: { color: TEXT, fontSize: 12, fontWeight: "700", flexShrink: 1 },
-  dropdownArrow: { color: SUBTLE, fontSize: 10, marginLeft: 6 },
+  dropdownText: {
+    color: TEXT,
+    fontSize: 12,
+    fontWeight: "500",
+    flex: 1,
+    minWidth: 0,
+  },
+  dropdownArrow: { color: SUBTLE, fontSize: 10 },
   dropdownMenu: {
-    marginTop: 4,
-    borderRadius: 10,
+    marginTop: 6,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: "#11121b",
+    backgroundColor: CARD,
     overflow: "hidden",
   },
   dropdownOption: {
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#1f2933",
+    borderBottomColor: BORDER,
   },
-  dropdownOptionActive: { backgroundColor: "#1f2937" },
+  dropdownOptionActive: { backgroundColor: "#f1ecfa" },
   dropdownOptionText: { color: TEXT, fontSize: 12 },
-  dropdownOptionTextActive: { color: "#E9D5FF", fontWeight: "700" },
+  dropdownOptionTextActive: { color: PRIMARY, fontWeight: "600" },
+
+  list: { flex: 1, minHeight: 0 },
+  resultCount: {
+    color: SUBTLE,
+    fontSize: 12,
+    paddingVertical: 12,
+  },
+  tableHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    backgroundColor: "#eef0f6",
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderTopLeftRadius: 9,
+    borderTopRightRadius: 9,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  columnHeading: { color: "#596274", fontSize: 11, fontWeight: "600" },
+  tableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  tableRowHover: { backgroundColor: "#faf8fe" },
+  activityColumn: { flex: 3, minWidth: 0, gap: 5 },
+  personColumn: { flex: 1.7, minWidth: 0 },
+  contactColumn: { flex: 1.5, minWidth: 0 },
+  dateColumn: { flex: 1.5, minWidth: 0 },
+  statusColumn: { width: 100 },
+  tableTitle: { color: TEXT, fontSize: 13, lineHeight: 20, fontWeight: "600" },
+  tableSecondary: { color: SUBTLE, fontSize: 11, lineHeight: 17 },
+  tableCell: { color: "#475467", fontSize: 12, lineHeight: 19 },
+  statusBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  statusBadgeOpen: { backgroundColor: "#eef0f5" },
+  statusBadgeProgress: { backgroundColor: "#e8f0ff" },
+  statusBadgeDone: { backgroundColor: "#e3f4e9" },
+  statusBadgeText: { color: "#344054", fontSize: 11, fontWeight: "500" },
 
   row: {
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 12,
-    padding: 14,
-    flexDirection: "column",
-    alignItems: "flex-start",
-    gap: 4,
+    borderRadius: 10,
+    padding: 16,
+    gap: 9,
   },
-  rowDone: { borderColor: SUCCESS, backgroundColor: "rgba(22,163,74,0.08)" },
-  rowInProgress: { borderColor: "#3b82f6", backgroundColor: "rgba(37,99,235,0.12)" },
-
+  rowDone: { borderColor: "#badfc8", backgroundColor: "#f4fbf6" },
+  rowInProgress: { borderColor: "#bed0f1", backgroundColor: "#f4f7fe" },
   titleRow: {
     width: "100%",
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 6,
+    gap: 10,
     flexWrap: "wrap",
   },
-  title: { color: TEXT, fontWeight: "800", fontSize: 15, flexShrink: 1, minWidth: 0 },
-
+  title: {
+    color: TEXT,
+    fontWeight: "600",
+    fontSize: 15,
+    flexShrink: 1,
+    minWidth: 0,
+  },
   titleDone: { color: SUCCESS },
-  titleInProgress: { color: "#60a5fa" },
-
-  rightMeta: { marginLeft: "auto", alignItems: "flex-end", gap: 6, maxWidth: "100%" },
-
+  titleInProgress: { color: "#2858a5" },
+  rightMeta: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    maxWidth: "100%",
+  },
   contactChip: {
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: "#11121b",
-    paddingHorizontal: 10,
+    backgroundColor: "#fafbfe",
+    paddingHorizontal: 9,
     paddingVertical: 6,
-    borderRadius: 999,
+    borderRadius: 6,
     maxWidth: "100%",
   },
-  contactChipText: { color: TEXT, fontSize: 12, fontWeight: "800" },
-
+  contactChipText: { color: "#596274", fontSize: 11, fontWeight: "500" },
   eventChip: {
     borderWidth: 1,
-    borderColor: "rgba(124,58,237,0.35)",
-    backgroundColor: "rgba(124,58,237,0.12)",
-    paddingHorizontal: 10,
+    borderColor: "#e2d9f2",
+    backgroundColor: "#f1ecfa",
+    paddingHorizontal: 9,
     paddingVertical: 6,
-    borderRadius: 999,
+    borderRadius: 6,
     maxWidth: "100%",
   },
-  eventChipText: { color: "#E9D5FF", fontSize: 12, fontWeight: "800" },
-
-  sub: {
-    color: SUBTLE,
-    fontSize: 12,
-    marginTop: -2,
-  },
-  subDone: { color: SUCCESS },
-  subInProgress: { color: "#60a5fa" },
-
+  eventChipText: { color: PRIMARY, fontSize: 11, fontWeight: "500" },
+  sub: { color: SUBTLE, fontSize: 12, lineHeight: 20 },
+  subDone: { color: "#587a65" },
+  subInProgress: { color: "#526d96" },
   subtle: { color: SUBTLE, textAlign: "center", marginTop: 8 },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8 },
-
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
   badgeDone: {
     alignSelf: "flex-start",
-    marginTop: 2,
-    backgroundColor: SUCCESS,
-    borderRadius: 999,
-    paddingVertical: 3,
+    backgroundColor: "#e3f4e9",
+    borderRadius: 5,
+    paddingVertical: 4,
     paddingHorizontal: 8,
   },
-  badgeDoneText: { color: "#fff", fontWeight: "900", fontSize: 11, letterSpacing: 0.3 },
-
-  lastNoteText: { color: SUBTLE, fontSize: 12, marginTop: 2 },
+  badgeDoneText: { color: SUCCESS, fontWeight: "600", fontSize: 11 },
+  lastNoteText: { color: SUBTLE, fontSize: 12, lineHeight: 19 },
 });

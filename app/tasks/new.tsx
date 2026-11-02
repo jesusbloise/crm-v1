@@ -1,6 +1,11 @@
 // app/tasks/new.tsx
 import { createActivity, type ActivityType } from "@/src/api/activities";
-import { listContacts } from "@/src/api/contacts";
+import { getAuthStorageScope } from "@/src/api/auth";
+import {
+  getContact,
+  listContacts,
+  type Contact,
+} from "@/src/api/contacts";
 import {
   listWorkspaceMembers,
   type WorkspaceMember,
@@ -40,14 +45,14 @@ import DateTimePicker, {
 } from "@react-native-community/datetimepicker";
 
 /* Paleta */
-const PRIMARY = "#7C3AED";
-const ACCENT = "#22D3EE";
-const BG = "#0F1115";
-const CARD = "#171923";
-const FIELD = "#121318";
-const BORDER = "#2B3140";
-const TEXT = "#F3F4F6";
-const SUBTLE = "#A4ADBD";
+const PRIMARY = "#7551c8";
+const ACCENT = "#4878c7";
+const BG = "#f5f6fa";
+const CARD = "#ffffff";
+const FIELD = "#ffffff";
+const BORDER = "#e7e9f0";
+const TEXT = "#202536";
+const SUBTLE = "#737b8e";
 
 /* Key para evento local */
 const LOCAL_EVENT_MAP_KEY = "activityEventLocal:v1";
@@ -169,10 +174,106 @@ export default function NewActivity() {
   const params = useLocalSearchParams<{ contact_id?: string }>();
   const qc = useQueryClient();
 
-  useQuery({
-  queryKey: ["contacts"],
-  queryFn: () => listContacts(),
-});
+  const [contactSearch, setContactSearch] = useState("");
+  const [debouncedContactSearch, setDebouncedContactSearch] = useState("");
+  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [contactScope, setContactScope] = useState<string | null>(null);
+  const [contactScopeError, setContactScopeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getAuthStorageScope()
+      .then((scope) => {
+        if (cancelled) return;
+
+        if (!scope) {
+          setContactScopeError(
+            "No se pudo comprobar la sesión. Reabre el formulario."
+          );
+          return;
+        }
+
+        setContactScope(scope.storageKey);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setContactScopeError(
+            "No se pudo comprobar la sesión. Reabre el formulario."
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedContactSearch(contactSearch.trim());
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [contactSearch]);
+
+  const inheritedContactId =
+    typeof params.contact_id === "string" ? params.contact_id : "";
+
+  async function assertContactScope() {
+    const current = await getAuthStorageScope();
+
+    if (!contactScope || current?.storageKey !== contactScope) {
+      throw new Error(
+        "Cambió la sesión o el workspace. Reabre el formulario."
+      );
+    }
+  }
+
+  const qContacts = useQuery({
+    queryKey: [
+      "contact-search",
+      contactScope,
+      debouncedContactSearch,
+    ],
+    queryFn: async () => {
+      await assertContactScope();
+
+      const contacts = await listContacts({
+        q: debouncedContactSearch,
+        limit: 20,
+      });
+
+      await assertContactScope();
+      return contacts;
+    },
+    enabled:
+      Boolean(contactScope) &&
+      !inheritedContactId &&
+      debouncedContactSearch.length >= 2,
+    retry: false,
+    staleTime: 0,
+  });
+
+  const qInheritedContact = useQuery({
+    queryKey: ["contact", inheritedContactId, contactScope],
+    queryFn: async () => {
+      await assertContactScope();
+      const contact = await getContact(inheritedContactId);
+      await assertContactScope();
+      return contact;
+    },
+    enabled: Boolean(contactScope) && Boolean(inheritedContactId),
+    retry: false,
+  });
+
+  const contactSearchPending =
+    contactSearch.trim() !== debouncedContactSearch;
+
+  const contactResults =
+    contactSearch.trim().length >= 2 && !contactSearchPending
+      ? qContacts.data ?? []
+      : [];
 
 
   const qMembers = useQuery({
@@ -553,7 +654,17 @@ export default function NewActivity() {
         }}
       />
 
-      <ScrollView contentContainerStyle={styles.container}>
+            <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.pageHeader}>
+          <Text style={styles.pageTitle}>Nueva actividad</Text>
+          <Text style={styles.pageDescription}>
+            Define la tarea, sus responsables y la fecha de seguimiento.
+          </Text>
+        </View>
+
         <Text style={styles.label}>Tipo</Text>
         <View style={styles.pillsRow}>
           {TYPES.map((t) => {
@@ -674,6 +785,148 @@ export default function NewActivity() {
             )}
           </View>
         </View>
+        <Text style={styles.label}>Contacto *</Text>
+
+        {contactScopeError ? (
+          <Text style={styles.error}>{contactScopeError}</Text>
+        ) : locked.contact_id ? (
+          <View style={styles.contactSelected}>
+            <Text style={styles.contactSelectedText}>
+              {qInheritedContact.isError
+                ? "No se pudo cargar el contacto"
+                : qInheritedContact.data?.name || "Cargando contacto…"}
+            </Text>
+
+            <Text style={styles.subtle}>
+              Esta actividad está vinculada al contacto desde el que ingresaste.
+            </Text>
+
+            {qInheritedContact.isError && (
+              <Pressable onPress={() => void qInheritedContact.refetch()}>
+                <Text style={styles.contactSelectedText}>Reintentar</Text>
+              </Pressable>
+            )}
+          </View>
+        ) : (
+          <View style={styles.contactSelector}>
+            {selectedContact && (
+              <View style={styles.contactSelected}>
+                <Text style={styles.contactSelectedText}>
+                  Seleccionado: {selectedContact.name}
+                </Text>
+
+                {Boolean(selectedContact.company || selectedContact.email) && (
+                  <Text style={styles.subtle}>
+                    {[selectedContact.company, selectedContact.email]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </Text>
+                )}
+
+                <Pressable
+                  onPress={() => {
+                    setSelectedContact(null);
+                    setContactId(undefined);
+                  }}
+                >
+                  <Text style={styles.contactSelectedText}>
+                    Quitar selección
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+
+            <TextInput
+              style={styles.input}
+              value={contactSearch}
+              onChangeText={setContactSearch}
+              placeholder="Buscar por nombre, empresa o correo"
+              placeholderTextColor={SUBTLE}
+              autoCapitalize="none"
+              autoCorrect={false}
+              accessibilityLabel="Buscar contacto"
+              maxLength={120}
+            />
+
+            {!contactScope ? (
+              <Text style={styles.subtle}>Comprobando sesión…</Text>
+            ) : contactSearch.trim().length < 2 ? (
+              <Text style={styles.subtle}>
+                Escribe al menos 2 caracteres para buscar.
+              </Text>
+            ) : contactSearchPending || qContacts.isFetching ? (
+              <Text style={styles.subtle}>Buscando contactos…</Text>
+            ) : qContacts.isError ? (
+              <View style={styles.contactSelector}>
+                <Text style={styles.error}>
+                  No se pudieron buscar los contactos.
+                </Text>
+
+                <Pressable onPress={() => void qContacts.refetch()}>
+                  <Text style={styles.contactSelectedText}>Reintentar</Text>
+                </Pressable>
+              </View>
+            ) : qContacts.isSuccess && contactResults.length === 0 ? (
+              <Text style={styles.subtle}>
+                No hay contactos que coincidan con la búsqueda.
+              </Text>
+            ) : contactResults.length > 0 ? (
+              <>
+                <ScrollView
+                  style={styles.contactResults}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {contactResults.map((contact) => {
+                    const selected = contactId === contact.id;
+
+                    return (
+                      <Pressable
+                        key={contact.id}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: selected }}
+                        onPress={() => {
+                          setSelectedContact(contact);
+                          setContactId(contact.id);
+                        }}
+                        style={[
+                          styles.contactOption,
+                          selected && styles.contactOptionActive,
+                        ]}
+                      >
+                        <View style={styles.contactOptionInfo}>
+                          <Text style={styles.contactName}>
+                            {contact.name || "Sin nombre"}
+                          </Text>
+
+                          {Boolean(contact.company || contact.email) && (
+                            <Text style={styles.subtle}>
+                              {[contact.company, contact.email]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </Text>
+                          )}
+                        </View>
+
+                        <Text style={styles.contactSelectedText}>
+                          {selected ? "✓" : "○"}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+
+                {contactResults.length === 20 && (
+                  <Text style={styles.subtle}>
+                    Se muestran hasta 20 coincidencias. Escribe más detalles
+                    para precisar la búsqueda.
+                  </Text>
+                )}
+              </>
+            ) : null}
+          </View>
+        )}
+
 
         <Text style={styles.label}>Título *</Text>
         <TextInput
@@ -934,190 +1187,351 @@ export default function NewActivity() {
     </KeyboardAvoidingView>
   );
 }
-
 const styles = StyleSheet.create({
-  container: { padding: 16, gap: 12 },
-  label: { color: TEXT, fontWeight: "900", marginTop: 2 },
+    contactSelector: {
+    gap: 10,
+    minWidth: 0,
+  },
+  contactSelected: {
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "#daceef",
+    borderRadius: 8,
+    backgroundColor: "#f1ecfa",
+    gap: 6,
+  },
+  contactSelectedText: {
+    color: PRIMARY,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  contactResults: {
+    maxHeight: 220,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 8,
+    backgroundColor: CARD,
+  },
+  contactOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  contactOptionActive: {
+    backgroundColor: "#f1ecfa",
+  },
+  contactOptionInfo: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  contactName: {
+    color: TEXT,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  container: {
+    width: "100%",
+    maxWidth: 960,
+    alignSelf: "center",
+    padding: 20,
+    paddingBottom: 48,
+    gap: 12,
+  },
 
-  pillsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  pageHeader: {
+    gap: 6,
+    marginBottom: 12,
+  },
+  pageTitle: {
+    color: TEXT,
+    fontSize: 25,
+    fontWeight: "700",
+  },
+  pageDescription: {
+    color: SUBTLE,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  label: {
+    color: TEXT,
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
+  },
+
+  pillsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   pill: {
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
     backgroundColor: CARD,
   },
-  pillActive: { backgroundColor: PRIMARY, borderColor: PRIMARY },
-  pillText: { fontSize: 12, color: TEXT, fontWeight: "700" },
-  pillTextActive: { color: "#fff", fontWeight: "900" },
+  pillActive: {
+    backgroundColor: PRIMARY,
+    borderColor: PRIMARY,
+  },
+  pillText: {
+    fontSize: 12,
+    color: TEXT,
+    fontWeight: "600",
+  },
+  pillTextActive: {
+    color: "#ffffff",
+    fontWeight: "600",
+  },
 
   input: {
+    minWidth: 0,
+    minHeight: 44,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: "#dce0e9",
     backgroundColor: FIELD,
     color: TEXT,
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 8,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    fontSize: 14,
+    lineHeight: 21,
   },
 
   statusDropdown: {
-    marginTop: 6,
-    borderRadius: 999,
+    minHeight: 44,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: "#dce0e9",
     backgroundColor: CARD,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 9,
   },
   statusDropdownText: {
     color: TEXT,
-    fontWeight: "800",
-    fontSize: 12,
+    fontWeight: "500",
+    fontSize: 13,
   },
-  statusDot: { width: 10, height: 10, borderRadius: 999 },
-  statusDot_open: { backgroundColor: "#9CA3AF" },
+  statusDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  statusDot_open: { backgroundColor: "#98a2b3" },
   statusDot_in_progress: { backgroundColor: ACCENT },
-  statusDot_done: { backgroundColor: "#22C55E" },
+  statusDot_done: { backgroundColor: "#399568" },
   statusMenu: {
-    marginTop: 4,
-    borderRadius: 12,
+    marginTop: 6,
+    borderRadius: 8,
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
     overflow: "hidden",
   },
   statusOption: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    minHeight: 42,
+    paddingVertical: 12,
+    paddingHorizontal: 13,
     borderBottomWidth: 1,
-    borderBottomColor: "#1F2933",
+    borderBottomColor: BORDER,
   },
-  statusOptionText: { fontSize: 12, color: TEXT },
+  statusOptionText: {
+    fontSize: 13,
+    color: TEXT,
+  },
 
-  dropdownWrapper: { alignSelf: "flex-start", minWidth: 220 },
+  dropdownWrapper: {
+    width: "100%",
+    minWidth: 0,
+  },
   dropdownTrigger: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderRadius: 999,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: "#dce0e9",
     backgroundColor: FIELD,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    gap: 10,
   },
   dropdownText: {
     color: TEXT,
-    fontSize: 12,
-    fontWeight: "700",
-    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: "500",
+    flex: 1,
+    minWidth: 0,
   },
-  dropdownArrow: { color: SUBTLE, fontSize: 10, marginLeft: 6 },
+  dropdownArrow: {
+    color: SUBTLE,
+    fontSize: 10,
+  },
   dropdownMenu: {
     marginTop: 6,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: BORDER,
     backgroundColor: FIELD,
     overflow: "hidden",
-    minWidth: 220,
   },
   dropdownOption: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    minHeight: 42,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#1f2933",
+    borderBottomColor: BORDER,
   },
-  dropdownOptionActive: { backgroundColor: "#1E293B" },
-  dropdownOptionText: { color: TEXT, fontSize: 12 },
-  dropdownOptionTextActive: { color: ACCENT, fontWeight: "700" },
+  dropdownOptionActive: {
+    backgroundColor: "#f1ecfa",
+  },
+  dropdownOptionText: {
+    color: TEXT,
+    fontSize: 13,
+  },
+  dropdownOptionTextActive: {
+    color: PRIMARY,
+    fontWeight: "600",
+  },
 
   plusBox: {
+    marginTop: 10,
     borderWidth: 1,
-    borderColor: "rgba(34,211,238,0.35)",
-    backgroundColor: "rgba(34,211,238,0.06)",
-    borderRadius: 14,
-    padding: 12,
-    gap: 8,
+    borderColor: "#e2d9f2",
+    backgroundColor: "#faf8fe",
+    borderRadius: 12,
+    padding: 16,
+    gap: 12,
   },
-  plusTitle: { color: TEXT, fontWeight: "900", fontSize: 13 },
-  plusLabel: { color: SUBTLE, fontWeight: "800", fontSize: 12 },
+  plusTitle: {
+    color: TEXT,
+    fontWeight: "600",
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  plusLabel: {
+    color: "#596274",
+    fontWeight: "600",
+    fontSize: 12,
+    marginBottom: 5,
+  },
   plusInput: {
+    minWidth: 0,
+    minHeight: 44,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: "#dce0e9",
     backgroundColor: FIELD,
     color: TEXT,
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    fontSize: 14,
   },
-  plusRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  plusRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 12,
+  },
 
   plusSummary: {
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(0,0,0,0.18)",
-    borderRadius: 12,
-    padding: 10,
-    gap: 8,
+    borderColor: "#e2d9f2",
+    backgroundColor: "#ffffff",
+    borderRadius: 8,
+    padding: 12,
+    gap: 10,
   },
   plusSummaryRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 8,
   },
   plusSummaryLabel: {
     color: SUBTLE,
-    fontWeight: "800",
+    fontWeight: "500",
     fontSize: 12,
   },
   plusSummaryValue: {
     color: TEXT,
-    fontWeight: "900",
+    fontWeight: "600",
     fontSize: 12,
-    maxWidth: "65%",
-    textAlign: "right",
+    lineHeight: 19,
+    flexShrink: 1,
   },
 
-  dateRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  dateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   datePickBtn: {
-    backgroundColor: "rgba(124,58,237,0.18)",
+    minHeight: 44,
+    backgroundColor: "#eee8f8",
     borderWidth: 1,
-    borderColor: "rgba(124,58,237,0.35)",
+    borderColor: "#daceef",
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingVertical: 11,
+    borderRadius: 8,
+    justifyContent: "center",
+    alignItems: "center",
   },
-  datePickBtnText: { color: TEXT, fontWeight: "900", fontSize: 12 },
-
+  datePickBtnText: {
+    color: PRIMARY,
+    fontWeight: "600",
+    fontSize: 12,
+  },
   datePreview: {
     color: SUBTLE,
     fontSize: 12,
-    marginTop: -2,
+    lineHeight: 19,
   },
 
-  btn: { marginTop: 6, padding: 12, borderRadius: 12, alignItems: "center" },
-  btnText: { color: "#fff", fontWeight: "900" },
+  btn: {
+    minHeight: 44,
+    marginTop: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  btnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 13,
+  },
   btnPrimary: {
     backgroundColor: PRIMARY,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
   },
   btnGhost: {
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "#596274",
   },
 
-  subtle: { color: SUBTLE },
-  error: { color: "#fecaca" },
+  subtle: {
+    color: SUBTLE,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  error: {
+    color: "#a12637",
+    fontSize: 13,
+    lineHeight: 20,
+  },
 
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(23,29,45,0.35)",
     alignItems: "center",
     justifyContent: "center",
     padding: 16,
@@ -1126,108 +1540,120 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 420,
     backgroundColor: CARD,
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: BORDER,
-    padding: 14,
-    gap: 10,
+    padding: 16,
+    gap: 12,
   },
   modalTitle: {
     color: TEXT,
-    fontWeight: "900",
-    fontSize: 14,
+    fontWeight: "600",
+    fontSize: 15,
   },
   modalActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "flex-end",
     gap: 10,
     marginTop: 6,
   },
   modalBtn: {
-    paddingHorizontal: 14,
+    minHeight: 40,
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   modalBtnPrimary: {
     backgroundColor: PRIMARY,
-    borderColor: "rgba(255,255,255,0.14)",
+    borderColor: PRIMARY,
   },
   modalBtnGhost: {
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "#596274",
+    borderColor: "#596274",
   },
-  modalBtnText: { color: "#fff", fontWeight: "900" },
+  modalBtnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 12,
+  },
 
   webCalCard: {
     width: "100%",
     maxWidth: 420,
     backgroundColor: CARD,
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: BORDER,
-    padding: 14,
-    gap: 10,
+    padding: 16,
+    gap: 12,
   },
   webCalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 8,
   },
   webCalTitle: {
     color: TEXT,
-    fontWeight: "900",
+    fontWeight: "600",
+    fontSize: 14,
     textTransform: "capitalize",
+    flexShrink: 1,
+    textAlign: "center",
   },
   webCalNavBtn: {
     width: 36,
     height: 36,
-    borderRadius: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: BORDER,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: FIELD,
+    backgroundColor: "#f5f6fa",
   },
-  webCalNavText: { color: TEXT, fontSize: 18, fontWeight: "900" },
+  webCalNavText: {
+    color: TEXT,
+    fontSize: 18,
+    fontWeight: "600",
+  },
   webCalWeekRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: 6,
   },
   webCalWeekCell: {
-    width: 44,
+    width: "14.28%",
     textAlign: "center",
     color: SUBTLE,
-    fontWeight: "900",
+    fontWeight: "500",
+    fontSize: 12,
   },
   webCalGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
-    justifyContent: "space-between",
-    paddingHorizontal: 6,
   },
   webCalCell: {
-    width: 44,
-    height: 40,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: FIELD,
+    width: "14.28%",
+    aspectRatio: 1,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
   },
   webCalCellActive: {
-    borderColor: PRIMARY,
-    backgroundColor: "rgba(124,58,237,0.22)",
+    borderWidth: 1,
+    borderColor: "#b49bdc",
+    backgroundColor: "#eee8f8",
   },
   webCalCellText: {
     color: TEXT,
-    fontWeight: "900",
+    fontSize: 13,
+    fontWeight: "500",
   },
   webCalCellTextActive: {
-    color: "#E9D5FF",
+    color: PRIMARY,
+    fontWeight: "700",
   },
   webCalFooter: {
     flexDirection: "row",

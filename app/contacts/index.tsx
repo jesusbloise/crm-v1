@@ -1,373 +1,646 @@
 // app/contacts/index.tsx
-
+import { getAuthStorageScope } from "@/src/api/auth";
 import {
   importContacts,
   listContacts,
+  type Contact,
   type ImportContactRow,
 } from "@/src/api/contacts";
 import { api } from "@/src/api/http";
+import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, Stack } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
+import { Link, Stack, router, useFocusEffect } from "expo-router";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentProps,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
+  Modal,
   Platform,
   Pressable,
-  RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 
-import * as DocumentPicker from "expo-document-picker";
-// Expo SDK 54: legacy para evitar warning de deprecación
-import * as FileSystem from "expo-file-system/legacy";
-
-/* Tema consistente */
-const BG = "#0b0c10";
-const CARD = "#14151a";
-const BORDER = "#272a33";
-const FIELD = "#121318";
-const TEXT = "#e8ecf1";
-const SUBTLE = "#a9b0bd";
-const ACCENT = "#7c3aed";
-const ACCENT_2 = "#22d3ee";
+const C = {
+  bg: "#f5f6fa",
+  surface: "#ffffff",
+  text: "#202536",
+  muted: "#737b8e",
+  border: "#e7e9f0",
+  purple: "#7551c8",
+  purpleSoft: "#f0ebfb",
+  green: "#24856a",
+  greenSoft: "#eaf7f1",
+  orange: "#b67720",
+  orangeSoft: "#fff5e4",
+  red: "#b33e50",
+};
 
 const PAGE_SIZE = 50;
-const MAX_VISIBLE_PAGES = 4;
-
-// clave para recordar último backup (workspace)
 const EXPORT_WS_TS_KEY = "contacts:export_ws_ts:v1";
 
-function strip(s?: string | null) {
-  return (s ?? "").trim();
-}
+type ContactRow = Contact & {
+  workspace_names?: string;
+  workspaces?: Array<string | { name?: string }>;
+};
 
-function normalize(s?: string | null) {
-  return strip(s)
+type ContactView = "clientes" | "proveedores" | "todos";
+type SortField = "name" | "company" | "position" | "updated_at";
+type FilterMenu = "position" | "visibility" | null;
+type IconName = ComponentProps<typeof Ionicons>["name"];
+
+type ImportInfo = {
+  filename?: string;
+  message: string;
+  received?: number;
+  created?: number;
+  skipped?: number;
+  errors?: number;
+};
+
+const strip = (value?: string | null) => (value ?? "").trim();
+
+function normalize(value?: string | null) {
+  return strip(value)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function clientTypeLabel(t?: string | null) {
-  if (t === "productora") return "productora";
-  if (t === "agencia") return "agencia";
-  if (t === "directo") return "cliente directo";
-  if (t === "proveedor") return "proveedor";
-  return "";
+function clientTypeLabel(value?: string | null) {
+  switch (value) {
+    case "productora":
+      return "Productora";
+    case "agencia":
+      return "Agencia";
+    case "directo":
+      return "Cliente directo";
+    case "proveedor":
+      return "Proveedor";
+    default:
+      return "Sin clasificar";
+  }
 }
 
-function matchesContact(term: string, c: any) {
-  if (!term) return true;
+function visibilityLabel(value?: string | null) {
+  if (value === "private") return "Solo yo";
+  if (value === "selected") return "Seleccionados";
+  return "Workspace";
+}
 
-  const workspaces =
-    (c?.workspaces && Array.isArray(c.workspaces)
-      ? c.workspaces.map((w: any) => w?.name || w).join(" ")
-      : c?.workspace_names || "") ?? "";
+function positionKey(contact: ContactRow) {
+  return strip(contact.position) || "Sin cargo";
+}
 
-  const hay = [
-    c?.name,
-    c?.email,
-    c?.phone,
-    c?.company,
-    c?.position,
-    clientTypeLabel(c?.client_type),
-    c?.created_by_name,
-    c?.created_by_email,
-    workspaces,
-  ]
-    .filter(Boolean)
-    .join(" ");
+function matchesContact(term: string, contact: ContactRow) {
+  if (!term.trim()) return true;
 
-  const n = normalize(hay);
+  const workspaces = Array.isArray(contact.workspaces)
+    ? contact.workspaces
+        .map((item) =>
+          typeof item === "string" ? item : item.name || ""
+        )
+        .join(" ")
+    : contact.workspace_names || "";
 
-  return term
+  const haystack = normalize(
+    [
+      contact.name,
+      contact.email,
+      contact.phone,
+      contact.company,
+      contact.position,
+      clientTypeLabel(contact.client_type),
+      contact.created_by_name,
+      contact.created_by_email,
+      workspaces,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+
+  return normalize(term)
     .split(/\s+/)
     .filter(Boolean)
-    .every((t) => n.includes(normalize(t)));
+    .every((word) => haystack.includes(word));
 }
 
-function positionKey(c: any) {
-  return strip(c?.position) || "Sin cargo";
+function initials(name: string) {
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word[0] || "")
+    .join("")
+    .toUpperCase();
 }
 
-/* =========================
-   CSV helpers (sin librerías)
-   ========================= */
+function formatDate(value: unknown) {
+  if (value == null || value === "") return "—";
 
-function sanitizePhone(v?: string | null) {
-  const s = strip(v);
-  if (!s) return null;
-  return s.replace(/\s+/g, " ");
+  const number = Number(value);
+  const date = Number.isFinite(number)
+    ? new Date(number)
+    : new Date(String(value));
+
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleDateString("es-CL", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
 }
 
-function toClientType(v?: string | null): ImportContactRow["client_type"] {
-  const s = normalize(v);
-  if (!s) return null;
+async function assertScope(expected: string) {
+  const current = await getAuthStorageScope();
 
-  if (s.includes("proveedor")) return "proveedor";
-  if (s.includes("productora")) return "productora";
-  if (s.includes("agencia")) return "agencia";
-  if (s.includes("directo") || s.includes("cliente")) return "directo";
+  if (!current || current.storageKey !== expected) {
+    throw new Error(
+      "La sesión o el workspace cambió. Vuelve a abrir Contactos."
+    );
+  }
+}
+
+/* CSV */
+
+function toClientType(value?: string | null): ImportContactRow["client_type"] {
+  const text = normalize(value);
+
+  if (text.includes("proveedor")) return "proveedor";
+  if (text.includes("productora")) return "productora";
+  if (text.includes("agencia")) return "agencia";
+  if (text.includes("directo") || text.includes("cliente")) {
+    return "directo";
+  }
 
   return null;
 }
 
-function detectDelimiter(sampleLine: string) {
-  const commas = (sampleLine.match(/,/g) || []).length;
-  const semis = (sampleLine.match(/;/g) || []).length;
-  return semis > commas ? ";" : ",";
-}
-
-// Parser CSV con comillas dobles y delimitador configurable
-function parseCSV(text: string, delimiter: string): string[][] {
+function parseCSV(text: string, delimiter: string) {
   const rows: string[][] = [];
   let row: string[] = [];
-  let cur = "";
-  let inQuotes = false;
+  let current = "";
+  let quoted = false;
 
-  const s = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const source = text
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
 
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index];
 
-    if (ch === '"') {
-      if (inQuotes && s[i + 1] === '"') {
-        cur += '"';
-        i++;
+    if (character === '"') {
+      if (quoted && source[index + 1] === '"') {
+        current += '"';
+        index++;
       } else {
-        inQuotes = !inQuotes;
+        quoted = !quoted;
       }
-      continue;
-    }
-
-    if (!inQuotes && ch === delimiter) {
-      row.push(cur);
-      cur = "";
-      continue;
-    }
-
-    if (!inQuotes && ch === "\n") {
-      row.push(cur);
-      rows.push(row.map((x) => x ?? ""));
+    } else if (!quoted && character === delimiter) {
+      row.push(current.trim());
+      current = "";
+    } else if (!quoted && character === "\n") {
+      row.push(current.trim());
+      rows.push(row);
       row = [];
-      cur = "";
-      continue;
+      current = "";
+    } else {
+      current += character;
     }
-
-    cur += ch;
   }
 
-  row.push(cur);
-  rows.push(row.map((x) => x ?? ""));
+  if (quoted) {
+    throw new Error("El CSV contiene comillas sin cerrar.");
+  }
 
-  return rows
-    .map((r) => r.map((c) => (c ?? "").trim()))
-    .filter((r) => r.some((c) => strip(c).length > 0));
+  row.push(current.trim());
+  rows.push(row);
+
+  return rows.filter((cells) => cells.some((cell) => cell.length));
 }
 
-function normalizeHeader(h: string) {
-  return normalize(h)
+function normalizeHeader(value: string) {
+  return normalize(value)
     .replace(/\./g, "")
-    .replace(/\-/g, " ")
-    .replace(/\_/g, " ")
+    .replace(/[-_]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function findCol(headers: string[], candidates: string[]) {
-  const H = headers.map(normalizeHeader);
+  const normalized = headers.map(normalizeHeader);
 
-  for (const cand of candidates) {
-    const c = normalizeHeader(cand);
-    const idx = H.findIndex((h) => h === c);
-    if (idx >= 0) return idx;
+  for (const candidate of candidates) {
+    const index = normalized.indexOf(normalizeHeader(candidate));
+    if (index >= 0) return index;
   }
 
-  for (const cand of candidates) {
-    const c = normalizeHeader(cand);
-    const idx = H.findIndex((h) => h.includes(c));
-    if (idx >= 0) return idx;
+  for (const candidate of candidates) {
+    const index = normalized.findIndex((header) =>
+      header.includes(normalizeHeader(candidate))
+    );
+    if (index >= 0) return index;
   }
 
   return -1;
 }
 
-function csvToImportRows(csvText: string): ImportContactRow[] {
-  const firstLine = (csvText.split(/\r?\n/)[0] ?? "").trim();
-  const delimiter = detectDelimiter(firstLine);
+function csvToImportRows(text: string): ImportContactRow[] {
+  const source = text.replace(/^\uFEFF/, "");
+  const firstLine = source.split(/\r?\n/)[0] || "";
+  const delimiter =
+    (firstLine.match(/;/g) || []).length >
+    (firstLine.match(/,/g) || []).length
+      ? ";"
+      : ",";
 
-  const grid = parseCSV(csvText, delimiter);
-  if (grid.length === 0) return [];
+  const grid = parseCSV(source, delimiter);
+  if (!grid.length) return [];
 
-  const headers = grid[0] ?? [];
-  const body = grid.slice(1);
+  const headers = grid[0];
+  const columns = {
+    name: findCol(headers, [
+      "name", "nombre", "contacto", "razon social", "razón social",
+    ]),
+    email: findCol(headers, ["email", "correo", "mail", "e-mail"]),
+    phone: findCol(headers, [
+      "phone", "telefono", "teléfono", "celular", "movil", "móvil", "whatsapp",
+    ]),
+    company: findCol(headers, [
+      "company", "empresa", "compania", "compañia", "organizacion", "organización",
+    ]),
+    position: findCol(headers, ["position", "cargo", "rol", "puesto"]),
+    client_type: findCol(headers, [
+      "client_type", "tipo", "tipo cliente", "tipo_de_cliente", "cliente",
+    ]),
+    account_id: findCol(headers, [
+      "account_id", "cuenta", "account", "account id",
+    ]),
+  };
 
-  const idxName = findCol(headers, [
-    "name",
-    "nombre",
-    "contacto",
-    "razon social",
-    "razón social",
-  ]);
-  const idxEmail = findCol(headers, ["email", "correo", "mail", "e-mail"]);
-  const idxPhone = findCol(headers, [
-    "phone",
-    "telefono",
-    "teléfono",
-    "celular",
-    "movil",
-    "móvil",
-    "whatsapp",
-  ]);
-  const idxCompany = findCol(headers, [
-    "company",
-    "empresa",
-    "compania",
-    "compañia",
-    "organizacion",
-    "organización",
-  ]);
-  const idxPosition = findCol(headers, ["position", "cargo", "rol", "puesto"]);
-  const idxClientType = findCol(headers, [
-    "client_type",
-    "tipo",
-    "tipo cliente",
-    "tipo_de_cliente",
-    "cliente",
-  ]);
-  const idxAccountId = findCol(headers, [
-    "account_id",
-    "cuenta",
-    "account",
-    "account id",
-  ]);
+  if (columns.name < 0) {
+    throw new Error(
+      "El CSV necesita una columna de nombre: name, nombre o contacto."
+    );
+  }
 
-  const rows: ImportContactRow[] = [];
+  return grid.slice(1).flatMap((cells) => {
+    const read = (index: number) =>
+      index >= 0 ? strip(cells[index]) : "";
 
-  for (let i = 0; i < body.length; i++) {
-    const r = body[i] ?? [];
+    const name = read(columns.name);
+    if (!name) return [];
 
-    const name = idxName >= 0 ? strip(r[idxName]) : "";
-    const email = idxEmail >= 0 ? strip(r[idxEmail]) : "";
-    const phone = idxPhone >= 0 ? sanitizePhone(r[idxPhone]) : null;
-    const company = idxCompany >= 0 ? strip(r[idxCompany]) : "";
-    const position = idxPosition >= 0 ? strip(r[idxPosition]) : "";
-    const client_type =
-      idxClientType >= 0 ? toClientType(r[idxClientType]) : null;
-    const account_id = idxAccountId >= 0 ? strip(r[idxAccountId]) : "";
-
-    if (!name) continue;
-
-    rows.push({
+    return [{
       name,
-      email: email || undefined,
-      phone: phone || undefined,
-      company: company || undefined,
-      position: position || undefined,
-      client_type: client_type ?? null,
-      account_id: account_id || undefined,
-    });
-  }
-
-  return rows;
+      email: read(columns.email) || undefined,
+      phone: read(columns.phone).replace(/\s+/g, " ") || undefined,
+      company: read(columns.company) || undefined,
+      position: read(columns.position) || undefined,
+      client_type: toClientType(read(columns.client_type)),
+      account_id: read(columns.account_id) || undefined,
+    }];
+  });
 }
 
-/* =========================
-   Export CSV (backup)
-   ========================= */
-
-function csvEscape(value: any): string {
-  const v = value == null ? "" : String(value);
-  const escaped = v.replace(/"/g, '""');
-  return `"${escaped}"`;
+function csvEscape(value: unknown) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+function ActionButton({
+  label,
+  icon,
+  onPress,
+  disabled = false,
+  primary = false,
+}: {
+  label: string;
+  icon: IconName;
+  onPress: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.button,
+        primary && styles.primaryButton,
+        disabled && styles.disabled,
+        pressed && !disabled && styles.pressed,
+      ]}
+    >
+      <Ionicons
+        name={icon}
+        size={17}
+        color={primary ? "#fff" : C.muted}
+      />
+      <Text
+        style={[
+          styles.buttonText,
+          primary && styles.primaryText,
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
 }
 
-/* =========================
-   UI paginación numerada
-   ========================= */
 
-function getVisiblePages(page: number, totalPages: number) {
-  if (totalPages <= MAX_VISIBLE_PAGES) {
-    return Array.from({ length: totalPages }, (_, i) => i + 1);
-  }
+function VisibilityBadge({ value }: { value?: string | null }) {
+  const restricted = value === "private";
+  const selected = value === "selected";
 
-  let start = Math.max(1, page - Math.floor(MAX_VISIBLE_PAGES / 2));
-  let end = start + MAX_VISIBLE_PAGES - 1;
-
-  if (end > totalPages) {
-    end = totalPages;
-    start = end - MAX_VISIBLE_PAGES + 1;
-  }
-
-  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+  return (
+    <View
+      style={[
+        styles.badge,
+        restricted
+          ? styles.privateBadge
+          : selected
+            ? styles.selectedBadge
+            : styles.workspaceBadge,
+      ]}
+    >
+      <Ionicons
+        name={
+          restricted
+            ? "lock-closed-outline"
+            : selected
+              ? "people-outline"
+              : "globe-outline"
+        }
+        size={12}
+        color={
+          restricted ? C.orange : selected ? C.purple : C.green
+        }
+      />
+      <Text
+        style={[
+          styles.badgeText,
+          {
+            color: restricted
+              ? C.orange
+              : selected
+                ? C.purple
+                : C.green,
+          },
+        ]}
+      >
+        {visibilityLabel(value)}
+      </Text>
+    </View>
+  );
 }
 
 export default function ContactsList() {
-  const roleQuery = useQuery({
-    queryKey: ["tenants-role"],
-    queryFn: () => api.get("/tenants/role"),
-  });
+  const { width } = useWindowDimensions();
+  const desktop = Platform.OS === "web" && width >= 1000;
 
-  const roleData = roleQuery.data as any;
-  const role: string | undefined = roleData?.role;
-  const isAdmin = role === "admin" || role === "owner";
-
-  const q = useQuery({
-    queryKey: ["contacts"],
-    queryFn: () => listContacts(), // ✅ trae contactos del workspace actual
-  });
-
-  const onRefresh = useCallback(() => {
-    q.refetch();
-    roleQuery.refetch();
-  }, [q, roleQuery]);
-
+  const [scopeKey, setScopeKey] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [activePos, setActivePos] = useState<string>("Todos");
-  const [posMenuOpen, setPosMenuOpen] = useState(false);
-  const [contactView, setContactView] = useState<
-  "clientes" | "proveedores" | "todos"
->("clientes");
-
-  // paginación
+  const [contactView, setContactView] = useState<ContactView>("clientes");
+  const [position, setPosition] = useState<string | null>(null);
+  const [visibility, setVisibility] = useState<string | null>(null);
+  const [sortField, setSortField] = useState<SortField>("name");
+  const [sortAscending, setSortAscending] = useState(true);
   const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [menu, setMenu] = useState<FilterMenu>(null);
+  const [menuSearch, setMenuSearch] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [importInfo, setImportInfo] = useState<ImportInfo | null>(null);
 
-  const [importInfo, setImportInfo] = useState<{
-    filename?: string;
-    received?: number;
-    created?: number;
-    skipped?: number;
-    errors?: number;
-    message?: string;
-  } | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
 
-  const importMut = useMutation({
-    mutationFn: async (rows: ImportContactRow[]) => importContacts(rows),
-    onSuccess: (res: any) => {
-      setImportInfo({
-        received: res?.received ?? undefined,
-        created: res?.created ?? undefined,
-        skipped: res?.skipped ?? undefined,
-        errors: res?.errors ?? undefined,
-        message: "Importación terminada",
-      });
-      q.refetch();
-      setPage(1);
+      void getAuthStorageScope()
+        .then((scope) => {
+          if (!active) return;
+
+          setScopeKey(scope?.storageKey || null);
+          setSessionError(
+            scope ? null : "Inicia sesión para consultar tus contactos."
+          );
+        })
+        .catch(() => {
+          if (!active) return;
+          setScopeKey(null);
+          setSessionError("No se pudo comprobar la sesión.");
+        });
+
+      return () => {
+        active = false;
+      };
+    }, [])
+  );
+
+  const roleQuery = useQuery({
+    queryKey: ["tenants-role", scopeKey],
+    enabled: Boolean(scopeKey),
+    queryFn: async () => {
+      await assertScope(scopeKey!);
+      const result = await api.get<{ role?: string }>("/tenants/role");
+      await assertScope(scopeKey!);
+      return result;
     },
-    onError: (e: any) => {
+  });
+
+  const isAdmin =
+    roleQuery.data?.role === "admin" ||
+    roleQuery.data?.role === "owner";
+
+  const contactsQuery = useQuery({
+    queryKey: ["contacts", scopeKey],
+    enabled: Boolean(scopeKey),
+    queryFn: async () => {
+      await assertScope(scopeKey!);
+      const result = await listContacts();
+      await assertScope(scopeKey!);
+      return Array.isArray(result) ? result : [];
+    },
+  });
+
+  const data = (contactsQuery.data || []) as ContactRow[];
+
+  useEffect(() => {
+    setSelected(new Set());
+    setSearch("");
+    setPosition(null);
+    setVisibility(null);
+    setPage(1);
+    setNotice(null);
+    setImportInfo(null);
+  }, [scopeKey]);
+
+  useEffect(() => {
+    setPage(1);
+    setSelected(new Set());
+  }, [search, contactView, position, visibility, sortField, sortAscending]);
+
+  useEffect(() => {
+    if (!contactsQuery.data) return;
+
+    const allowedIds = new Set(contactsQuery.data.map((item) => item.id));
+
+    setSelected((previous) => {
+      const next = new Set(
+        [...previous].filter((id) => allowedIds.has(id))
+      );
+
+      return next.size === previous.size ? previous : next;
+    });
+  }, [contactsQuery.data]);
+
+  const counts = useMemo(() => {
+    const suppliers = data.filter(
+      (item) => item.client_type === "proveedor"
+    ).length;
+
+    return {
+      todos: data.length,
+      clientes: data.length - suppliers,
+      proveedores: suppliers,
+      restricted: data.filter(
+        (item) =>
+          item.visibility === "private" ||
+          item.visibility === "selected"
+      ).length,
+    };
+  }, [data]);
+
+  const positionOptions = useMemo(() => {
+    const values = new Map<string, number>();
+
+    for (const item of data) {
+      const label = positionKey(item);
+      values.set(label, (values.get(label) || 0) + 1);
+    }
+
+    return [...values.entries()]
+      .sort(([a], [b]) => a.localeCompare(b, "es"))
+      .map(([label, count]) => ({
+        value: label,
+        label,
+        count,
+      }));
+  }, [data]);
+
+  const filtered = useMemo(() => {
+    const result = data.filter((item) => {
+      if (
+        contactView === "clientes" &&
+        item.client_type === "proveedor"
+      ) return false;
+
+      if (
+        contactView === "proveedores" &&
+        item.client_type !== "proveedor"
+      ) return false;
+
+      if (position && positionKey(item) !== position) return false;
+      if (visibility && (item.visibility || "workspace") !== visibility) {
+        return false;
+      }
+
+      return matchesContact(search, item);
+    });
+
+    return result.sort((a, b) => {
+      const comparison =
+        sortField === "updated_at"
+          ? Number(a.updated_at || 0) - Number(b.updated_at || 0)
+          : String(a[sortField] || "").localeCompare(
+              String(b[sortField] || ""),
+              "es",
+              { sensitivity: "base" }
+            );
+
+      return (
+        (sortAscending ? comparison : -comparison) ||
+        a.id.localeCompare(b.id)
+      );
+    });
+  }, [data, contactView, position, visibility, search, sortField, sortAscending]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const offset = (safePage - 1) * PAGE_SIZE;
+  const pageItems = filtered.slice(offset, offset + PAGE_SIZE);
+
+  const selectedContacts = filtered.filter((item) =>
+    selected.has(item.id)
+  );
+
+  const allPageSelected =
+    pageItems.length > 0 &&
+    pageItems.every((item) => selected.has(item.id));
+
+  const refresh = () => {
+    void contactsQuery.refetch();
+    void roleQuery.refetch();
+  };
+
+  const importMutation = useMutation({
+    mutationFn: async ({
+      rows,
+      scope,
+    }: {
+      rows: ImportContactRow[];
+      scope: string;
+      filename: string;
+    }) => {
+      await assertScope(scope);
+      const result = await importContacts(rows);
+      await assertScope(scope);
+      return result;
+    },
+    onSuccess: (result, variables) => {
       setImportInfo({
-        message: String(e?.message || e || "Error importando"),
+        filename: variables.filename,
+        message: "Importación terminada.",
+        received: result.received,
+        created: result.created,
+        skipped: result.skipped,
+        errors: result.errors,
+      });
+      setPage(1);
+      void contactsQuery.refetch();
+    },
+    onError: (error) => {
+      setImportInfo({
+        message:
+          error instanceof Error
+            ? error.message
+            : "No se pudo completar la importación.",
       });
     },
   });
 
-  const onPickCSV = useCallback(async () => {
+  const pickCSV = async () => {
+    if (!isAdmin || !scopeKey || importMutation.isPending) return;
+
+    setNotice(null);
     setImportInfo(null);
 
     try {
@@ -377,891 +650,1117 @@ export default function ContactsList() {
         multiple: false,
       });
 
-      if ((result as any)?.canceled) return;
+      if (result.canceled) return;
 
-      const asset = (result as any)?.assets?.[0];
-      const uri: string | undefined = asset?.uri;
-      const name: string | undefined = asset?.name;
+      const asset = result.assets[0];
+      let text: string;
 
-      const file: File | undefined = asset?.file;
-
-      let csvTextRaw = "";
-
-      if (file && typeof file.text === "function") {
-        csvTextRaw = await file.text();
-      } else {
-        if (!uri) {
-          setImportInfo({ message: "No se pudo leer el archivo (sin uri)" });
-          return;
+      if (Platform.OS === "web") {
+        if (asset.file && typeof asset.file.text === "function") {
+          text = await asset.file.text();
+        } else {
+          const response = await fetch(asset.uri);
+          if (!response.ok) throw new Error("No se pudo leer el CSV.");
+          text = await response.text();
         }
-        csvTextRaw = await FileSystem.readAsStringAsync(uri, {
-          encoding: "utf8",
+      } else {
+        text = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.UTF8,
         });
       }
 
-      const csvText = csvTextRaw.replace(/^\uFEFF/, "");
-      const rows = csvToImportRows(csvText);
+      const rows = csvToImportRows(text);
 
       if (!rows.length) {
-        setImportInfo({
-          filename: name,
-          message:
-            "No encontré filas válidas. Revisa que exista una columna de nombre (name/nombre).",
-        });
-        return;
+        throw new Error("El archivo no contiene contactos con nombre.");
       }
 
+      await assertScope(scopeKey);
+
       setImportInfo({
-        filename: name,
-        message: `Archivo listo: ${rows.length} filas detectadas. Importando...`,
+        filename: asset.name,
+        message: `Importando ${rows.length} contactos…`,
         received: rows.length,
       });
 
-      importMut.mutate(rows);
-    } catch (e: any) {
+      importMutation.mutate({
+        rows,
+        scope: scopeKey,
+        filename: asset.name,
+      });
+    } catch (error) {
       setImportInfo({
-        message: String(e?.message || e || "Error seleccionando archivo"),
+        message:
+          error instanceof Error
+            ? error.message
+            : "No se pudo leer el archivo.",
       });
     }
-  }, [importMut]);
-
-  // ✅ blindaje: q.data a veces puede ser objeto, no array
-  const data = useMemo(() => {
-    const d: any = q.data;
-
-    if (Array.isArray(d)) return d;
-
-    // por si tu api wrapper devolvió algo tipo { rows: [...] }
-    if (d && Array.isArray(d.rows)) return d.rows;
-
-    return [];
-  }, [q.data]);
-  const contactViewCounts = useMemo(() => {
-  const total = data.length;
-  const proveedores = data.filter(
-    (c: any) => c?.client_type === "proveedor"
-  ).length;
-  const clientes = total - proveedores;
-
-  return {
-    clientes,
-    proveedores,
-    todos: total,
   };
-}, [data]);
 
-  // Backup SOLO del workspace actual (solo admin/owner)
-  const handleBackupPress = useCallback(async () => {
+  const exportCSV = async (items: ContactRow[]) => {
+    if (!isAdmin || !scopeKey || contactsQuery.isError) return;
+
     try {
-      if (!isAdmin) {
-        Alert.alert(
-          "Sin permisos",
-          "Solo los administradores pueden generar backups."
-        );
+      await assertScope(scopeKey);
+
+      if (!items.length) {
+        setNotice("No hay contactos para exportar.");
         return;
       }
 
-      if (!data || data.length === 0) {
-        Alert.alert("Sin datos", "No hay contactos para exportar.");
+      if (Platform.OS !== "web") {
+        Alert.alert(
+          "Exportación",
+          "Descarga el CSV desde la versión web del CRM."
+        );
         return;
       }
 
       const headers = [
-        "id",
-        "name",
-        "email",
-        "phone",
-        "company",
-        "position",
-        "client_type",
-        "created_at",
-        "updated_at",
-        "created_by_name",
-        "created_by_email",
+        "id", "name", "email", "phone", "company", "position",
+        "client_type", "created_at", "updated_at",
+        "created_by_name", "created_by_email", "visibility",
+      ] as const;
+
+      const csv = [
+        headers.map(csvEscape).join(","),
+        ...items.map((item) =>
+          headers
+            .map((field) =>
+              csvEscape(
+                field === "visibility"
+                  ? item.visibility || "workspace"
+                  : item[field]
+              )
+            )
+            .join(",")
+        ),
+      ].join("\r\n");
+
+      const blob = new Blob(["\uFEFF", csv], {
+        type: "text/csv;charset=utf-8;",
+      });
+
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+
+      anchor.href = url;
+      anchor.download =
+        `contacts-workspace-${new Date().toISOString().slice(0, 10)}.csv`;
+
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      const maxTimestamp = items.reduce(
+        (max, item) =>
+          Math.max(max, Number(item.updated_at || item.created_at) || 0),
+        0
+      );
+
+      // La referencia de exportación se separa por sesión/workspace.
+      await AsyncStorage.setItem(
+        `${EXPORT_WS_TS_KEY}:${scopeKey}`,
+        String(maxTimestamp || Date.now())
+      );
+
+      setNotice(`Se exportaron ${items.length} contactos visibles.`);
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "No se pudo completar la exportación."
+      );
+    }
+  };
+
+  const toggleSelection = (id: string) => {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const togglePage = () => {
+    setSelected((previous) => {
+      const next = new Set(previous);
+
+      for (const item of pageItems) {
+        if (allPageSelected) next.delete(item.id);
+        else next.add(item.id);
+      }
+
+      return next;
+    });
+  };
+
+  const changeSort = (field: SortField) => {
+    if (field === sortField) setSortAscending((value) => !value);
+    else {
+      setSortField(field);
+      setSortAscending(field !== "updated_at");
+    }
+  };
+
+  const openMenu = (value: FilterMenu) => {
+    setMenuSearch("");
+    setMenu(value);
+  };
+
+  const menuOptions = menu === "position"
+    ? positionOptions
+    : [
+        { value: "workspace", label: "Todo el workspace" },
+        { value: "private", label: "Solo yo" },
+        { value: "selected", label: "Usuarios seleccionados" },
       ];
 
-      const rows: string[] = [];
-      rows.push(headers.map(csvEscape).join(","));
-
-      for (const c of data as any[]) {
-        rows.push(
-          [
-            c.id,
-            c.name,
-            c.email,
-            c.phone,
-            c.company,
-            c.position,
-            (c as any).client_type,
-            c.created_at,
-            c.updated_at,
-            c.created_by_name,
-            c.created_by_email,
-          ]
-            .map(csvEscape)
-            .join(",")
-        );
-      }
-
-      const csv = rows.join("\r\n");
-
-      if (Platform.OS === "web") {
-        const g: any = globalThis as any;
-        const blob = new g.Blob([csv], { type: "text/csv;charset=utf-8;" });
-        const blobUrl = g.URL.createObjectURL(blob);
-
-        const a = g.document.createElement("a");
-        a.href = blobUrl;
-        a.download = `contacts-workspace-backup-${new Date()
-          .toISOString()
-          .slice(0, 10)}.csv`;
-        g.document.body.appendChild(a);
-        a.click();
-        a.remove();
-        g.URL.revokeObjectURL(blobUrl);
-      } else {
-        Alert.alert(
-          "Backup disponible en web",
-          "Por ahora el archivo de backup se puede descargar desde la versión web."
-        );
-      }
-
-      const maxTs = (data as any[]).reduce((max: number, c: any) => {
-        const raw = c.updated_at || c.created_at || "";
-        const t = Date.parse(String(raw));
-        if (!Number.isFinite(t)) return max;
-        return t > max ? t : max;
-      }, 0);
-
-      await AsyncStorage.setItem(
-        EXPORT_WS_TS_KEY,
-        String(maxTs || Date.now())
-      );
-
-      Alert.alert(
-        "Backup generado",
-        "Se ha generado el archivo de contactos del workspace actual."
-      );
-    } catch (e: any) {
-      console.error("Error generando backup:", e);
-      Alert.alert(
-        "Error",
-        String(e?.message ?? "No se pudo generar el backup de contactos.")
-      );
-    }
-  }, [isAdmin, data]);
-
-  const positionOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const c of data) {
-      const key = positionKey(c);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    const entries = Array.from(counts.entries()).sort(([a], [b]) =>
-      a.localeCompare(b, "es", { sensitivity: "base" })
-    );
-    return [
-      { label: "Todos", count: data.length },
-      ...entries.map(([label, count]) => ({ label, count })),
-    ];
-  }, [data]);
-
-const filtered = useMemo(() => {
-  const byContactView = data.filter((c: any) => {
-    if (contactView === "todos") return true;
-    if (contactView === "proveedores") {
-      return c?.client_type === "proveedor";
-    }
-
-    // Clientes: todos menos proveedores.
-    // Esto mantiene visibles los contactos antiguos con client_type null.
-    return c?.client_type !== "proveedor";
-  });
-
-  const byPos =
-    activePos === "Todos"
-      ? byContactView
-      : byContactView.filter((c: any) => positionKey(c) === activePos);
-
-  const bySearch = search
-    ? byPos.filter((c: any) => matchesContact(search, c))
-    : byPos;
-
-  return [...bySearch].sort((a: any, b: any) =>
-    (a?.name ?? "").localeCompare(b?.name ?? "", "es", {
-      sensitivity: "base",
-    })
+  const menuOptionsFiltered = menuOptions.filter((option) =>
+    normalize(option.label).includes(normalize(menuSearch))
   );
-}, [data, contactView, activePos, search]);
 
-  // ✅ cuando cambie el filtro/búsqueda -> volver a página 1 (sin setState en render)
-const key = useMemo(
-  () => `${contactView}__${activePos}__${normalize(search)}`,
-  [contactView, activePos, search]
-);
+  const currentMenuValue = menu === "position" ? position : visibility;
+  const loading = !scopeKey && !sessionError || contactsQuery.isLoading;
+  const errorMessage =
+    sessionError ||
+    (contactsQuery.isError
+      ? contactsQuery.error instanceof Error
+        ? contactsQuery.error.message
+        : "No se pudieron cargar los contactos."
+      : null);
 
-  useEffect(() => {
-    setPage(1);
-  }, [key]);
+  const checkBox = (checked: boolean, onPress: () => void, label: string) => (
+    <Pressable
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      accessibilityLabel={label}
+      onPress={onPress}
+      hitSlop={8}
+      style={[styles.checkbox, checked && styles.checkboxActive]}
+    >
+      {checked && <Ionicons name="checkmark" size={14} color="#fff" />}
+    </Pressable>
+  );
 
-  const total = filtered.length;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  const safePage = Math.min(Math.max(1, page), totalPages);
-  const start = (safePage - 1) * PAGE_SIZE;
-  const end = start + PAGE_SIZE;
-  const pageItems = filtered.slice(start, end);
-
-  const visiblePages = getVisiblePages(safePage, totalPages);
-
-  const errorMsg = (q.error as any)?.message || "";
-
-  const activePosOption = positionOptions.find((t) => t.label === activePos);
-  const activePosLabel = activePosOption
-    ? `${activePosOption.label} (${activePosOption.count})`
-    : "Todos";
+  const sortableHeader = (
+    label: string,
+    field: SortField,
+    columnStyle: object
+  ) => (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Ordenar por ${label}`}
+      onPress={() => changeSort(field)}
+      style={[
+        styles.cell,
+        columnStyle,
+        styles.sortHeading,
+      ]}
+    >
+      <Text style={styles.columnHeading}>{label}</Text>
+      <Ionicons
+        name={
+          sortField !== field
+            ? "swap-vertical-outline"
+            : sortAscending
+              ? "arrow-up-outline"
+              : "arrow-down-outline"
+        }
+        size={13}
+        color={sortField === field ? C.purple : C.muted}
+      />
+    </Pressable>
+  );
 
   return (
     <>
-      <Stack.Screen
-        options={{
-          title: "Contactos",
-          headerStyle: { backgroundColor: BG },
-          headerTintColor: TEXT,
-          headerTitleStyle: { color: TEXT, fontWeight: "800" },
-        }}
-      />
-      <View style={styles.screen}>
-        <View style={styles.headerRow}>
-          <Link href="/contacts/new" asChild>
-            <Pressable
-              style={({ pressed }) => [
-                styles.newBtn,
-                pressed && { opacity: 0.92 },
-              ]}
-            >
-              <Text style={styles.newBtnText}>+ Nuevo Contacto</Text>
-            </Pressable>
-          </Link>
+      <Stack.Screen options={{ title: "Contactos" }} />
 
-          {isAdmin && (
-            <View style={{ gap: 8 }}>
-              <Link href="/contacts/all" asChild>
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.secondaryBtn,
-                    pressed && { opacity: 0.92 },
-                  ]}
-                >
-                  <Text style={styles.secondaryBtnText}>Ver todos</Text>
-                </Pressable>
-              </Link>
-
-              <Pressable
-                onPress={handleBackupPress}
-                style={({ pressed }) => [
-                  styles.exportBtn,
-                  pressed && { opacity: 0.92 },
-                ]}
-              >
-                <Text style={styles.exportBtnText}>Backup</Text>
-              </Pressable>
-
-              <Pressable
-                onPress={onPickCSV}
-                disabled={importMut.isPending}
-                style={({ pressed }) => [
-                  styles.secondaryBtn,
-                  pressed && { opacity: 0.92 },
-                  importMut.isPending && { opacity: 0.6 },
-                ]}
-              >
-                <Text style={styles.secondaryBtnText}>
-                  {importMut.isPending ? "Importando..." : "Importar CSV"}
-                </Text>
-              </Pressable>
-            </View>
-          )}
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={[
+          styles.content,
+          !desktop && styles.mobileContent,
+        ]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.breadcrumb}>
+          <Text style={styles.breadcrumbText}>CRM</Text>
+          <Ionicons name="chevron-forward" size={12} color={C.muted} />
+          <Text style={styles.breadcrumbCurrent}>Contactos</Text>
         </View>
 
-        {isAdmin && importInfo?.message && (
-          <View style={styles.importInfoBox}>
-            <Text style={styles.importInfoTitle}>
-              {importInfo.filename
-                ? `Importación: ${importInfo.filename}`
-                : "Importación"}
+        <View style={[styles.pageHeader, !desktop && styles.headerMobile]}>
+          <View style={styles.headingBlock}>
+            <View style={styles.headingLine}>
+              <Text style={styles.title}>Contactos</Text>
+              <View style={styles.countPill}>
+                <Text style={styles.countPillText}>{counts.todos}</Text>
+              </View>
+            </View>
+            <Text style={styles.subtitle}>
+              Personas y empresas con las que construyes relaciones.
             </Text>
-
-            <Text style={styles.importInfoText}>{importInfo.message}</Text>
-
-            {(importInfo.received != null ||
-              importInfo.created != null ||
-              importInfo.skipped != null ||
-              importInfo.errors != null) && (
-              <Text style={styles.importInfoMeta}>
-                {`recibidos: ${importInfo.received ?? 0} · creados: ${
-                  importInfo.created ?? 0
-                } · saltados: ${importInfo.skipped ?? 0} · errores: ${
-                  importInfo.errors ?? 0
-                }`}
-              </Text>
-            )}
           </View>
-        )}
 
-<View style={styles.tabsRow}>
-  <Pressable
-    onPress={() => setContactView("clientes")}
-    style={[
-      styles.tabBtn,
-      contactView === "clientes" && styles.tabBtnActive,
-    ]}
-  >
-    <Text
-      style={[
-        styles.tabText,
-        contactView === "clientes" && styles.tabTextActive,
-      ]}
-    >
-      Clientes ({contactViewCounts.clientes})
-    </Text>
-  </Pressable>
+          <View style={styles.actions}>
+            {isAdmin && (
+              <>
+                <ActionButton
+                  label="Exportar CSV"
+                  icon="download-outline"
+                  disabled={!data.length || Boolean(errorMessage)}
+                  onPress={() => void exportCSV(data)}
+                />
+                <ActionButton
+                  label={importMutation.isPending ? "Importando…" : "Importar"}
+                  icon="cloud-upload-outline"
+                  disabled={importMutation.isPending}
+                  onPress={() => void pickCSV()}
+                />
+              </>
+            )}
 
-  <Pressable
-    onPress={() => setContactView("proveedores")}
-    style={[
-      styles.tabBtn,
-      contactView === "proveedores" && styles.tabBtnActive,
-    ]}
-  >
-    <Text
-      style={[
-        styles.tabText,
-        contactView === "proveedores" && styles.tabTextActive,
-      ]}
-    >
-      Proveedores ({contactViewCounts.proveedores})
-    </Text>
-  </Pressable>
+                        <Pressable
+              accessibilityRole="button"
+              onPress={() => router.push("/contacts/new")}
+              style={({ pressed }) => [
+                styles.button,
+                styles.primaryButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Ionicons name="add" size={19} color="#fff" />
+              <Text style={styles.primaryText}>
+                Nuevo contacto
+              </Text>
+            </Pressable>
+          </View>
+        </View>
 
-  <Pressable
-    onPress={() => setContactView("todos")}
-    style={[
-      styles.tabBtn,
-      contactView === "todos" && styles.tabBtnActive,
-    ]}
-  >
-    <Text
-      style={[
-        styles.tabText,
-        contactView === "todos" && styles.tabTextActive,
-      ]}
-    >
-      Todos ({contactViewCounts.todos})
-    </Text>
-  </Pressable>
-</View>
-        <View style={styles.searchWrap}>
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Buscar por nombre, empresa, cargo, email, teléfono, tipo de contacto, creador o workspace"
-            placeholderTextColor={SUBTLE}
-            style={styles.searchInput}
-            returnKeyType="search"
-            onSubmitEditing={() => setSearch((s) => s.trim())}
-          />
-          {search.length > 0 && (
+        <View style={styles.metrics}>
+          {[
+            {
+              label: "Contactos visibles",
+              value: counts.todos,
+              icon: "people-outline" as IconName,
+            },
+            {
+              label: "Clientes",
+              value: counts.clientes,
+              icon: "briefcase-outline" as IconName,
+            },
+            {
+              label: "Proveedores",
+              value: counts.proveedores,
+              icon: "cube-outline" as IconName,
+            },
+            {
+              label: "Acceso restringido",
+              value: counts.restricted,
+              icon: "shield-checkmark-outline" as IconName,
+            },
+          ].map((metric) => (
+            <View
+              key={metric.label}
+              style={[styles.metric, !desktop && styles.metricMobile]}
+            >
+              <View style={styles.metricIcon}>
+                <Ionicons name={metric.icon} size={20} color={C.purple} />
+              </View>
+              <View>
+                <Text style={styles.metricValue}>
+                  {loading ? "—" : metric.value}
+                </Text>
+                <Text style={styles.metricLabel}>{metric.label}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+
+        {notice && (
+          <View style={styles.notice}>
+            <Ionicons name="information-circle-outline" size={18} color={C.purple} />
+            <Text style={styles.noticeText}>{notice}</Text>
             <Pressable
-              onPress={() => setSearch("")}
-              style={styles.clearBtn}
+              onPress={() => setNotice(null)}
+              accessibilityLabel="Cerrar mensaje"
               hitSlop={8}
             >
-              <Text style={styles.clearText}>×</Text>
+              <Ionicons name="close" size={18} color={C.muted} />
             </Pressable>
+          </View>
+        )}
+
+        {isAdmin && importInfo && (
+          <View style={styles.importNotice}>
+            <Text style={styles.sectionTitle}>
+              {importInfo.filename || "Importación CSV"}
+            </Text>
+            <Text style={styles.subtitle}>{importInfo.message}</Text>
+            {importInfo.created != null && (
+              <Text style={styles.subtitle}>
+                {importInfo.created} creados · {importInfo.skipped || 0} omitidos
+                {" · "}{importInfo.errors || 0} errores
+              </Text>
+            )}
+          </View>
+        )}
+
+        <View style={styles.panel}>
+          <View style={styles.panelTop}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.tabs}
+            >
+              {([
+                ["clientes", "Clientes"],
+                ["proveedores", "Proveedores"],
+                ["todos", "Todos"],
+              ] as const).map(([value, label]) => (
+                <Pressable
+                  key={value}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: contactView === value }}
+                  onPress={() => setContactView(value)}
+                  style={[
+                    styles.tab,
+                    contactView === value && styles.tabActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.tabText,
+                      contactView === value && styles.tabTextActive,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                  <Text style={styles.tabCount}>{counts[value]}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+
+            {isAdmin && desktop && (
+              <Link href="/contacts/all" asChild>
+                <Pressable style={styles.textLink}>
+                  <Text style={styles.textLinkText}>Listado ampliado</Text>
+                  <Ionicons name="arrow-forward" size={14} color={C.purple} />
+                </Pressable>
+              </Link>
+            )}
+          </View>
+
+          <View style={styles.toolbar}>
+            <View style={[styles.searchBox, !desktop && styles.searchMobile]}>
+              <Ionicons name="search-outline" size={19} color={C.muted} />
+              <TextInput
+                accessibilityLabel="Buscar contactos"
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Buscar nombre, empresa, correo…"
+                placeholderTextColor={C.muted}
+                style={styles.searchInput}
+                autoCapitalize="none"
+                returnKeyType="search"
+              />
+              {!!search && (
+                <Pressable
+                  onPress={() => setSearch("")}
+                  accessibilityLabel="Limpiar búsqueda"
+                  hitSlop={8}
+                >
+                  <Ionicons name="close-circle" size={17} color={C.muted} />
+                </Pressable>
+              )}
+            </View>
+
+            <ActionButton
+              label={position || "Cargo"}
+              icon="filter-outline"
+              onPress={() => openMenu("position")}
+            />
+            <ActionButton
+              label={visibility ? visibilityLabel(visibility) : "Visibilidad"}
+              icon="eye-outline"
+              onPress={() => openMenu("visibility")}
+            />
+            <ActionButton
+              label={contactsQuery.isFetching ? "Actualizando…" : "Actualizar"}
+              icon="refresh-outline"
+              disabled={contactsQuery.isFetching || !scopeKey}
+              onPress={refresh}
+            />
+
+            {Boolean(position || visibility || search) && (
+              <Pressable
+                onPress={() => {
+                  setPosition(null);
+                  setVisibility(null);
+                  setSearch("");
+                }}
+                style={styles.textLink}
+              >
+                <Text style={styles.textLinkText}>Limpiar filtros</Text>
+              </Pressable>
+            )}
+          </View>
+
+          {isAdmin && selectedContacts.length > 0 && (
+            <View style={styles.selectionBar}>
+              <Text style={styles.selectionText}>
+                {selectedContacts.length} seleccionados
+              </Text>
+              <Pressable
+                onPress={() => void exportCSV(selectedContacts)}
+                style={styles.textLink}
+              >
+                <Text style={styles.textLinkText}>Exportar seleccionados</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setSelected(new Set())}
+                style={styles.textLink}
+              >
+                <Text style={styles.textLinkText}>Cancelar selección</Text>
+              </Pressable>
+            </View>
+          )}
+
+          {loading ? (
+            <View style={styles.emptyState}>
+              <ActivityIndicator color={C.purple} />
+              <Text style={styles.subtitle}>Cargando contactos…</Text>
+            </View>
+          ) : errorMessage ? (
+            <View style={styles.emptyState}>
+              <Ionicons name="alert-circle-outline" size={32} color={C.red} />
+              <Text style={styles.sectionTitle}>No pudimos cargar el listado</Text>
+              <Text style={styles.emptyDescription}>{errorMessage}</Text>
+              <ActionButton
+                label="Reintentar"
+                icon="refresh-outline"
+                onPress={refresh}
+              />
+            </View>
+          ) : !filtered.length ? (
+            <View style={styles.emptyState}>
+              <View style={styles.emptyIcon}>
+                <Ionicons name="people-outline" size={32} color={C.purple} />
+              </View>
+              <Text style={styles.sectionTitle}>
+                {data.length ? "No encontramos coincidencias" : "Tus contactos empiezan aquí"}
+              </Text>
+              <Text style={styles.emptyDescription}>
+                {data.length
+                  ? "Prueba otra búsqueda o ajusta los filtros."
+                  : "Crea tu primer contacto para organizar su información y seguimiento."}
+              </Text>
+            </View>
+          ) : desktop ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator>
+              <View style={styles.table}>
+                <View style={styles.tableHeading}>
+                  {isAdmin && (
+                    <View style={styles.checkCell}>
+                      {checkBox(
+                        allPageSelected,
+                        togglePage,
+                        "Seleccionar contactos de esta página"
+                      )}
+                    </View>
+                  )}
+                  {sortableHeader("CONTACTO", "name", styles.nameColumn)}
+                  {sortableHeader("EMPRESA", "company", styles.companyColumn)}
+                  {sortableHeader("CARGO", "position", styles.positionColumn)}
+                  <View style={[styles.cell, styles.phoneColumn]}>
+                    <Text style={styles.columnHeading}>TELÉFONO</Text>
+                  </View>
+                  <View style={[styles.cell, styles.visibilityColumn]}>
+                    <Text style={styles.columnHeading}>VISIBILIDAD</Text>
+                  </View>
+                  {sortableHeader("ACTUALIZADO", "updated_at", styles.dateColumn)}
+                  <View style={styles.arrowColumn} />
+                </View>
+
+                {pageItems.map((item) => (
+                  <View
+                    key={item.id}
+                    style={[
+                      styles.tableRow,
+                      selected.has(item.id) && styles.selectedRow,
+                    ]}
+                  >
+                    {isAdmin && (
+                      <View style={styles.checkCell}>
+                        {checkBox(
+                          selected.has(item.id),
+                          () => toggleSelection(item.id),
+                          `Seleccionar ${item.name}`
+                        )}
+                      </View>
+                    )}
+
+                                       <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Abrir contacto ${item.name}`}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/contacts/[id]",
+                          params: { id: item.id },
+                        })
+                      }
+                      style={({ pressed, hovered }) => [
+                        styles.rowLink,
+                        (pressed || hovered) && styles.rowHover,
+                      ]}
+                    >
+                        <View style={[styles.cell, styles.nameColumn, styles.personCell]}>
+                          <View style={styles.avatar}>
+                            <Text style={styles.avatarText}>{initials(item.name)}</Text>
+                          </View>
+                          <View style={styles.personText}>
+                            <Text style={styles.contactName} numberOfLines={1}>
+                              {item.name}
+                            </Text>
+                            <Text style={styles.contactEmail} numberOfLines={1}>
+                              {item.email || "Sin correo"}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={[styles.cell, styles.companyColumn]}>
+                          <Text style={styles.cellText} numberOfLines={1}>
+                            {item.company || "—"}
+                          </Text>
+                          <Text style={styles.smallText} numberOfLines={1}>
+                            {clientTypeLabel(item.client_type)}
+                          </Text>
+                        </View>
+
+                        <View style={[styles.cell, styles.positionColumn]}>
+                          <Text style={styles.cellText} numberOfLines={2}>
+                            {item.position || "—"}
+                          </Text>
+                        </View>
+
+                        <View style={[styles.cell, styles.phoneColumn]}>
+                          <Text style={styles.cellText} numberOfLines={1}>
+                            {item.phone || "—"}
+                          </Text>
+                        </View>
+
+                        <View style={[styles.cell, styles.visibilityColumn]}>
+                          <VisibilityBadge value={item.visibility} />
+                        </View>
+
+                        <View style={[styles.cell, styles.dateColumn]}>
+                          <Text style={styles.smallText}>
+                            {formatDate(item.updated_at)}
+                          </Text>
+                        </View>
+
+                        <View style={styles.arrowColumn}>
+                          <Ionicons name="chevron-forward" size={16} color="#a5aabb" />
+                        </View>
+                                       </Pressable>
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+          ) : (
+            <View style={styles.cards}>
+              {pageItems.map((item) => (
+                <View key={item.id} style={styles.mobileCard}>
+                  <View style={styles.mobileCardTop}>
+                    <View style={styles.avatar}>
+                      <Text style={styles.avatarText}>{initials(item.name)}</Text>
+                    </View>
+                    <View style={styles.personText}>
+                      <Link
+                        href={{
+                          pathname: "/contacts/[id]",
+                          params: { id: item.id },
+                        }}
+                        asChild
+                      >
+                        <Pressable>
+                          <Text style={styles.contactName}>{item.name}</Text>
+                          <Text style={styles.smallText}>
+                            {[item.company, item.position].filter(Boolean).join(" · ") ||
+                              clientTypeLabel(item.client_type)}
+                          </Text>
+                        </Pressable>
+                      </Link>
+                    </View>
+                    {isAdmin && checkBox(
+                      selected.has(item.id),
+                      () => toggleSelection(item.id),
+                      `Seleccionar ${item.name}`
+                    )}
+                  </View>
+
+                  {!!item.email && (
+                    <Text style={styles.mobileContactLine}>{item.email}</Text>
+                  )}
+                  {!!item.phone && (
+                    <Text style={styles.mobileContactLine}>{item.phone}</Text>
+                  )}
+
+                  <View style={styles.mobileCardBottom}>
+                    <VisibilityBadge value={item.visibility} />
+                    <Link
+                      href={{
+                        pathname: "/contacts/[id]",
+                        params: { id: item.id },
+                      }}
+                      asChild
+                    >
+                      <Pressable style={styles.textLink}>
+                        <Text style={styles.textLinkText}>Ver contacto</Text>
+                        <Ionicons name="arrow-forward" size={14} color={C.purple} />
+                      </Pressable>
+                    </Link>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {!loading && !errorMessage && (
+            <View style={styles.pagination}>
+              <View>
+                <Text style={styles.paginationText}>
+                  {filtered.length
+                    ? `${offset + 1}–${Math.min(offset + PAGE_SIZE, filtered.length)} de ${filtered.length} contactos`
+                    : "0 contactos"}
+                </Text>
+                <Text style={styles.smallText}>
+                  Solo información a la que tienes acceso.
+                </Text>
+              </View>
+
+              <View style={styles.paginationButtons}>
+                <Pressable
+                  accessibilityLabel="Página anterior"
+                  disabled={safePage <= 1}
+                  onPress={() => setPage(safePage - 1)}
+                  style={[styles.pageButton, safePage <= 1 && styles.disabled]}
+                >
+                  <Ionicons name="chevron-back" size={17} color={C.text} />
+                </Pressable>
+
+                <Text style={styles.paginationText}>
+                  {safePage} / {totalPages}
+                </Text>
+
+                <Pressable
+                  accessibilityLabel="Página siguiente"
+                  disabled={safePage >= totalPages}
+                  onPress={() => setPage(safePage + 1)}
+                  style={[
+                    styles.pageButton,
+                    safePage >= totalPages && styles.disabled,
+                  ]}
+                >
+                  <Ionicons name="chevron-forward" size={17} color={C.text} />
+                </Pressable>
+              </View>
+            </View>
           )}
         </View>
 
-        <View style={styles.filterRow}>
-          <View style={styles.posDropdownWrapper}>
-            <Pressable
-              style={styles.posDropdownTrigger}
-              onPress={() => setPosMenuOpen((v) => !v)}
-            >
-              <Text style={styles.posDropdownText} numberOfLines={1}>
-                {activePosLabel}
-              </Text>
-              <Text style={styles.posDropdownArrow}>
-                {posMenuOpen ? "▲" : "▼"}
-              </Text>
-            </Pressable>
+        {isAdmin && (
+          <Text style={styles.footnote}>
+            Las importaciones CSV crean contactos compartidos con el workspace.
+            La exportación incluye únicamente contactos visibles para ti.
+          </Text>
+        )}
+      </ScrollView>
 
-            {posMenuOpen && (
-              <View style={styles.posDropdownMenu}>
-                {positionOptions.map((opt) => {
-                  const active = opt.label === activePos;
-                  return (
-                    <Pressable
-                      key={opt.label}
-                      style={[styles.posOption, active && styles.posOptionActive]}
-                      onPress={() => {
-                        setActivePos(opt.label);
-                        setPosMenuOpen(false);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.posOptionText,
-                          active && styles.posOptionTextActive,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {opt.label} ({opt.count})
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            )}
-          </View>
+      <Modal
+        visible={menu !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenu(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            accessibilityLabel="Cerrar filtros"
+            onPress={() => setMenu(null)}
+          />
 
-          <View style={{ flex: 1 }} />
-        </View>
-
-        {q.isLoading ? (
-          <View style={styles.loaderWrap}>
-            <ActivityIndicator />
-            <Text style={styles.loaderText}>Cargando contactos…</Text>
-          </View>
-        ) : q.isError ? (
-          <View style={styles.errorWrap}>
-            <Text style={styles.errorTitle}>
-              No se pudieron cargar los contactos
-            </Text>
-            {!!errorMsg && <Text style={styles.errorSub}>{errorMsg}</Text>}
-            <Pressable
-              onPress={onRefresh}
-              style={({ pressed }) => [
-                styles.retryBtn,
-                pressed && { opacity: 0.92 },
-              ]}
-            >
-              <Text style={styles.retryText}>Reintentar</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <>
-            <View style={styles.pagerSummary}>
-              <Text style={styles.pagerSummaryText}>
-                {total === 0
-                  ? "0 resultados"
-                  : `Mostrando ${start + 1}-${Math.min(end, total)} de ${total}`}
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.sectionTitle}>
+                {menu === "position" ? "Filtrar por cargo" : "Filtrar por visibilidad"}
               </Text>
+              <Pressable
+                onPress={() => setMenu(null)}
+                accessibilityLabel="Cerrar"
+                hitSlop={8}
+              >
+                <Ionicons name="close" size={22} color={C.muted} />
+              </Pressable>
             </View>
 
-            <FlatList
-              contentContainerStyle={[
-                styles.listContainer,
-                pageItems.length === 0 && { flex: 1 },
-              ]}
-              data={pageItems}
-              keyExtractor={(item: any) => item.id}
-              refreshControl={
-                <RefreshControl
-                  refreshing={q.isFetching || roleQuery.isFetching}
-                  onRefresh={onRefresh}
-                />
-              }
-              ListEmptyComponent={
-                <View style={{ alignItems: "center", marginTop: 8 }}>
-                  {data.length === 0 ? (
-                    <Text style={styles.subtle}>Sin contactos aún</Text>
-                  ) : (
-                    <Text style={styles.subtle}>
-                      No hay resultados para “{search.trim()}”
-                    </Text>
-                  )}
-                </View>
-              }
-              renderItem={({ item }: any) => (
-                <Link
-                  href={{
-                    pathname: "/contacts/[id]",
-                    params: { id: item.id },
-                  }}
-                  asChild
-                >
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.row,
-                      pressed && { opacity: 0.96 },
-                    ]}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <View style={styles.nameRow}>
-                        <Text style={styles.name} numberOfLines={1}>
-                          {item.name}
-                        </Text>
-                        {item.created_by_name && (
-                          <Text style={styles.creator} numberOfLines={1}>
-                            · {item.created_by_name}
-                          </Text>
-                        )}
-                      </View>
-                      <Text style={styles.sub}>
-                        {strip(item.position) ||
-                          strip(item.company) ||
-                          strip(item.email) ||
-                          ""}
-                      </Text>
-                    </View>
-                  </Pressable>
-                </Link>
-              )}
-            />
-
-            {totalPages > 1 && (
-              <View style={styles.pager}>
-                <Pressable
-                  onPress={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={safePage <= 1}
-                  style={({ pressed }) => [
-                    styles.pagerBtn,
-                    pressed && { opacity: 0.92 },
-                    safePage <= 1 && { opacity: 0.4 },
-                  ]}
-                >
-                  <Text style={styles.pagerBtnText}>Anterior</Text>
-                </Pressable>
-
-                <View style={styles.pageNums}>
-                  {safePage > 1 && visiblePages[0] > 1 && (
-                    <Text style={styles.dots}>…</Text>
-                  )}
-
-                  {visiblePages.map((n) => {
-                    const active = n === safePage;
-                    return (
-                      <Pressable
-                        key={n}
-                        onPress={() => setPage(n)}
-                        style={[styles.pageNum, active && styles.pageNumActive]}
-                      >
-                        <Text
-                          style={[
-                            styles.pageNumText,
-                            active && styles.pageNumTextActive,
-                          ]}
-                        >
-                          {n}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-
-                  {safePage < totalPages &&
-                    visiblePages[visiblePages.length - 1] < totalPages && (
-                      <Text style={styles.dots}>…</Text>
-                    )}
-                </View>
-
-                <Pressable
-                  onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={safePage >= totalPages}
-                  style={({ pressed }) => [
-                    styles.pagerBtn,
-                    pressed && { opacity: 0.92 },
-                    safePage >= totalPages && { opacity: 0.4 },
-                  ]}
-                >
-                  <Text style={styles.pagerBtnText}>Siguiente</Text>
-                </Pressable>
-              </View>
+            {menu === "position" && (
+              <TextInput
+                autoFocus={Platform.OS === "web"}
+                accessibilityLabel="Buscar cargo"
+                placeholder="Buscar cargo…"
+                placeholderTextColor={C.muted}
+                value={menuSearch}
+                onChangeText={setMenuSearch}
+                style={styles.modalSearch}
+              />
             )}
-          </>
-        )}
-      </View>
+
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <Pressable
+                style={styles.menuOption}
+                onPress={() => {
+                  if (menu === "position") setPosition(null);
+                  else setVisibility(null);
+                  setMenu(null);
+                }}
+              >
+                <Text style={styles.cellText}>
+                  {menu === "position" ? "Todos los cargos" : "Todas las visibilidades"}
+                </Text>
+                {currentMenuValue === null && (
+                  <Ionicons name="checkmark" size={19} color={C.purple} />
+                )}
+              </Pressable>
+
+              {menuOptionsFiltered.map((option) => (
+                <Pressable
+                  key={option.value}
+                  style={[
+                    styles.menuOption,
+                    currentMenuValue === option.value && styles.selectedRow,
+                  ]}
+                  onPress={() => {
+                    if (menu === "position") setPosition(option.value);
+                    else setVisibility(option.value);
+                    setMenu(null);
+                  }}
+                >
+                  <Text style={styles.cellText}>{option.label}</Text>
+                  {currentMenuValue === option.value && (
+                    <Ionicons name="checkmark" size={19} color={C.purple} />
+                  )}
+                </Pressable>
+              ))}
+
+              {!menuOptionsFiltered.length && (
+                <Text style={styles.emptyDescription}>No hay coincidencias.</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: BG, padding: 16 },
-
-  headerRow: {
+  screen: { flex: 1, backgroundColor: C.bg },
+  content: { padding: 28, paddingBottom: 40, gap: 22 },
+  mobileContent: { padding: 16, gap: 18 },
+  breadcrumb: { flexDirection: "row", alignItems: "center", gap: 8 },
+  breadcrumbText: { fontSize: 12, color: C.muted },
+  breadcrumbCurrent: { fontSize: 12, color: C.text, fontWeight: "600" },
+  pageHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 10,
+    justifyContent: "space-between",
+    gap: 20,
+    flexWrap: "wrap",
   },
-
-  newBtn: {
-    backgroundColor: ACCENT,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 12,
+  headerMobile: { alignItems: "flex-start" },
+  headingBlock: { gap: 6, flexShrink: 1 },
+  headingLine: { flexDirection: "row", alignItems: "center", gap: 12 },
+  title: { color: C.text, fontSize: 29, fontWeight: "700", letterSpacing: -0.8 },
+  subtitle: { color: C.muted, fontSize: 13, lineHeight: 21 },
+  countPill: {
+    backgroundColor: C.purpleSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  countPillText: { color: C.purple, fontSize: 13, fontWeight: "700" },
+  actions: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  button: {
+    minHeight: 39,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
-  },
-  newBtnText: { color: "#fff", fontWeight: "900" },
-
-  secondaryBtn: {
-    backgroundColor: "transparent",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.28)",
-  },
-  secondaryBtnText: { color: TEXT, fontWeight: "700", fontSize: 13 },
-
-  exportBtn: {
-    backgroundColor: "transparent",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(56,189,248,0.9)",
-  },
-  exportBtnText: { color: "#e0f2fe", fontWeight: "700", fontSize: 13 },
-
-  importInfoBox: {
-    marginBottom: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    padding: 10,
-  },
-  importInfoTitle: {
-    color: TEXT,
-    fontWeight: "800",
-    marginBottom: 4,
-    fontSize: 12,
-  },
-  importInfoText: { color: SUBTLE, fontSize: 12 },
-  importInfoMeta: {
-    color: ACCENT_2,
-    fontSize: 12,
-    marginTop: 6,
-    fontWeight: "700",
-  },
-
-  searchWrap: {
-    position: "relative",
-    backgroundColor: FIELD,
-    borderColor: BORDER,
-    borderWidth: 1,
-    borderRadius: 12,
-    marginBottom: 6,
-  },
-  searchInput: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    color: TEXT,
-    fontSize: 14,
-  },
-  clearBtn: {
-    position: "absolute",
-    right: 8,
-    top: 8,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    borderColor: C.border,
+    backgroundColor: C.surface,
+    borderRadius: 8,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    gap: 7,
   },
-  clearText: { color: TEXT, fontSize: 18, lineHeight: 18, fontWeight: "700" },
-
-  tabsRow: {
-  flexDirection: "row",
-  gap: 8,
-  marginBottom: 10,
-  flexWrap: "wrap",
-},
-
-tabBtn: {
-  paddingVertical: 8,
-  paddingHorizontal: 12,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: BORDER,
-  backgroundColor: "rgba(255,255,255,0.03)",
-},
-
-tabBtnActive: {
-  borderColor: "rgba(34,211,238,0.85)",
-  backgroundColor: "rgba(34,211,238,0.12)",
-},
-
-tabText: {
-  color: SUBTLE,
-  fontSize: 12,
-  fontWeight: "800",
-},
-
-tabTextActive: {
-  color: ACCENT_2,
-},
-
-  filterRow: {
+  buttonText: { color: C.text, fontSize: 12, fontWeight: "600" },
+  primaryButton: { backgroundColor: C.purple, borderColor: C.purple },
+  primaryText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  pressed: { opacity: 0.8 },
+  disabled: { opacity: 0.45 },
+  metrics: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  metric: {
+    flex: 1,
+    minWidth: 170,
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 6,
-    marginTop: 2,
-  },
-  posDropdownWrapper: { flexShrink: 1 },
-  posDropdownTrigger: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#232326",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-  },
-  posDropdownText: {
-    color: TEXT,
-    fontSize: 11,
-    fontWeight: "700",
-    flexShrink: 1,
-  },
-  posDropdownArrow: { color: SUBTLE, marginLeft: 6, fontSize: 10 },
-  posDropdownMenu: {
-    marginTop: 4,
+    gap: 13,
+    padding: 18,
+    backgroundColor: C.surface,
     borderRadius: 12,
-    backgroundColor: CARD,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: C.border,
+  },
+  metricMobile: { flexBasis: "45%", minWidth: 130, padding: 13 },
+  metricIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 11,
+    backgroundColor: C.purpleSoft,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  metricValue: { color: C.text, fontSize: 24, fontWeight: "700" },
+  metricLabel: { color: C.muted, fontSize: 11, marginTop: 3 },
+  panel: {
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 12,
     overflow: "hidden",
   },
-  posOption: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+  panelTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 18,
     borderBottomWidth: 1,
-    borderBottomColor: "#1f252f",
+    borderBottomColor: C.border,
+    gap: 15,
   },
-  posOptionActive: { backgroundColor: "#1f2937" },
-  posOptionText: { fontSize: 12, color: TEXT },
-  posOptionTextActive: { fontWeight: "800", color: ACCENT_2 },
-
-  pagerSummary: {
-    marginTop: 2,
-    marginBottom: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "rgba(255,255,255,0.03)",
-  },
-  pagerSummaryText: { color: SUBTLE, fontSize: 12, fontWeight: "700" },
-
-  listContainer: { gap: 10 },
-  row: {
-    backgroundColor: CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 12,
-    padding: 12,
+  tabs: { flexDirection: "row", gap: 22 },
+  tab: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 7,
+    paddingVertical: 17,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
   },
-  nameRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    flexWrap: "nowrap",
-  },
-  name: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: TEXT,
-    flexShrink: 1,
-  },
-  sub: { color: SUBTLE },
-  creator: {
-    color: ACCENT_2,
+  tabActive: { borderBottomColor: C.purple },
+  tabText: { color: C.muted, fontWeight: "600", fontSize: 13 },
+  tabTextActive: { color: C.purple },
+  tabCount: {
+    color: C.muted,
+    backgroundColor: C.bg,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
     fontSize: 11,
-    fontWeight: "600",
-    flexShrink: 0,
   },
-  subtle: { color: SUBTLE, textAlign: "center", marginTop: 8 },
-
-  loaderWrap: {
+  toolbar: {
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 9,
+  },
+  searchBox: {
     flex: 1,
+    minWidth: 230,
+    maxWidth: 500,
+    minHeight: 40,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingHorizontal: 12,
+    backgroundColor: "#fbfcfe",
+  },
+  searchMobile: { flexBasis: "100%", maxWidth: "100%" },
+  searchInput: { flex: 1, color: C.text, fontSize: 13, paddingVertical: 10 },
+  textLink: {
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 40,
+    gap: 6,
+    paddingVertical: 7,
   },
-  loaderText: { color: SUBTLE, marginTop: 8 },
-
-  errorWrap: { alignItems: "center", paddingVertical: 24, gap: 8 },
-  errorTitle: { color: "#fecaca", fontWeight: "800" },
-  errorSub: {
-    color: "#9ca3af",
-    fontSize: 12,
-    textAlign: "center",
-    paddingHorizontal: 12,
+  textLinkText: { color: C.purple, fontSize: 12, fontWeight: "600" },
+  selectionBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 18,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    backgroundColor: C.purpleSoft,
   },
-  retryBtn: {
-    marginTop: 6,
-    backgroundColor: ACCENT,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
+  selectionText: { color: C.purple, fontSize: 12, fontWeight: "700" },
+  table: { minWidth: 1160 },
+  tableHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 43,
+    backgroundColor: "#f9fafc",
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: C.border,
+  },
+  columnHeading: { color: C.muted, fontSize: 10, fontWeight: "700", letterSpacing: 0.6 },
+  sortHeading: { flexDirection: "row", alignItems: "center", gap: 6 },
+  cell: { paddingHorizontal: 14, justifyContent: "center" },
+  nameColumn: { width: 300 },
+  companyColumn: { width: 205 },
+  positionColumn: { width: 180 },
+  phoneColumn: { width: 150 },
+  visibilityColumn: { width: 150 },
+  dateColumn: { width: 145 },
+  arrowColumn: { width: 30, alignItems: "center", justifyContent: "center" },
+  checkCell: { width: 44, alignItems: "center", justifyContent: "center" },
+  checkbox: {
+    height: 17,
+    width: 17,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
+    borderColor: "#cdd2df",
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: C.surface,
   },
-  retryText: { color: "#fff", fontWeight: "900" },
-
-  pager: {
+  checkboxActive: { backgroundColor: C.purple, borderColor: C.purple },
+  tableRow: {
+    flexDirection: "row",
+    minHeight: 73,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f0f1f5",
+  },
+  rowLink: { flexDirection: "row", minHeight: 73 },
+  rowHover: { backgroundColor: "#faf8ff" },
+  selectedRow: { backgroundColor: "#f7f3ff" },
+  personCell: { flexDirection: "row", alignItems: "center", justifyContent: "flex-start", gap: 12 },
+  personText: { flex: 1, minWidth: 0, gap: 4 },
+  avatar: {
+    width: 37,
+    height: 37,
+    borderRadius: 11,
+    backgroundColor: "#eee9f8",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: { color: C.purple, fontWeight: "700", fontSize: 12 },
+  contactName: { color: C.text, fontWeight: "600", fontSize: 13 },
+  contactEmail: { color: C.muted, fontSize: 12 },
+  cellText: { color: C.text, fontSize: 12, lineHeight: 18 },
+  smallText: { color: C.muted, fontSize: 11, lineHeight: 18 },
+  badge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+  badgeText: { fontSize: 10, fontWeight: "600" },
+  privateBadge: { backgroundColor: C.orangeSoft },
+  selectedBadge: { backgroundColor: C.purpleSoft },
+  workspaceBadge: { backgroundColor: C.greenSoft },
+  cards: { paddingHorizontal: 12, gap: 10, paddingBottom: 12 },
+  mobileCard: {
+    padding: 14,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 10,
+    gap: 10,
+  },
+  mobileCardTop: { flexDirection: "row", alignItems: "center", gap: 10 },
+  mobileContactLine: { color: C.muted, fontSize: 12, paddingLeft: 47 },
+  mobileCardBottom: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  pagination: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 10,
-    gap: 10,
+    flexWrap: "wrap",
+    gap: 12,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: C.border,
   },
-  pagerBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
+  paginationText: { color: C.text, fontSize: 12, fontWeight: "500" },
+  paginationButtons: { flexDirection: "row", alignItems: "center", gap: 14 },
+  pageButton: {
+    height: 32,
+    width: 32,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.22)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    borderColor: C.border,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  pagerBtnText: { color: TEXT, fontWeight: "900", fontSize: 12 },
-
-  pageNums: {
+  emptyState: { minHeight: 280, alignItems: "center", justifyContent: "center", padding: 28, gap: 12 },
+  emptyIcon: { padding: 18, borderRadius: 18, backgroundColor: C.purpleSoft },
+  sectionTitle: { color: C.text, fontSize: 15, fontWeight: "600" },
+  emptyDescription: { color: C.muted, fontSize: 13, lineHeight: 21, textAlign: "center" },
+  notice: {
+    backgroundColor: C.purpleSoft,
+    borderRadius: 9,
+    padding: 13,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    flex: 1,
-    justifyContent: "center",
+    gap: 9,
   },
-  pageNum: {
-    minWidth: 34,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-    backgroundColor: "rgba(255,255,255,0.02)",
+  noticeText: { flex: 1, fontSize: 12, color: C.purple, lineHeight: 19 },
+  importNotice: { backgroundColor: "#eef5ff", borderRadius: 10, padding: 15, gap: 5 },
+  footnote: { color: C.muted, fontSize: 11, lineHeight: 19 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(24,28,44,0.35)",
     alignItems: "center",
     justifyContent: "center",
+    padding: 22,
   },
-  pageNumActive: {
-    borderColor: "rgba(34,211,238,0.8)",
-    backgroundColor: "rgba(34,211,238,0.12)",
+  modalCard: {
+    width: "100%",
+    maxWidth: 430,
+    maxHeight: "75%",
+    backgroundColor: C.surface,
+    borderRadius: 14,
+    padding: 18,
   },
-  pageNumText: { color: TEXT, fontWeight: "800", fontSize: 12 },
-  pageNumTextActive: { color: ACCENT_2 },
-
-  dots: { color: SUBTLE, fontWeight: "900", paddingHorizontal: 4 },
+  modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
+  modalSearch: {
+    backgroundColor: C.bg,
+    color: C.text,
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
+    fontSize: 13,
+  },
+  menuOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 10,
+    borderRadius: 7,
+  },
 });
-

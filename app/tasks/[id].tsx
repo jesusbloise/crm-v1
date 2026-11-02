@@ -44,14 +44,14 @@ import {
 } from "react-native";
 
 /* Paleta */
-const PRIMARY = "#7C3AED";
-const BG = "#0F1115";
-const CARD = "#171923";
-const BORDER = "#2B3140";
-const TEXT = "#F3F4F6";
-const SUBTLE = "#A4ADBD";
-const DANGER = "#EF4444";
-const SUCCESS = "#16a34a";
+const PRIMARY = "#7551c8";
+const BG = "#f5f6fa";
+const CARD = "#ffffff";
+const BORDER = "#e7e9f0";
+const TEXT = "#202536";
+const SUBTLE = "#737b8e";
+const DANGER = "#b42332";
+const SUCCESS = "#23744d";
 
 /** Estados permitidos */
 type Status = ActivityStatus;
@@ -1467,396 +1467,674 @@ function formatDateShort(value?: number | string | null): string {
 
 /* Estilos */
 const styles = StyleSheet.create({
-  // ✅ Scroll: padding va en contentContainer
-  screen: { flex: 1, backgroundColor: BG },
-  screenContent: { padding: 16, paddingBottom: 28, gap: 12 },
+  screen: {
+    flex: 1,
+    backgroundColor: BG,
+  },
+
+  screenContent: {
+    width: "100%",
+    maxWidth: 1080,
+    alignSelf: "center",
+    padding: 20,
+    paddingBottom: 40,
+    gap: 16,
+  },
 
   card: {
+    minWidth: 0,
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
     borderRadius: 14,
-    padding: 14,
-    gap: 8,
+    padding: 20,
+    gap: 12,
   },
+
   cardDone: {
-    borderColor: SUCCESS,
-    backgroundColor: "rgba(22,163,74,0.08)",
+    borderColor: "#badfc8",
+    backgroundColor: "#f4fbf6",
   },
 
   titleRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "flex-start",
-    gap: 10,
+    gap: 12,
   },
 
-  title: { fontSize: 20, fontWeight: "900", color: TEXT },
-  titleDone: { color: SUCCESS },
+  title: {
+    fontSize: 24,
+    lineHeight: 32,
+    fontWeight: "700",
+    color: TEXT,
+  },
+
+  titleDone: {
+    color: SUCCESS,
+  },
 
   titleInput: {
-    borderRadius: 10,
+    minWidth: 0,
+    minHeight: 44,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    color: TEXT,
-    fontSize: 16,
-    fontWeight: "900",
-  },
-
-  titleActions: { flexDirection: "row", gap: 8 },
-  editBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(255,255,255,0.06)",
-  },
-  editBtnText: { color: TEXT, fontWeight: "900", fontSize: 12 },
-
-  smallBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(255,255,255,0.06)",
-  },
-  smallBtnPrimary: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: PRIMARY,
-  },
-  smallBtnText: { color: "#fff", fontWeight: "900", fontSize: 12 },
-
-  summary: { color: SUBTLE, fontSize: 12 },
-  summaryDone: { color: SUCCESS },
-
-  itemLabel: { color: SUBTLE, fontWeight: "700", fontSize: 12 },
-
-  subtle: { color: SUBTLE },
-  subtleSmall: { color: SUBTLE, fontSize: 11 },
-  error: { color: "#fecaca" },
-
-  // ✅ Reagendar / recordatorio (compacto)
-  reminderBox: {
-    borderWidth: 1,
-    borderColor: "rgba(34,211,238,0.18)",
-    backgroundColor: "rgba(34,211,238,0.05)",
-    borderRadius: 12,
-    padding: 10,
-    gap: 8,
-  },
-  reminderRow: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-  },
-  reminderInput: {
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
-    color: TEXT,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 13,
-  },
-  reminderPickBtn: {
+    borderColor: "#dce0e9",
+    backgroundColor: "#ffffff",
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(124,58,237,0.35)",
-    backgroundColor: "rgba(124,58,237,0.18)",
-    alignSelf: "flex-end",
-  },
-  reminderPickBtnText: {
     color: TEXT,
-    fontWeight: "900",
-    fontSize: 12,
-  },
-  reminderSaveBtn: {
-    marginTop: 2,
-    backgroundColor: PRIMARY,
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: "center",
-  },
-  reminderSaveBtnText: {
-    color: "#fff",
-    fontWeight: "900",
+    fontSize: 17,
+    fontWeight: "600",
   },
 
-  // Dropdown (asignación)
-  dropdownWrapper: { alignSelf: "flex-start", minWidth: 240 },
+  titleActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
+  editBtn: {
+    minHeight: 36,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: "#daceef",
+    backgroundColor: "#f1ecfa",
+  },
+
+  editBtnText: {
+    color: PRIMARY,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+
+  smallBtn: {
+    minHeight: 36,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 7,
+    backgroundColor: "#596274",
+  },
+
+  smallBtnPrimary: {
+    minHeight: 36,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 7,
+    backgroundColor: PRIMARY,
+  },
+
+  smallBtnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 12,
+  },
+
+  summary: {
+    color: SUBTLE,
+    fontSize: 12,
+    lineHeight: 20,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+
+  summaryDone: {
+    color: SUCCESS,
+  },
+
+  itemLabel: {
+    color: "#596274",
+    fontWeight: "600",
+    fontSize: 12,
+    marginBottom: 5,
+  },
+
+  subtle: {
+    color: SUBTLE,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+
+  subtleSmall: {
+    color: SUBTLE,
+    fontSize: 12,
+    lineHeight: 19,
+  },
+
+  error: {
+    color: "#a12637",
+    fontSize: 13,
+    lineHeight: 20,
+  },
+
+  reminderBox: {
+    borderWidth: 1,
+    borderColor: "#e2d9f2",
+    backgroundColor: "#faf8fe",
+    borderRadius: 10,
+    padding: 16,
+    gap: 14,
+  },
+
+  reminderRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    alignItems: "flex-end",
+  },
+
+  reminderInput: {
+    minWidth: 0,
+    minHeight: 44,
+    borderWidth: 1,
+    borderColor: "#dce0e9",
+    backgroundColor: "#ffffff",
+    color: TEXT,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    fontSize: 14,
+  },
+
+  reminderPickBtn: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#daceef",
+    backgroundColor: "#eee8f8",
+    alignSelf: "flex-end",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  reminderPickBtnText: {
+    color: PRIMARY,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+
+  reminderSaveBtn: {
+    marginTop: 2,
+    minHeight: 44,
+    backgroundColor: PRIMARY,
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  reminderSaveBtnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 13,
+  },
+
+  dropdownWrapper: {
+    width: "100%",
+    maxWidth: 440,
+    minWidth: 0,
+    alignSelf: "flex-start",
+  },
+
   dropdownTrigger: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderRadius: 999,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
+    borderColor: "#dce0e9",
+    backgroundColor: "#ffffff",
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 11,
+    gap: 10,
   },
+
   dropdownText: {
     color: TEXT,
-    fontSize: 12,
-    fontWeight: "700",
-    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: "500",
+    flex: 1,
+    minWidth: 0,
   },
-  dropdownArrow: { color: SUBTLE, fontSize: 10, marginLeft: 6 },
+
+  dropdownArrow: {
+    color: SUBTLE,
+    fontSize: 10,
+  },
 
   dropdownMenu: {
-    marginTop: 6,
-    borderRadius: 12,
+    marginTop: 8,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
+    borderColor: "#dce0e9",
+    backgroundColor: "#ffffff",
     overflow: "hidden",
-    minWidth: 240,
   },
 
   dropdownHeader: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#1f2933",
-    gap: 4,
+    borderBottomColor: BORDER,
+    backgroundColor: "#fafbfe",
+    gap: 5,
   },
-  dropdownHeaderTitle: { color: TEXT, fontWeight: "800", fontSize: 12 },
-  dropdownDirty: { color: "#FDE68A", fontWeight: "800", fontSize: 11 },
-  dropdownClean: { color: SUBTLE, fontWeight: "700", fontSize: 11 },
+
+  dropdownHeaderTitle: {
+    color: TEXT,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+
+  dropdownDirty: {
+    color: "#986412",
+    fontWeight: "600",
+    fontSize: 11,
+  },
+
+  dropdownClean: {
+    color: SUBTLE,
+    fontWeight: "500",
+    fontSize: 11,
+  },
 
   dropdownOption: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    minHeight: 42,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#1f2933",
+    borderBottomColor: "#eef0f5",
   },
-  dropdownOptionActive: { backgroundColor: "#1f2937" },
-  dropdownOptionText: { color: TEXT, fontSize: 12 },
-  dropdownOptionTextActive: { color: "#E9D5FF", fontWeight: "800" },
+
+  dropdownOptionActive: {
+    backgroundColor: "#f1ecfa",
+  },
+
+  dropdownOptionText: {
+    color: TEXT,
+    fontSize: 13,
+  },
+
+  dropdownOptionTextActive: {
+    color: PRIMARY,
+    fontWeight: "600",
+  },
 
   dropdownFooter: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
-    padding: 10,
+    padding: 12,
     borderTopWidth: 1,
-    borderTopColor: "#1f2933",
+    borderTopColor: BORDER,
   },
+
   footerBtn: {
-    flex: 1,
-    borderRadius: 10,
+    flexGrow: 1,
+    flexBasis: 120,
+    minHeight: 40,
+    borderRadius: 7,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     alignItems: "center",
     justifyContent: "center",
   },
-  footerBtnPrimary: { backgroundColor: PRIMARY },
-  footerBtnGhost: {
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-  },
-  footerBtnText: { color: "#fff", fontWeight: "900", fontSize: 12 },
 
-  // Estado
+  footerBtnPrimary: {
+    backgroundColor: PRIMARY,
+  },
+
+  footerBtnGhost: {
+    backgroundColor: "#596274",
+  },
+
+  footerBtnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 12,
+    textAlign: "center",
+  },
+
   stateRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
     marginTop: 6,
   },
+
   statusChip: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    minHeight: 34,
+    borderRadius: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
+
   statusChipText: {
     fontSize: 11,
-    fontWeight: "700",
-    color: "#0F172A",
+    fontWeight: "600",
+    color: "#344054",
   },
-  statusOpen: { backgroundColor: "#e5e7eb", borderColor: "#9ca3af" },
-  statusInProgress: { backgroundColor: "#DBEAFE", borderColor: "#3b82f6" },
-  statusDone: { backgroundColor: "#dcfce7", borderColor: "#22c55e" },
+
+  statusOpen: {
+    backgroundColor: "#f5f6fa",
+    borderColor: "#dce0e9",
+  },
+
+  statusInProgress: {
+    backgroundColor: "#e8f0ff",
+    borderColor: "#bed0f1",
+  },
+
+  statusDone: {
+    backgroundColor: "#e3f4e9",
+    borderColor: "#badfc8",
+  },
+
   statusList: {
-    marginTop: 4,
+    marginTop: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#CBD5E1",
-    backgroundColor: "#fff",
+    borderColor: BORDER,
+    backgroundColor: "#ffffff",
     overflow: "hidden",
   },
-  statusOption: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
-  },
-  statusOptionText: { fontSize: 12, color: "#0F172A" },
 
-  // Notas
+  statusOption: {
+    minHeight: 36,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eef0f5",
+  },
+
+  statusOptionText: {
+    fontSize: 12,
+    color: TEXT,
+  },
+
   subSectionTitle: {
     color: TEXT,
-    fontWeight: "800",
-    fontSize: 14,
-    marginBottom: 2,
+    fontWeight: "600",
+    fontSize: 15,
+    marginBottom: 8,
   },
+
   notesHistoryWrapper: {
-    maxHeight: 220,
+    maxHeight: 280,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: "#11121b",
+    backgroundColor: "#fafbfe",
     overflow: "hidden",
     marginTop: 6,
   },
-  notesHistoryScroll: { maxHeight: 220 },
-  notesHistoryContent: { paddingVertical: 4 },
+
+  notesHistoryScroll: {
+    maxHeight: 280,
+  },
+
+  notesHistoryContent: {
+    paddingVertical: 4,
+  },
 
   noteRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#1f2937",
+    borderBottomColor: BORDER,
   },
-  notesHistoryText: { color: TEXT, fontSize: 13, flex: 1 },
+
+  notesHistoryText: {
+    color: "#344054",
+    fontSize: 13,
+    lineHeight: 21,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 240,
+    minWidth: 0,
+  },
+
   noteDeleteBtn: {
-    paddingHorizontal: 10,
+    minHeight: 34,
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: "rgba(239,68,68,0.18)",
+    borderRadius: 7,
+    backgroundColor: "#fff1f2",
     borderWidth: 1,
-    borderColor: "rgba(239,68,68,0.35)",
+    borderColor: "#fecdd3",
     alignItems: "center",
     justifyContent: "center",
     alignSelf: "flex-start",
   },
-  noteDeleteText: { color: "#fff", fontWeight: "800", fontSize: 12 },
+
+  noteDeleteText: {
+    color: DANGER,
+    fontWeight: "600",
+    fontSize: 12,
+  },
 
   historyInputRow: {
     flexDirection: "row",
-    gap: 8,
+    flexWrap: "wrap",
+    gap: 10,
     alignItems: "flex-start",
     marginTop: 10,
   },
+
   historyInput: {
-    flex: 1,
-    borderRadius: 10,
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 260,
+    minWidth: 0,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#11121b",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    borderColor: "#dce0e9",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 11,
     color: TEXT,
-    fontSize: 13,
-    minHeight: 40,
-    maxHeight: 80,
+    fontSize: 14,
+    lineHeight: 21,
+    minHeight: 80,
+    maxHeight: 180,
+    textAlignVertical: "top",
   },
+
   historyAddBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
+    minHeight: 40,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 7,
     backgroundColor: PRIMARY,
     alignItems: "center",
     justifyContent: "center",
   },
-  historyAddText: { color: "#fff", fontWeight: "800", fontSize: 12 },
 
-  // Relacionados
-  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: "#1a1b2a",
+  historyAddText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 12,
   },
-  chipText: { color: "#E5E7EB", fontWeight: "800", fontSize: 12 },
 
-  // Eliminar actividad
-  btn: { padding: 12, borderRadius: 12, alignItems: "center" },
-  btnDanger: { backgroundColor: DANGER },
-  btnText: { color: "#fff", fontWeight: "900" },
+  chipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
 
-  // Modal backdrop (ya lo tenías, lo reutilizo)
+  chip: {
+    maxWidth: "100%",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: "#daceef",
+    backgroundColor: "#f1ecfa",
+  },
+
+  chipText: {
+    color: PRIMARY,
+    fontWeight: "600",
+    fontSize: 12,
+    flexShrink: 1,
+  },
+
+  btn: {
+    minHeight: 44,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  btnDanger: {
+    backgroundColor: DANGER,
+    alignSelf: "flex-start",
+  },
+
+  btnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 13,
+  },
+
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(23,29,45,0.35)",
     alignItems: "center",
     justifyContent: "center",
     padding: 16,
   },
 
-  /* ===== Mini calendario styles ===== */
   modalCardCalendar: {
     width: "100%",
     maxWidth: 420,
     backgroundColor: CARD,
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: BORDER,
-    padding: 12,
+    padding: 16,
     gap: 10,
   },
+
   calHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 8,
   },
+
   calNavBtn: {
     width: 36,
     height: 36,
-    borderRadius: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: BORDER,
-    backgroundColor: "#11121b",
+    backgroundColor: "#f5f6fa",
     alignItems: "center",
     justifyContent: "center",
   },
-  calNavTxt: { color: TEXT, fontSize: 18, fontWeight: "900" },
-  calTitle: { color: TEXT, fontWeight: "900", fontSize: 14 },
 
-  calWeekRow: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 6 },
-  calWeekTxt: { width: "14.28%", textAlign: "center", color: SUBTLE, fontSize: 12 },
+  calNavTxt: {
+    color: TEXT,
+    fontSize: 20,
+    fontWeight: "600",
+  },
 
-  calGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 },
+  calTitle: {
+    color: TEXT,
+    fontWeight: "600",
+    fontSize: 14,
+    flexShrink: 1,
+    textAlign: "center",
+  },
+
+  calWeekRow: {
+    flexDirection: "row",
+  },
+
+  calWeekTxt: {
+    width: "14.28%",
+    textAlign: "center",
+    color: SUBTLE,
+    fontSize: 12,
+  },
+
+  calGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 6,
+  },
+
   calDay: {
     width: "14.28%",
     aspectRatio: 1,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 10,
+    borderRadius: 8,
     marginVertical: 2,
   },
-  calDayOff: { opacity: 0.45 },
-  calDaySelected: { backgroundColor: "rgba(124,58,237,0.18)", borderWidth: 1, borderColor: "rgba(124,58,237,0.45)" },
 
-  calDayTxt: { color: TEXT, fontSize: 13, fontWeight: "800" },
-  calDayTxtOff: { color: SUBTLE, fontWeight: "700" },
-  calDayTxtSelected: { color: TEXT },
-
-  calFooter: { alignItems: "flex-end", marginTop: 6 },
-  calCloseBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.06)",
+  calDayOff: {
+    opacity: 0.45,
   },
-  calCloseTxt: { color: "#fff", fontWeight: "900" },
-});
 
+  calDaySelected: {
+    backgroundColor: "#eee8f8",
+    borderWidth: 1,
+    borderColor: "#b49bdc",
+  },
+
+  calDayTxt: {
+    color: TEXT,
+    fontSize: 13,
+    fontWeight: "500",
+  },
+
+  calDayTxtOff: {
+    color: SUBTLE,
+  },
+
+  calDayTxtSelected: {
+    color: PRIMARY,
+    fontWeight: "700",
+  },
+
+  calFooter: {
+    alignItems: "flex-end",
+    marginTop: 6,
+  },
+
+  calCloseBtn: {
+    minHeight: 40,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#daceef",
+    backgroundColor: "#f1ecfa",
+  },
+
+  calCloseTxt: {
+    color: PRIMARY,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+});

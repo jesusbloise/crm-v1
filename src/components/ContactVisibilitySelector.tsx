@@ -7,11 +7,13 @@ import type {
     ContactVisibility,
     SharingSelection,
 } from "@/src/api/contacts";
+import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
     Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -30,6 +32,7 @@ type Props = {
   onChange: (value: SharingSelection) => void;
   disabled?: boolean;
   title?: string;
+  theme?: "light" | "dark";
 };
 
 type Identity = {
@@ -41,27 +44,68 @@ const OPTIONS: Array<{
   value: ContactVisibility;
   title: string;
   description: string;
-  icon: string;
+  icon: "lock" | "users" | "user-check";
 }> = [
   {
     value: "private",
     title: "Solo yo",
     description: "Únicamente tú podrás ver este contacto.",
-    icon: "🔒",
+    icon: "lock",
   },
   {
     value: "workspace",
     title: "Todo el workspace",
     description: "Visible para todos sus integrantes.",
-    icon: "👥",
+    icon: "users",
   },
   {
     value: "selected",
     title: "Usuarios seleccionados",
     description: "Tú y las personas que elijas.",
-    icon: "✓",
+    icon: "user-check",
   },
 ];
+
+const PALETTES = {
+  light: {
+    surface: "#ffffff",
+    field: "#fbfcfe",
+    text: "#202536",
+    muted: "#737b8e",
+    border: "#e7e9f0",
+    primary: "#7551c8",
+    selected: "#f5f0fd",
+    selectedBorder: "#c9b8e9",
+    iconBackground: "#f0ebfb",
+    error: "#ae354b",
+    errorBackground: "#fff2f4",
+    hintBackground: "#f7f8fb",
+  },
+  dark: {
+    surface: "#171923",
+    field: "#121318",
+    text: "#f3f4f6",
+    muted: "#a4adbd",
+    border: "#343b4c",
+    primary: "#c4b5fd",
+    selected: "#28203d",
+    selectedBorder: "#a78bfa",
+    iconBackground: "#30234f",
+    error: "#fecaca",
+    errorBackground: "#35202a",
+    hintBackground: "#20232e",
+  },
+};
+
+function memberInitials(member: Member) {
+  return (member.name || member.email || "U")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0] || "")
+    .join("")
+    .toUpperCase();
+}
 
 export default function ContactVisibilitySelector({
   tenantId,
@@ -69,7 +113,11 @@ export default function ContactVisibilitySelector({
   onChange,
   disabled = false,
   title = "¿Quién puede ver este contacto?",
+  theme = "dark",
 }: Props) {
+  const colors = PALETTES[theme];
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
   const [search, setSearch] = useState("");
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
@@ -107,9 +155,7 @@ export default function ContactVisibilitySelector({
           );
         }
       } finally {
-        if (!cancelled) {
-          setSessionLoading(false);
-        }
+        if (!cancelled) setSessionLoading(false);
       }
     }
 
@@ -237,17 +283,15 @@ export default function ContactVisibilitySelector({
 
       {sessionLoading && (
         <View style={styles.loadingRow}>
-          <ActivityIndicator color="#a78bfa" />
-          <Text style={styles.muted}>
-            Comprobando sesión…
-          </Text>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={styles.muted}>Comprobando sesión…</Text>
         </View>
       )}
 
       {!!sessionError && (
-        <Text style={styles.error}>
-          {sessionError}
-        </Text>
+        <View style={styles.errorBox}>
+          <Text style={styles.error}>{sessionError}</Text>
+        </View>
       )}
 
       <View
@@ -269,18 +313,28 @@ export default function ContactVisibilitySelector({
                 disabled: controlsDisabled,
               }}
               onPress={() => selectVisibility(option.value)}
-              style={[
+              style={({ pressed }) => [
                 styles.option,
                 checked && styles.optionActive,
                 controlsDisabled && styles.disabled,
+                pressed && !controlsDisabled && styles.pressed,
               ]}
             >
-              <Text style={styles.icon}>
-                {option.icon}
-              </Text>
+              <View style={styles.optionIcon}>
+                <Feather
+                  name={option.icon}
+                  size={18}
+                  color={colors.primary}
+                />
+              </View>
 
               <View style={styles.grow}>
-                <Text style={styles.label}>
+                <Text
+                  style={[
+                    styles.label,
+                    checked && styles.activeLabel,
+                  ]}
+                >
                   {option.title}
                 </Text>
 
@@ -289,9 +343,14 @@ export default function ContactVisibilitySelector({
                 </Text>
               </View>
 
-              <Text style={styles.radio}>
-                {checked ? "◉" : "○"}
-              </Text>
+              <View
+                style={[
+                  styles.radio,
+                  checked && styles.radioActive,
+                ]}
+              >
+                {checked && <View style={styles.radioDot} />}
+              </View>
             </Pressable>
           );
         })}
@@ -299,9 +358,15 @@ export default function ContactVisibilitySelector({
 
       {value.visibility === "selected" && (
         <View style={styles.people}>
-          <Text style={styles.label}>
-            Compartir con
-          </Text>
+          <View style={styles.peopleHeading}>
+            <Text style={styles.label}>Compartir con</Text>
+
+            <View style={styles.countBadge}>
+              <Text style={styles.countText}>
+                {value.shared_user_ids.length} seleccionados
+              </Text>
+            </View>
+          </View>
 
           <Text style={styles.muted}>
             Tú conservarás el acceso. Selecciona a las demás
@@ -332,30 +397,55 @@ export default function ContactVisibilitySelector({
                       controlsDisabled && styles.disabled,
                     ]}
                   >
-                    <Text style={styles.chipText}>
-                      {label} ×
-                    </Text>
+                    <Text style={styles.chipText}>{label}</Text>
+                    <Feather
+                      name="x"
+                      size={13}
+                      color={colors.primary}
+                    />
                   </Pressable>
                 );
               })}
             </View>
           )}
 
-          <TextInput
-            editable={!controlsDisabled}
-            value={search}
-            onChangeText={setSearch}
-            placeholder="Buscar por nombre o correo"
-            placeholderTextColor="#a4adbd"
-            accessibilityLabel="Buscar integrantes del workspace"
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={styles.search}
-          />
+          <View style={styles.searchBox}>
+            <Feather
+              name="search"
+              size={16}
+              color={colors.muted}
+            />
+
+            <TextInput
+              editable={!controlsDisabled}
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Buscar por nombre o correo"
+              placeholderTextColor={colors.muted}
+              accessibilityLabel="Buscar integrantes del workspace"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.searchInput}
+            />
+
+            {!!search && (
+              <Pressable
+                accessibilityLabel="Limpiar búsqueda"
+                disabled={controlsDisabled}
+                onPress={() => setSearch("")}
+                hitSlop={8}
+              >
+                <Feather name="x" size={16} color={colors.muted} />
+              </Pressable>
+            )}
+          </View>
 
           {identity && membersQuery.isLoading && (
             <View style={styles.loadingRow}>
-              <ActivityIndicator color="#a78bfa" />
+              <ActivityIndicator
+                size="small"
+                color={colors.primary}
+              />
               <Text style={styles.muted}>
                 Cargando integrantes…
               </Text>
@@ -376,63 +466,97 @@ export default function ContactVisibilitySelector({
                 }}
                 style={styles.retryButton}
               >
-                <Text style={styles.retryText}>
-                  Reintentar
-                </Text>
+                <Feather
+                  name="refresh-cw"
+                  size={13}
+                  color={colors.primary}
+                />
+                <Text style={styles.retryText}>Reintentar</Text>
               </Pressable>
             </View>
           )}
 
           {membersQuery.isSuccess &&
-            filteredMembers.map((member) => {
-              const checked = selectedIds.has(member.id);
+            filteredMembers.length > 0 && (
+              <ScrollView
+                style={styles.memberList}
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+              >
+                {filteredMembers.map((member) => {
+                  const checked = selectedIds.has(member.id);
 
-              return (
-                <Pressable
-                  key={member.id}
-                  disabled={controlsDisabled}
-                  accessibilityRole="checkbox"
-                  accessibilityLabel={
-                    member.name || member.email || member.id
-                  }
-                  accessibilityState={{
-                    checked,
-                    disabled: controlsDisabled,
-                  }}
-                  onPress={() => toggleMember(member.id)}
-                  style={[
-                    styles.member,
-                    controlsDisabled && styles.disabled,
-                  ]}
-                >
-                  <Text style={styles.radio}>
-                    {checked ? "☑" : "☐"}
-                  </Text>
+                  return (
+                    <Pressable
+                      key={member.id}
+                      disabled={controlsDisabled}
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={
+                        member.name || member.email || member.id
+                      }
+                      accessibilityState={{
+                        checked,
+                        disabled: controlsDisabled,
+                      }}
+                      onPress={() => toggleMember(member.id)}
+                      style={[
+                        styles.member,
+                        checked && styles.memberActive,
+                        controlsDisabled && styles.disabled,
+                      ]}
+                    >
+                      <View style={styles.avatar}>
+                        <Text style={styles.avatarText}>
+                          {memberInitials(member)}
+                        </Text>
+                      </View>
 
-                  <View style={styles.grow}>
-                    <Text style={styles.label}>
-                      {member.name ||
-                        member.email ||
-                        "Usuario"}
-                    </Text>
+                      <View style={styles.grow}>
+                        <Text style={styles.label}>
+                          {member.name || member.email || "Usuario"}
+                        </Text>
 
-                    {!!member.email && (
-                      <Text style={styles.muted}>
-                        {member.email}
-                      </Text>
-                    )}
-                  </View>
-                </Pressable>
-              );
-            })}
+                        {!!member.email && (
+                          <Text style={styles.muted}>
+                            {member.email}
+                          </Text>
+                        )}
+                      </View>
+
+                      <View
+                        style={[
+                          styles.checkbox,
+                          checked && styles.checkboxActive,
+                        ]}
+                      >
+                        {checked && (
+                          <Feather
+                            name="check"
+                            size={12}
+                            color={theme === "light" ? "#fff" : "#171923"}
+                          />
+                        )}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            )}
 
           {membersQuery.isSuccess &&
             filteredMembers.length === 0 && (
-              <Text style={styles.muted}>
-                {search.trim()
-                  ? "No hay integrantes que coincidan con la búsqueda."
-                  : "No hay otros integrantes disponibles en este workspace."}
-              </Text>
+              <View style={styles.emptyBox}>
+                <Feather
+                  name="users"
+                  size={22}
+                  color={colors.muted}
+                />
+                <Text style={styles.emptyText}>
+                  {search.trim()
+                    ? "No hay integrantes que coincidan con la búsqueda."
+                    : "No hay otros integrantes disponibles en este workspace."}
+                </Text>
+              </View>
             )}
 
           {value.shared_user_ids.length === 0 && (
@@ -449,155 +573,268 @@ export default function ContactVisibilitySelector({
         </Text>
       )}
 
-      <Text style={styles.hint}>
-        Las actividades y notas de este contacto tendrán
-        la misma visibilidad.
-      </Text>
+      <View style={styles.hintBox}>
+        <Feather
+          name="info"
+          size={15}
+          color={colors.muted}
+        />
+        <Text style={styles.hint}>
+          Las notas respetan el acceso al contacto. Las actividades
+          requieren además ser su creador, estar asignado o contar
+          con los permisos de administración correspondientes.
+        </Text>
+      </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: "#171923",
-    borderWidth: 1,
-    borderColor: "#2b3140",
-    borderRadius: 16,
-    padding: 16,
-    gap: 12,
-    marginVertical: 8,
-  },
+function createStyles(theme: "light" | "dark") {
+  const colors = PALETTES[theme];
 
-  heading: {
-    color: "#f3f4f6",
-    fontWeight: "800",
-    fontSize: 16,
-  },
-
-  options: {
-    gap: 8,
-  },
-
-  option: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderWidth: 1,
-    borderColor: "#343b4c",
-    borderRadius: 12,
-    padding: 12,
-    backgroundColor: "#121318",
-  },
-
-  optionActive: {
-    borderColor: "#a78bfa",
-    backgroundColor: "rgba(124,58,237,0.16)",
-  },
-
-  disabled: {
-    opacity: 0.65,
-  },
-
-  grow: {
-    flex: 1,
-  },
-
-  label: {
-    color: "#f3f4f6",
-    fontWeight: "700",
-    fontSize: 13,
-  },
-
-  muted: {
-    color: "#a4adbd",
-    fontSize: 12,
-    lineHeight: 18,
-  },
-
-  icon: {
-    fontSize: 19,
-    color: "#c4b5fd",
-  },
-
-  radio: {
-    fontSize: 20,
-    color: "#c4b5fd",
-  },
-
-  people: {
-    gap: 10,
-  },
-
-  chips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-
-  chip: {
-    backgroundColor: "#30234f",
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-
-  chipText: {
-    color: "#e9ddff",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-
-  search: {
-    color: "#f3f4f6",
-    backgroundColor: "#121318",
-    borderWidth: 1,
-    borderColor: "#343b4c",
-    borderRadius: 10,
-    padding: 12,
-  },
-
-  member: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderColor: "#2b3140",
-  },
-
-  loadingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 6,
-  },
-
-  hint: {
-    color: "#b8c2d6",
-    fontSize: 12,
-    lineHeight: 18,
-  },
-
-  errorBox: {
-    gap: 6,
-  },
-
-  error: {
-    color: "#fecaca",
-    fontSize: 12,
-    lineHeight: 18,
-  },
-
-  retryButton: {
-    alignSelf: "flex-start",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: "#30234f",
-  },
-
-  retryText: {
-    color: "#c4b5fd",
-    fontWeight: "700",
-  },
-});
+  return StyleSheet.create({
+    card: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 10,
+      padding: 16,
+      gap: 14,
+    },
+    heading: {
+      color: colors.text,
+      fontWeight: "600",
+      fontSize: 13,
+    },
+    options: {
+      gap: 9,
+    },
+    option: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      minHeight: 72,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 9,
+      padding: 13,
+      backgroundColor: colors.field,
+    },
+    optionActive: {
+      borderColor: colors.selectedBorder,
+      backgroundColor: colors.selected,
+    },
+    optionIcon: {
+      width: 36,
+      height: 36,
+      borderRadius: 9,
+      backgroundColor: colors.iconBackground,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    grow: {
+      flex: 1,
+      minWidth: 0,
+      gap: 4,
+    },
+    label: {
+      color: colors.text,
+      fontWeight: "600",
+      fontSize: 12,
+      lineHeight: 18,
+    },
+    activeLabel: {
+      color: colors.primary,
+    },
+    muted: {
+      color: colors.muted,
+      fontSize: 12,
+      lineHeight: 19,
+    },
+    radio: {
+      height: 17,
+      width: 17,
+      borderWidth: 1,
+      borderColor: colors.muted,
+      borderRadius: 9,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    radioActive: {
+      borderColor: colors.primary,
+    },
+    radioDot: {
+      height: 9,
+      width: 9,
+      borderRadius: 5,
+      backgroundColor: colors.primary,
+    },
+    people: {
+      gap: 12,
+      paddingTop: 6,
+    },
+    peopleHeading: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
+    },
+    countBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      backgroundColor: colors.iconBackground,
+    },
+    countText: {
+      color: colors.primary,
+      fontSize: 10,
+      fontWeight: "600",
+    },
+    chips: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 7,
+    },
+    chip: {
+      maxWidth: "100%",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+      backgroundColor: colors.iconBackground,
+      borderRadius: 7,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+    },
+    chipText: {
+      color: colors.primary,
+      fontSize: 11,
+      fontWeight: "600",
+      flexShrink: 1,
+    },
+    searchBox: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 9,
+      paddingHorizontal: 12,
+      minHeight: 42,
+      backgroundColor: colors.field,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+    },
+    searchInput: {
+      flex: 1,
+      minWidth: 0,
+      color: colors.text,
+      paddingVertical: 11,
+      fontSize: 12,
+    },
+    memberList: {
+      maxHeight: 280,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 8,
+    },
+    member: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 11,
+      padding: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    memberActive: {
+      backgroundColor: colors.selected,
+    },
+    avatar: {
+      width: 33,
+      height: 33,
+      borderRadius: 9,
+      backgroundColor: colors.iconBackground,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    avatarText: {
+      color: colors.primary,
+      fontSize: 10,
+      fontWeight: "700",
+    },
+    checkbox: {
+      height: 17,
+      width: 17,
+      borderWidth: 1,
+      borderColor: colors.muted,
+      borderRadius: 4,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    checkboxActive: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primary,
+    },
+    loadingRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingVertical: 6,
+    },
+    hintBox: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+      padding: 12,
+      borderRadius: 8,
+      backgroundColor: colors.hintBackground,
+    },
+    hint: {
+      flex: 1,
+      color: colors.muted,
+      fontSize: 11,
+      lineHeight: 19,
+    },
+    errorBox: {
+      backgroundColor: colors.errorBackground,
+      padding: 12,
+      borderRadius: 8,
+      gap: 8,
+    },
+    error: {
+      color: colors.error,
+      fontSize: 12,
+      lineHeight: 19,
+    },
+    retryButton: {
+      alignSelf: "flex-start",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+      paddingVertical: 8,
+      paddingHorizontal: 10,
+      borderRadius: 7,
+      backgroundColor: colors.iconBackground,
+    },
+    retryText: {
+      color: colors.primary,
+      fontSize: 12,
+      fontWeight: "600",
+    },
+    emptyBox: {
+      alignItems: "center",
+      padding: 20,
+      gap: 10,
+    },
+    emptyText: {
+      color: colors.muted,
+      fontSize: 12,
+      lineHeight: 19,
+      textAlign: "center",
+    },
+    disabled: {
+      opacity: 0.65,
+    },
+    pressed: {
+      opacity: 0.85,
+    },
+  });
+}

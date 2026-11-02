@@ -456,7 +456,7 @@ export default function RelatedActivities(props: {
                 >
                   {/* Bloque principal clicable → abre detalle de la actividad */}
                   <Pressable
-                    style={{ flex: 1 }}
+                    style={S.activityMain}
                     accessibilityRole="button"
                     onPress={() =>
                       router.push({
@@ -582,127 +582,193 @@ export default function RelatedActivities(props: {
 
 const S = StyleSheet.create({
   box: {
+    width: "100%",
+    minWidth: 0,
     borderWidth: 1,
-    borderColor: "#CBD5E1",
-    backgroundColor: "#ECEFF4",
+    borderColor: "#e7e9f0",
+    backgroundColor: "#ffffff",
     borderRadius: 12,
     overflow: "hidden",
   },
+
   rowHeader: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#CBD5E1",
+    padding: 16,
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
+    gap: 12,
   },
-  title: { color: "#0F172A", fontWeight: "900", fontSize: 16 },
 
-  // 🔽 contenedor con scroll para las actividades
+  title: {
+    color: "#202536",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+
   listWrapper: {
-    maxHeight: 380, // aprox. 5 filas; ajusta si lo ves muy alto/bajo
+    maxHeight: 440,
   },
+
   scroll: {
-    maxHeight: 380,
+    maxHeight: 440,
   },
+
   listContent: {
     paddingBottom: 4,
   },
 
   row: {
-    padding: 12,
+    padding: 16,
     borderTopWidth: 1,
-    borderTopColor: "#CBD5E1",
+    borderTopColor: "#e7e9f0",
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: 8,
+    gap: 12,
   },
-  rowInProgress: {
-    backgroundColor: "#DBEAFE",
-    borderTopColor: "#BFDBFE",
-  },
-  rowDone: {
-    backgroundColor: "#E8F7EE",
-    borderTopColor: "#C7E8D2",
-  },
-  itemTitle: { color: "#0F172A", fontWeight: "800" },
-  itemTitleInProgress: { color: "#1d4ed8" },
-  itemTitleDone: { color: "#16a34a" },
-  itemSub: { color: "#475569", fontSize: 12, marginBottom: 2 },
-  itemSubInProgress: { color: "#1d4ed8" },
-  itemSubDone: { color: "#16a34a" },
 
-  // Nota, mismo tono que itemSub
+  activityMain: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 260,
+    minWidth: 0,
+    gap: 5,
+  },
+
+  rowInProgress: {
+    backgroundColor: "#f1f6ff",
+    borderTopColor: "#dce7fb",
+  },
+
+  rowDone: {
+    backgroundColor: "#f0faf4",
+    borderTopColor: "#dcefe3",
+  },
+
+  itemTitle: {
+    color: "#202536",
+    fontWeight: "600",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+
+  itemTitleInProgress: {
+    color: "#2858a5",
+  },
+
+  itemTitleDone: {
+    color: "#23744d",
+  },
+
+  itemSub: {
+    color: "#737b8e",
+    fontSize: 12,
+    lineHeight: 19,
+  },
+
+  itemSubInProgress: {
+    color: "#526d96",
+  },
+
+  itemSubDone: {
+    color: "#587a65",
+  },
+
   itemSubNote: {
-    color: "#475569",
-    fontSize: 11,
-    marginBottom: 4,
+    color: "#737b8e",
+    fontSize: 12,
+    lineHeight: 19,
+    marginTop: 2,
   },
 
   badgeDone: {
     alignSelf: "flex-start",
-    paddingVertical: 3,
+    paddingVertical: 4,
     paddingHorizontal: 8,
-    borderRadius: 999,
-    backgroundColor: "#22C55E",
+    borderRadius: 5,
+    backgroundColor: "#dcefe3",
   },
+
   badgeDoneText: {
-    color: "#fff",
-    fontWeight: "900",
-    fontSize: 11,
-    letterSpacing: 0.3,
+    color: "#23744d",
+    fontWeight: "600",
+    fontSize: 10,
   },
+
   btn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+    minHeight: 36,
+    paddingVertical: 9,
+    paddingHorizontal: 13,
+    borderRadius: 7,
     alignItems: "center",
     justifyContent: "center",
   },
-  btnText: { color: "#fff", fontWeight: "800" },
-  btnPrimary: { backgroundColor: "#7C3AED" },
-  btnDanger: { backgroundColor: "#EF4444" },
+
+  btnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 12,
+  },
+
+  btnPrimary: {
+    backgroundColor: "#7551c8",
+  },
+
+  btnDanger: {
+    backgroundColor: "#b42332",
+  },
 
   statusChip: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    minHeight: 36,
+    borderRadius: 7,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
     borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
+
   statusChipText: {
     fontSize: 11,
-    fontWeight: "700",
-    color: "#0F172A",
+    fontWeight: "600",
+    color: "#344054",
   },
+
   statusOpen: {
-    backgroundColor: "#e5e7eb",
-    borderColor: "#9ca3af",
+    backgroundColor: "#f5f6fa",
+    borderColor: "#dce0e9",
   },
+
   statusInProgress: {
-    backgroundColor: "#DBEAFE",
-    borderColor: "#3b82f6",
+    backgroundColor: "#e8f0ff",
+    borderColor: "#bed0f1",
   },
+
   statusDone: {
-    backgroundColor: "#dcfce7",
-    borderColor: "#22c55e",
+    backgroundColor: "#e3f4e9",
+    borderColor: "#badfc8",
   },
+
   statusList: {
-    marginTop: 4,
+    marginTop: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#CBD5E1",
-    backgroundColor: "#fff",
+    borderColor: "#e7e9f0",
+    backgroundColor: "#ffffff",
     overflow: "hidden",
   },
+
   statusOption: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    minHeight: 36,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
+    borderBottomColor: "#eef0f5",
   },
+
   statusOptionText: {
     fontSize: 12,
-    color: "#0F172A",
+    color: "#202536",
   },
 });

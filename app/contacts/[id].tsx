@@ -47,13 +47,13 @@ import {
   View,
 } from "react-native";
 
-const BG = "#0b0c10";
-const CARD = "#14151a";
-const FIELD = "#121318";
-const BORDER = "#272a33";
-const TEXT = "#e8ecf1";
-const SUBTLE = "#a9b0bd";
-const ACCENT = "#7c3aed";
+const BG = "#f5f6fa";
+const CARD = "#ffffff";
+const FIELD = "#ffffff";
+const BORDER = "#e7e9f0";
+const TEXT = "#202536";
+const SUBTLE = "#737b8e";
+const ACCENT = "#7551c8";
 
 type TenantItem = {
   id: string;
@@ -603,7 +603,33 @@ function ContactDetailForm({
           </Text>
         ) : (
           <>
-            <Text style={styles.section}>Datos del contacto</Text>
+                        <View style={styles.contactHeader}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>
+                  {(contact.name?.trim().charAt(0) || "C").toUpperCase()}
+                </Text>
+              </View>
+
+              <View style={styles.headerInfo}>
+                <Text style={styles.eyebrow}>FICHA DE CONTACTO</Text>
+
+                <Text style={styles.contactTitle}>
+                  {contact.name || "Contacto"}
+                </Text>
+
+                {!!contact.company && (
+                  <Text style={styles.subtle}>{contact.company}</Text>
+                )}
+
+                <View style={styles.visibilityBadge}>
+                  <Text style={styles.visibilityBadgeText}>
+                    {visibilityLabel(contact.visibility)}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <Text style={styles.section}>Información general</Text>
 
             {!!contact.created_by_name && (
               <View style={styles.infoBox}>
@@ -704,6 +730,7 @@ function ContactDetailForm({
 
             {canManageSharing && context ? (
               <ContactVisibilitySelector
+              theme="light"
                 tenantId={context.tenantId}
                 value={sharing}
                 onChange={setSharing}
@@ -770,6 +797,7 @@ function ContactDetailForm({
 
                 {selectedCopies.map((tenantId) => (
                   <ContactVisibilitySelector
+                  theme="light"
                     key={tenantId}
                     tenantId={tenantId}
                     title={`Privacidad de la copia · ${
@@ -838,9 +866,6 @@ function ContactDetailForm({
                   : "Guardar cambios"}
               </Text>
             </Pressable>
-
-            <Text style={styles.section}>Actividades</Text>
-
             {membersQuery.isLoading ? (
               <Text style={styles.subtle}>
                 Cargando integrantes…
@@ -866,7 +891,6 @@ function ContactDetailForm({
               />
             )}
 
-            <Text style={styles.section}>Notas</Text>
             <RelatedNotes filters={{ contact_id: contactId }} />
 
             <Pressable
@@ -912,28 +936,99 @@ const styles = StyleSheet.create({
   },
 
   container: {
-    padding: 16,
-    paddingBottom: 120,
-    gap: 10,
+    width: "100%",
+    maxWidth: 1000,
+    alignSelf: "center",
+    paddingHorizontal: 20,
+    paddingTop: 24,
+    paddingBottom: 48,
+    gap: 12,
+  },
+
+  contactHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 16,
+    padding: 20,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 14,
+    marginBottom: 8,
+  },
+
+  avatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: "#eee8f9",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+
+  avatarText: {
+    color: ACCENT,
+    fontSize: 25,
+    fontWeight: "700",
+  },
+
+  headerInfo: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+
+  eyebrow: {
+    color: SUBTLE,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1,
+  },
+
+  contactTitle: {
+    color: TEXT,
+    fontSize: 24,
+    fontWeight: "700",
+    flexShrink: 1,
+  },
+
+  visibilityBadge: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    backgroundColor: "#f1ecfa",
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    marginTop: 3,
+  },
+
+  visibilityBadgeText: {
+    color: ACCENT,
+    fontSize: 11,
+    fontWeight: "600",
+    flexShrink: 1,
   },
 
   loading: {
-    paddingVertical: 30,
+    paddingVertical: 48,
     alignItems: "center",
     gap: 12,
   },
 
   section: {
     color: TEXT,
-    fontWeight: "900",
-    fontSize: 16,
-    marginTop: 14,
+    fontWeight: "700",
+    fontSize: 17,
+    marginTop: 22,
+    marginBottom: 4,
   },
 
   label: {
     color: TEXT,
-    fontWeight: "800",
-    marginTop: 4,
+    fontWeight: "600",
+    fontSize: 13,
+    marginTop: 6,
   },
 
   subtle: {
@@ -943,34 +1038,38 @@ const styles = StyleSheet.create({
   },
 
   input: {
+    width: "100%",
+    minWidth: 0,
+    minHeight: 44,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: "#dce0e9",
     backgroundColor: FIELD,
     color: TEXT,
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    borderRadius: 8,
+    paddingHorizontal: 13,
     paddingVertical: 11,
     fontSize: 14,
   },
 
   nameInput: {
-    fontSize: 17,
-    fontWeight: "800",
+    fontSize: 16,
+    fontWeight: "600",
   },
 
   infoBox: {
     backgroundColor: CARD,
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 10,
+    padding: 15,
     gap: 5,
   },
 
   creatorLabel: {
-    color: "#22d3ee",
-    fontWeight: "800",
-    fontSize: 11,
+    color: SUBTLE,
+    fontWeight: "700",
+    fontSize: 10,
+    letterSpacing: 0.7,
     textTransform: "uppercase",
   },
 
@@ -981,30 +1080,35 @@ const styles = StyleSheet.create({
   },
 
   chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 999,
+    maxWidth: "100%",
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: "#dce0e9",
     backgroundColor: CARD,
   },
 
   chipActive: {
-    borderColor: ACCENT,
-    backgroundColor: "rgba(124,58,237,0.25)",
+    borderColor: "#b49bdc",
+    backgroundColor: "#eee8f8",
   },
 
   chipText: {
     color: TEXT,
-    fontWeight: "700",
+    fontWeight: "600",
     fontSize: 12,
+    flexShrink: 1,
   },
 
   btn: {
+    minHeight: 44,
     marginTop: 8,
-    padding: 13,
-    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 8,
     alignItems: "center",
+    justifyContent: "center",
   },
 
   btnPrimary: {
@@ -1012,18 +1116,19 @@ const styles = StyleSheet.create({
   },
 
   btnDanger: {
-    backgroundColor: "#b91c1c",
+    backgroundColor: "#b42332",
+    marginTop: 28,
   },
 
   btnGhost: {
-    backgroundColor: CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
+    backgroundColor: "#596274",
   },
 
   btnText: {
     color: "#ffffff",
-    fontWeight: "900",
+    fontWeight: "700",
+    fontSize: 13,
+    textAlign: "center",
   },
 
   disabled: {
@@ -1031,27 +1136,29 @@ const styles = StyleSheet.create({
   },
 
   errorBox: {
-    backgroundColor: "rgba(239,68,68,0.08)",
+    backgroundColor: "#fff1f2",
     borderWidth: 1,
-    borderColor: "rgba(239,68,68,0.35)",
-    borderRadius: 12,
-    padding: 12,
+    borderColor: "#fecdd3",
+    borderRadius: 10,
+    padding: 15,
     gap: 8,
   },
 
   error: {
-    color: "#fecaca",
+    color: "#a12637",
+    fontSize: 13,
     lineHeight: 20,
   },
 
   success: {
-    color: "#86efac",
-    fontWeight: "700",
+    color: "#18734b",
+    fontWeight: "600",
+    fontSize: 13,
   },
 
   link: {
-    color: "#c4b5fd",
-    fontWeight: "800",
+    color: ACCENT,
+    fontWeight: "600",
     paddingVertical: 8,
   },
 });
