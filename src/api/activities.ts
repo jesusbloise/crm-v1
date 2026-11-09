@@ -1,8 +1,12 @@
-// src/api/activities.ts
 import { api } from "@/src/api/http";
 
 export type ActivityType = "task" | "call" | "meeting" | "note";
-export type ActivityStatus = "open" | "done" | "canceled";
+
+export type ActivityStatus =
+  | "open"
+  | "in_progress"
+  | "done"
+  | "canceled";
 
 export type Activity = {
   id: string;
@@ -18,6 +22,7 @@ export type Activity = {
   deal_id?: string | null;
   created_at: number;
   updated_at: number;
+  completed_at?: number | string | null;
 
   created_by?: string | null;
   created_by_name?: string | null;
@@ -40,48 +45,51 @@ export async function listActivities(filters?: {
   status?: ActivityStatus;
   remind_after?: number;
 }): Promise<Activity[]> {
-  const qs = new URLSearchParams();
+  const params = new URLSearchParams();
 
   if (filters) {
-    if (filters.deal_id) qs.set("deal_id", filters.deal_id);
-    if (filters.contact_id) qs.set("contact_id", filters.contact_id);
-    if (filters.account_id) qs.set("account_id", filters.account_id);
-    if (filters.lead_id) qs.set("lead_id", filters.lead_id);
-    if (filters.status) qs.set("status", filters.status);
-    if (filters.remind_after != null)
-      qs.set("remind_after", String(filters.remind_after));
+    if (filters.deal_id) params.set("deal_id", filters.deal_id);
+    if (filters.contact_id) params.set("contact_id", filters.contact_id);
+    if (filters.account_id) params.set("account_id", filters.account_id);
+    if (filters.lead_id) params.set("lead_id", filters.lead_id);
+    if (filters.status) params.set("status", filters.status);
+
+    if (filters.remind_after != null) {
+      params.set("remind_after", String(filters.remind_after));
+    }
   }
 
-  const q = qs.toString();
-  return api.get(`/activities${q ? `?${q}` : ""}`);
+  const query = params.toString();
+
+  return api.get<Activity[]>(
+    `/activities${query ? `?${query}` : ""}`
+  );
 }
 
 export async function getActivity(id: string): Promise<Activity> {
-  return api.get(`/activities/${id}`);
+  return api.get<Activity>(`/activities/${id}`);
 }
 
-export async function listActivitiesByDeal(dealId: string): Promise<Activity[]> {
+export async function listActivitiesByDeal(
+  dealId: string
+): Promise<Activity[]> {
   return listActivities({ deal_id: dealId });
 }
 
-/**
- * Crea una actividad.
- * El backend acepta también:
- *  - assigned_to
- *  - assigned_to_2
- */
 export async function createActivity(
   input: Partial<Activity>
 ): Promise<Activity> {
   return api.post("/activities", input);
 }
 
-/** ✅ Patch extra flags (solo backend) */
 export type ActivityPatch = Partial<Activity> & {
   notify_assignees?: boolean;
 };
 
-export async function updateActivity(id: string, patch: ActivityPatch): Promise<void> {
+export async function updateActivity(
+  id: string,
+  patch: ActivityPatch
+): Promise<void> {
   await api.patch(`/activities/${id}`, patch);
 }
 
@@ -92,7 +100,12 @@ export async function deleteActivity(id: string): Promise<void> {
 export async function listOpenActivitiesWithReminder(
   nowMs: number
 ): Promise<
-  { id: string; title: string; notes: string | null; remindAtMs: number }[]
+  {
+    id: string;
+    title: string;
+    notes: string | null;
+    remindAtMs: number;
+  }[]
 > {
   const rows = await listActivities({
     status: "open",
@@ -110,11 +123,138 @@ export async function listOpenActivitiesWithReminder(
       return [];
     }
 
-    return [{
-      id: activity.id,
-      title: activity.title,
-      notes: activity.notes ?? null,
-      remindAtMs,
-    }];
+    return [
+      {
+        id: activity.id,
+        title: activity.title,
+        notes: activity.notes ?? null,
+        remindAtMs,
+      },
+    ];
   });
+}
+
+export async function updateActivityStatus(
+  id: string,
+  status: ActivityStatus,
+  expectedUpdatedAt: number
+): Promise<Activity> {
+  return api.patch<Activity>(
+    `/activities/${encodeURIComponent(id)}/status`,
+    {
+      status,
+      expected_updated_at: expectedUpdatedAt,
+    }
+  );
+}
+
+export type ActivityPageFilters = {
+  deal_id?: string;
+  contact_id?: string;
+  account_id?: string;
+  lead_id?: string;
+  status?: ActivityStatus;
+
+  scope?: "team" | "mine";
+  q?: string;
+  person_id?: string;
+
+  due_from?: number;
+  due_before?: number;
+  undated?: boolean;
+  pending?: boolean;
+
+  sort?: "updated" | "due";
+  limit?: number;
+  offset?: number;
+};
+
+export type ActivityPage = {
+  items: Activity[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export async function listActivitiesPage(
+  filters: ActivityPageFilters = {}
+): Promise<ActivityPage> {
+  const params = new URLSearchParams({
+    paginated: "1",
+  });
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null) continue;
+
+    if (typeof value === "boolean") {
+      if (value) params.set(key, "1");
+    } else {
+      params.set(key, String(value));
+    }
+  }
+
+  return api.get<ActivityPage>(
+    `/activities?${params.toString()}`
+  );
+}
+
+export type ActivityStatsCounts = {
+  total: number;
+  open: number;
+  in_progress: number;
+  done: number;
+  canceled: number;
+};
+
+export type ActivityStats = {
+  scope: "team" | "mine";
+  can_view_team: boolean;
+  date_basis: "due_date";
+  generated_at: number;
+
+  summary: ActivityStatsCounts & {
+    overdue: number;
+    undated: number;
+    done_without_completion_date: number;
+  };
+
+  users: (ActivityStatsCounts & {
+    user_id: string;
+    name: string;
+  })[];
+
+  unassigned: number;
+};
+
+export type ActivityStatsFilters = {
+  scope?: "team" | "mine";
+  person_id?: string;
+  q?: string;
+  pending?: boolean;
+  undated?: boolean;
+  due_from?: number;
+  due_before?: number;
+};
+
+export async function getActivityStats(
+  filters: ActivityStatsFilters = {}
+): Promise<ActivityStats> {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null) continue;
+
+    if (typeof value === "boolean") {
+      if (value) params.set(key, "1");
+    } else {
+      params.set(key, String(value));
+    }
+  }
+
+  const query = params.toString();
+
+  return api.get<ActivityStats>(
+    `/activities/stats${query ? `?${query}` : ""}`
+  );
 }

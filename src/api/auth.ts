@@ -10,6 +10,32 @@ const TENANT_KEY = "auth.tenant";
 const ME_KEY = "auth.me";
 const DEFAULT_TENANT = "demo";
 
+type ActiveTenantListener = (tenantId: string | null) => void;
+
+const activeTenantListeners = new Set<ActiveTenantListener>();
+
+export function subscribeActiveTenant(
+  listener: ActiveTenantListener
+): () => void {
+  activeTenantListeners.add(listener);
+
+  return () => {
+    activeTenantListeners.delete(listener);
+  };
+}
+
+function notifyActiveTenant(tenantId: string | null): void {
+  for (const listener of activeTenantListeners) {
+    try {
+      listener(tenantId);
+    } catch {
+      console.warn(
+        "No se pudo actualizar un componente tras cambiar el workspace."
+      );
+    }
+  }
+}
+
 export type LoginBody = { email: string; password: string };
 export type RegisterBody = { name: string; email: string; password: string };
 
@@ -31,15 +57,31 @@ export async function getToken() {
 export async function clearToken() {
   await AsyncStorage.removeItem(TOKEN_KEY);
 }
-
 export async function setActiveTenant(tenantId: string) {
-  await AsyncStorage.setItem(TENANT_KEY, tenantId);
+  const nextTenant = tenantId.trim();
+
+  if (!nextTenant) {
+    throw new Error("El workspace seleccionado no es válido.");
+  }
+
+  const previousTenant = await AsyncStorage.getItem(TENANT_KEY);
+
+  await AsyncStorage.setItem(TENANT_KEY, nextTenant);
+
+  // Avisar después de guardar, para que las consultas
+  // siguientes utilicen el nuevo workspace.
+  if (previousTenant !== nextTenant) {
+    notifyActiveTenant(nextTenant);
+  }
 }
+
 export async function getActiveTenant() {
   return (await AsyncStorage.getItem(TENANT_KEY)) || DEFAULT_TENANT;
 }
+
 export async function clearActiveTenant() {
   await AsyncStorage.removeItem(TENANT_KEY);
+  notifyActiveTenant(null);
 }
 
 /** Cachea el usuario actual para UI (header pill) */

@@ -5,14 +5,17 @@ import {
   deleteDeal,
   getDeal,
   updateDeal,
-  type Deal,
-  type DealStage,
+  type DealStage
 } from "@/src/api/deals";
+import { listWorkspaceMembers } from "@/src/api/workspaceMembers";
+import DealDocuments from "@/src/components/DealDocuments";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, router, Stack, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -26,19 +29,19 @@ import RelatedActivities from "@/src/components/RelatedActivities";
 import RelatedNotes from "@/src/components/RelatedNotes";
 
 /* 🎨 Tema */
-const BG       = "#0b0c10";
-const CARD     = "#14151a";
-const BORDER   = "#272a33";
-const TEXT     = "#e8ecf1";
-const SUBTLE   = "#a9b0bd";
-const ACCENT   = "#7c3aed";  // morado
-const ACCENT_2 = "#22d3ee";  // cian
-const DANGER   = "#ef4444";
+/* Tema claro */
+const BG = "#f5f6fa";
+const CARD = "#ffffff";
+const BORDER = "#dce0eb";
+const TEXT = "#30364a";
+const SUBTLE = "#788399";
+const ACCENT = "#7551c8";
+const ACCENT_2 = "#7551c8";
+const DANGER = "#c03950";
 
-// 👉 Secciones claras (para mantener coherencia visual)
-const LIGHT_CARD   = "#ECEFF4";
-const LIGHT_BORDER = "#CBD5E1";
-const DARK_TEXT    = "#0F172A";
+const LIGHT_CARD = "#ffffff";
+const LIGHT_BORDER = "#e0e4ed";
+const DARK_TEXT = "#30364a";
 
 const STAGES: DealStage[] = [
   "nuevo",
@@ -71,23 +74,68 @@ export default function DealDetail() {
   const [amountText, setAmountText] = useState("");
   const [stage, setStage] = useState<DealStage>("nuevo");
 
+  const [assignedTo, setAssignedTo] = useState<string | null>(null);
+const [assignmentOpen, setAssignmentOpen] = useState(false);
+const [memberSearch, setMemberSearch] = useState("");
+
+const qMembers = useQuery({
+  queryKey: ["workspaceMembers", "deal", dealId],
+  queryFn: listWorkspaceMembers,
+  enabled: Boolean(qDeal.data?.can_manage_assignment),
+  staleTime: 0,
+  refetchOnMount: "always",
+});
+
+const members = qMembers.data ?? [];
+
+const filteredMembers = members.filter((member) => {
+  const term = memberSearch.trim().toLowerCase();
+
+  return !term ||
+    `${member.name || ""} ${member.email || ""}`
+      .toLowerCase()
+      .includes(term);
+});
+
+const selectedMember = members.find(
+  (member) => member.id === assignedTo
+);
+
   useEffect(() => {
     if (qDeal.data) {
       setTitle(qDeal.data.title ?? "");
       setAmountText(qDeal.data.amount != null ? String(qDeal.data.amount) : "");
       setStage((qDeal.data.stage as DealStage) ?? "nuevo");
+      setAssignedTo(qDeal.data.assigned_to ?? null);
+setAssignmentOpen(false);
     }
   }, [qDeal.data]);
 
   const mSave = useMutation({
     mutationFn: async () => {
       if (!dealId) return;
-      await updateDeal(dealId, {
-        title: title.trim(),
-        amount: amountText ? Number(amountText) : null,
-        stage,
-      } as Partial<Deal>);
+await updateDeal(dealId, {
+  title: title.trim(),
+  amount: amountText.trim() ? Number(amountText) : null,
+  stage,
+  expected_updated_at: Number(qDeal.data!.updated_at),
+  ...(qDeal.data?.can_manage_assignment
+    ? { assigned_to: assignedTo }
+    : {}),
+});
+
     },
+    onError: (error) => {
+  const message = error instanceof Error
+    ? error.message
+    : "No se pudieron guardar los cambios.";
+
+  if (Platform.OS === "web") {
+    window.alert(message);
+  } else {
+    Alert.alert("No se pudo guardar", message);
+  }
+},
     onSuccess: async () => {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["deal", dealId] }),
@@ -159,7 +207,119 @@ export default function DealDetail() {
               placeholder="Ej: 15000"
               placeholderTextColor={SUBTLE}
             />
+<Text style={styles.label}>Responsable de la oportunidad</Text>
 
+<Text style={styles.muted}>
+  Lleva la negociación comercial. Las actividades tienen sus propios asignados.
+</Text>
+
+{qDeal.data.can_manage_assignment ? (
+  <View style={{ gap: 8 }}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ expanded: assignmentOpen }}
+      disabled={mSave.isPending}
+      style={styles.input}
+      onPress={() => setAssignmentOpen((open) => !open)}
+    >
+      <Text style={styles.label}>
+        {assignedTo
+          ? selectedMember?.name ||
+            selectedMember?.email ||
+            qDeal.data.assigned_to_name ||
+            "Responsable seleccionado"
+          : "Sin asignar"}
+        {"  ▾"}
+      </Text>
+    </Pressable>
+
+    {assignmentOpen && (
+      <View style={[styles.box, { gap: 8 }]}>
+        <TextInput
+          value={memberSearch}
+          onChangeText={setMemberSearch}
+          placeholder="Buscar persona por nombre o correo"
+          placeholderTextColor={SUBTLE}
+          style={styles.input}
+          autoCapitalize="none"
+        />
+
+        <Pressable
+          disabled={mSave.isPending}
+          style={styles.input}
+          onPress={() => {
+            setAssignedTo(null);
+            setAssignmentOpen(false);
+          }}
+        >
+          <Text style={styles.label}>
+            {assignedTo === null ? "✓ " : ""}Sin asignar
+          </Text>
+        </Pressable>
+
+        {qMembers.isLoading ? (
+          <Text style={styles.muted}>Cargando personas…</Text>
+        ) : qMembers.isError ? (
+          <View style={{ gap: 8 }}>
+            <Text style={styles.muted}>
+              No se pudieron cargar los miembros del workspace.
+            </Text>
+            <Pressable onPress={() => { void qMembers.refetch(); }}>
+              <Text style={styles.link}>Reintentar</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <ScrollView
+            nestedScrollEnabled
+            style={{ maxHeight: 240 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {filteredMembers.map((member) => (
+              <Pressable
+                key={member.id}
+                disabled={mSave.isPending}
+                style={[styles.input, { marginBottom: 6 }]}
+                onPress={() => {
+                  setAssignedTo(member.id);
+                  setAssignmentOpen(false);
+                  setMemberSearch("");
+                }}
+              >
+                <Text style={styles.label}>
+                  {assignedTo === member.id ? "✓ " : ""}
+                  {member.name || member.email || member.id}
+                </Text>
+
+                {!!member.email && (
+                  <Text style={styles.muted}>{member.email}</Text>
+                )}
+              </Pressable>
+            ))}
+
+            {filteredMembers.length === 0 && (
+              <Text style={styles.muted}>No hay coincidencias.</Text>
+            )}
+          </ScrollView>
+        )}
+      </View>
+    )}
+
+    <Text style={styles.muted}>
+      La asignación se aplica al pulsar Guardar cambios.
+      El responsable debe tener acceso al contacto vinculado.
+    </Text>
+  </View>
+) : (
+  <View style={styles.box}>
+    <Text style={styles.label}>
+      {qDeal.data.assigned_to_name ||
+        (qDeal.data.assigned_to ? "Asignado a tu usuario" : "Sin asignar")}
+    </Text>
+    <Text style={styles.muted}>
+      El creador o un administrador puede cambiar el responsable.
+    </Text>
+  </View>
+)}
             <Text style={styles.label}>Etapa</Text>
             <View style={styles.pillsRow}>
               {STAGES.map((s) => {
@@ -209,7 +369,7 @@ export default function DealDetail() {
                 )}
               </View>
             </View>
-
+<DealDocuments key={dealId} dealId={dealId!} />
             {/* ——— Actividades (reutilizable) ——— */}
             <View style={[styles.box, styles.emphasisBoxLight]}>
               <Text style={styles.sectionLight}>Actividades</Text>

@@ -2,19 +2,18 @@
 const db = require("../db/connection");
 const { resolveUserId } = require("./authorize");
 
+function validateAlias(alias) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(alias)) {
+    throw new Error("Alias de recurso inválido");
+  }
+}
+
 /**
- * Condición parametrizada para consultar contactos visibles.
- * El alias debe ser una constante del backend, nunca un dato del cliente.
- *
- * No concede acceso especial por rol:
- * un administrador tampoco puede ver contactos privados ajenos.
- *
- * Esta condición debe combinarse con el control de acceso al workspace.
+ * Contactos visibles dentro del workspace.
+ * El rol administrativo no evita la privacidad del contacto.
  */
 function contactVisibilityFilter(req, alias = "c") {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(alias)) {
-    throw new Error("Alias de contactos inválido");
-  }
+  validateAlias(alias);
 
   const userId = resolveUserId(req);
   const tenantId = req.tenantId;
@@ -47,10 +46,6 @@ function contactVisibilityFilter(req, alias = "c") {
   };
 }
 
-/**
- * Devuelve el contacto si el usuario puede verlo.
- * Devuelve null tanto si no existe como si no tiene acceso.
- */
 async function getVisibleContact(req, contactId) {
   if (typeof contactId !== "string" || !contactId.trim()) {
     return null;
@@ -58,21 +53,15 @@ async function getVisibleContact(req, contactId) {
 
   const filter = contactVisibilityFilter(req, "c");
 
-  return db
-    .prepare(`
-      SELECT c.*
-      FROM contacts c
-      WHERE c.id = ?
-        AND ${filter.sql}
-      LIMIT 1
-    `)
-    .get(contactId.trim(), ...filter.params);
+  return db.prepare(`
+    SELECT c.*
+    FROM contacts c
+    WHERE c.id = ?
+      AND ${filter.sql}
+    LIMIT 1
+  `).get(contactId.trim(), ...filter.params);
 }
 
-/**
- * Solo el creador administra con quién comparte el contacto.
- * Los permisos para editar otros datos se comprobarán por separado.
- */
 function canManageContactSharing(req, contact) {
   const userId = resolveUserId(req);
 
@@ -86,14 +75,17 @@ function canManageContactSharing(req, contact) {
 }
 
 /**
- * Hereda permisos del contacto directo y del contacto de la oportunidad.
- * Si hay ambos vínculos, el usuario debe tener acceso a ambos.
- * Los vínculos inexistentes se bloquean.
+ * Acceso de lectura y seguimiento a oportunidades.
+ *
+ * Member: creador o responsable.
+ * Admin/owner: todas las del workspace.
+ * Siempre exige acceso al contacto vinculado.
+ *
+ * El rol se consulta en la base de datos, no en el cliente.
+ * El acceso al workspace lo mantiene el middleware existente.
  */
-function linkedContactVisibilityFilter(req, alias) {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(alias)) {
-    throw new Error("Alias de recurso inválido");
-  }
+function dealVisibilityFilter(req, alias = "d") {
+  validateAlias(alias);
 
   const userId = resolveUserId(req);
 
@@ -101,8 +93,65 @@ function linkedContactVisibilityFilter(req, alias) {
     return { sql: "FALSE", params: [] };
   }
 
+  const contact = contactVisibilityFilter(
+    req,
+    "opportunity_contact"
+  );
+
+  return {
+    sql: `
+      (
+        ${alias}.tenant_id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM users deal_viewer
+          WHERE deal_viewer.id = ?
+            AND COALESCE(deal_viewer.active, TRUE) = TRUE
+            AND (
+              LOWER(deal_viewer.role) IN ('admin', 'owner')
+              OR (
+                LOWER(deal_viewer.role) = 'member'
+                AND (
+                  ${alias}.created_by = deal_viewer.id
+                  OR ${alias}.assigned_to = deal_viewer.id
+                )
+              )
+            )
+        )
+        AND (
+          NULLIF(${alias}.contact_id, '') IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM contacts opportunity_contact
+            WHERE opportunity_contact.id = ${alias}.contact_id
+              AND opportunity_contact.tenant_id = ${alias}.tenant_id
+              AND ${contact.sql}
+          )
+        )
+      )
+    `,
+    params: [
+      req.tenantId,
+      userId,
+      ...contact.params,
+    ],
+  };
+}
+
+/**
+ * Exige acceso al contacto directo y a la oportunidad vinculada.
+ * Si existen ambos vínculos, ambos deben ser accesibles.
+ * No concede acceso por conocer el ID del recurso.
+ */
+function linkedContactVisibilityFilter(req, alias) {
+  validateAlias(alias);
+
+  if (!resolveUserId(req) || !req.tenantId) {
+    return { sql: "FALSE", params: [] };
+  }
+
   const direct = contactVisibilityFilter(req, "direct_contact");
-  const indirect = contactVisibilityFilter(req, "deal_contact");
+  const deal = dealVisibilityFilter(req, "linked_deal");
 
   return {
     sql: `
@@ -125,16 +174,7 @@ function linkedContactVisibilityFilter(req, alias) {
             FROM deals linked_deal
             WHERE linked_deal.id = ${alias}.deal_id
               AND linked_deal.tenant_id = ${alias}.tenant_id
-              AND (
-                NULLIF(linked_deal.contact_id, '') IS NULL
-                OR EXISTS (
-                  SELECT 1
-                  FROM contacts deal_contact
-                  WHERE deal_contact.id = linked_deal.contact_id
-                    AND deal_contact.tenant_id = linked_deal.tenant_id
-                    AND ${indirect.sql}
-                )
-              )
+              AND ${deal.sql}
           )
         )
       )
@@ -142,14 +182,11 @@ function linkedContactVisibilityFilter(req, alias) {
     params: [
       req.tenantId,
       ...direct.params,
-      ...indirect.params,
+      ...deal.params,
     ],
   };
 }
 
-/**
- * Comprueba los vínculos antes de crear o modificar un recurso.
- */
 async function canAccessContactLinks(req, contactId, dealId) {
   const filter = linkedContactVisibilityFilter(req, "resource");
 
@@ -171,10 +208,12 @@ async function canAccessContactLinks(req, contactId, dealId) {
 
   return Boolean(row);
 }
+
 module.exports = {
   contactVisibilityFilter,
   getVisibleContact,
   canManageContactSharing,
+  dealVisibilityFilter,
   linkedContactVisibilityFilter,
   canAccessContactLinks,
 };

@@ -4,8 +4,9 @@ import {
   getActivity,
   listActivities,
   updateActivity,
+  updateActivityStatus,
   type Activity,
-  type ActivityStatus,
+  type ActivityStatus
 } from "@/src/api/activities";
 import {
   listWorkspaceMembers,
@@ -290,7 +291,6 @@ export default function TaskDetail() {
 
   // dropdown de estado
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
-  const [localStatus, setLocalStatus] = useState<Status | null>(null);
 
   // nota nueva
   const [newNoteBody, setNewNoteBody] = useState("");
@@ -352,15 +352,15 @@ export default function TaskDetail() {
   });
 
   // Catálogos
-  const qAcc = useQuery<any[]>({ queryKey: ["accounts"], queryFn: listAccounts as any });
-  const qCon = useQuery<any[]>({ queryKey: ["contacts"], queryFn: listContacts as any });
-  const qDeal = useQuery<any[]>({ queryKey: ["deals"], queryFn: listDeals as any });
-  const qLead = useQuery<any[]>({ queryKey: ["leads"], queryFn: listLeads as any });
+  const qAcc = useQuery<any[]>({ queryKey: ["accounts"], queryFn: () => listAccounts() as any });
+  const qCon = useQuery<any[]>({ queryKey: ["contacts"], queryFn: () => listContacts() as any });
+  const qDeal = useQuery<any[]>({ queryKey: ["deals"], queryFn: () => listDeals() as any });
+  const qLead = useQuery<any[]>({ queryKey: ["leads"], queryFn: () => listLeads() as any });
 
   // Miembros del workspace actual
   const qMembers = useQuery<WorkspaceMember[]>({
     queryKey: ["workspaceMembers"],
-    queryFn: listWorkspaceMembers,
+    queryFn: () => listWorkspaceMembers(),
   });
 
   const getMemberLabel = useCallback(
@@ -497,7 +497,85 @@ export default function TaskDetail() {
       return next;
     });
   };
+const mStatus = useMutation({
+  mutationFn: async (nextStatus: ActivityStatus) => {
+    if (!qAct.data) {
+      throw new Error("Espera a que se cargue la actividad.");
+    }
 
+    return updateActivityStatus(
+      qAct.data.id,
+      nextStatus,
+      Number(qAct.data.updated_at)
+    );
+  },
+
+  onSuccess: async (updated) => {
+    // Actualiza el detalle con la respuesta del servidor.
+    qc.setQueryData(["activity", id], updated);
+    setStatusMenuOpen(false);
+
+    // Limpia las marcas locales antiguas de esta actividad.
+    setCompletedMaster((previous) => {
+      const next = new Set(previous);
+      next.delete(updated.id);
+      return next;
+    });
+
+    setInProgressMaster((previous) => {
+      const next = new Set(previous);
+      next.delete(updated.id);
+      return next;
+    });
+
+    try {
+      for (const key of [
+        MASTER_COMPLETED_KEY,
+        MASTER_INPROGRESS_KEY,
+      ]) {
+        const raw = await AsyncStorage.getItem(key);
+        const saved: unknown = raw ? JSON.parse(raw) : [];
+
+        if (Array.isArray(saved)) {
+          await AsyncStorage.setItem(
+            key,
+            JSON.stringify(
+              saved.filter((value) => value !== updated.id)
+            )
+          );
+        }
+      }
+    } catch {
+      console.warn(
+        "No se pudieron limpiar las marcas locales de la actividad."
+      );
+    }
+
+    await Promise.all([
+      qc.invalidateQueries({
+        queryKey: ["activities"],
+      }),
+      qc.invalidateQueries({
+        queryKey: ["activities-all"],
+      }),
+      qc.invalidateQueries({
+        queryKey: ["activities-home"],
+      }),
+    ]);
+  },
+
+  onError: (error) => {
+    alert(
+      error instanceof Error
+        ? error.message
+        : "No se pudo guardar el estado."
+    );
+
+    void qc.invalidateQueries({
+      queryKey: ["activity", id],
+    });
+  },
+});
   const mDelete = useMutation({
     mutationFn: async () => deleteActivity(id!),
     onSuccess: async () => {
@@ -889,9 +967,17 @@ await createCalendarEventFromActivity({
     return cs;
   }, [activity, qAcc.data, qCon.data, qDeal.data, qLead.data]);
 
-  const isDoneUI = activity?.status === "done" || completedMaster.has(activity?.id ?? "");
-  const isInProgressUI = !isDoneUI && inProgressMaster.has(activity?.id ?? "");
-  const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
+ const isDoneUI = activity?.status === "done";
+const isInProgressUI = activity?.status === "in_progress";
+
+const statusLabel =
+  activity?.status === "done"
+    ? "Realizada"
+    : activity?.status === "in_progress"
+    ? "En proceso"
+    : activity?.status === "canceled"
+    ? "Cancelada"
+    : "Abierta";
 
   const assigneesLabel = useMemo(() => {
     if (!activity) return "Sin asignar";
@@ -1185,63 +1271,63 @@ await createCalendarEventFromActivity({
                 {mReassign.isPending && <Text style={styles.subtleSmall}>Actualizando…</Text>}
               </View>
 
-              {/* Estado dropdown (solo front) */}
-              <View style={styles.stateRow}>
-                <Text style={styles.itemLabel}>Estado: </Text>
+             {/* Estado guardado en el servidor */}
+<View style={styles.stateRow}>
+  <Text style={styles.itemLabel}>Estado:</Text>
 
-                <View>
-                  <Pressable
-                    style={[
-                      styles.statusChip,
-                      isDoneUI
-                        ? styles.statusDone
-                        : isInProgressUI
-                        ? styles.statusInProgress
-                        : styles.statusOpen,
-                    ]}
-                    onPress={() => setStatusMenuOpen((v) => !v)}
-                  >
-                    <Text style={styles.statusChipText}>{statusLabel}</Text>
-                  </Pressable>
+  <View>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{
+        expanded: statusMenuOpen,
+        disabled: mStatus.isPending || qAct.isFetching,
+      }}
+      disabled={mStatus.isPending || qAct.isFetching}
+      style={[
+        styles.statusChip,
+        isDoneUI
+          ? styles.statusDone
+          : isInProgressUI
+          ? styles.statusInProgress
+          : styles.statusOpen,
+      ]}
+      onPress={() => setStatusMenuOpen((open) => !open)}
+    >
+      <Text style={styles.statusChipText}>
+        {mStatus.isPending ? "Guardando…" : statusLabel}
+      </Text>
+    </Pressable>
 
-                  {statusMenuOpen && (
-                    <View style={styles.statusList}>
-                      <Pressable
-                        style={styles.statusOption}
-                        onPress={() => {
-                          markAsOpen(activity.id);
-                          setLocalStatus("open");
-                          setStatusMenuOpen(false);
-                        }}
-                      >
-                        <Text style={styles.statusOptionText}>Abierta</Text>
-                      </Pressable>
-
-                      <Pressable
-                        style={styles.statusOption}
-                        onPress={() => {
-                          markInProgress(activity.id);
-                          setLocalStatus("canceled");
-                          setStatusMenuOpen(false);
-                        }}
-                      >
-                        <Text style={styles.statusOptionText}>En proceso</Text>
-                      </Pressable>
-
-                      <Pressable
-                        style={styles.statusOption}
-                        onPress={() => {
-                          markAsCompleted(activity.id);
-                          setLocalStatus("done");
-                          setStatusMenuOpen(false);
-                        }}
-                      >
-                        <Text style={styles.statusOptionText}>Realizada</Text>
-                      </Pressable>
-                    </View>
-                  )}
-                </View>
-              </View>
+    {statusMenuOpen && (
+      <View style={styles.statusList}>
+        {(
+          [
+            ["open", "Abierta"],
+            ["in_progress", "En proceso"],
+            ["done", "Realizada"],
+            ["canceled", "Cancelada"],
+          ] as const
+        ).map(([value, label]) => (
+          <Pressable
+            key={value}
+            style={styles.statusOption}
+            disabled={
+              mStatus.isPending ||
+              qAct.isFetching ||
+              activity.status === value
+            }
+            onPress={() => mStatus.mutate(value)}
+          >
+            <Text style={styles.statusOptionText}>
+              {activity.status === value ? "✓ " : ""}
+              {label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    )}
+  </View>
+</View>
 
               {/* Notas */}
               <View style={{ marginTop: 12 }}>

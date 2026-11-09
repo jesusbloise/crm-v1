@@ -1,9 +1,9 @@
 // app/more/admin-users.tsx
+import { api } from "@/src/api/http";
 import { Stack, router, useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -11,501 +11,457 @@ import {
   Text,
   View,
 } from "react-native";
-import { api } from "../../src/api/http";
-import { COLORS, RADIUS } from "../../src/theme";
 
-interface User {
+type Role = "owner" | "admin" | "member";
+
+type User = {
   id: string;
   email: string;
   name: string;
-  role: "owner" | "admin" | "member";  // ⭐ Rol GLOBAL
+  role: Role;
   active: boolean;
   created_at: number;
   updated_at: number;
-  workspaces_created: number;  // ⭐ Cantidad de workspaces creados
-}
+  workspaces_created: number;
+};
 
-interface ConfirmDialog {
-  visible: boolean;
+type Confirmation = {
   title: string;
   message: string;
-  type: "toggle-active" | "change-global-role" | null;
-  userId?: string;
-  currentActive?: boolean;
-  currentRole?: "owner" | "admin" | "member";
-  newRole?: "owner" | "admin" | "member";
+  userId: string;
+} & (
+  | { type: "toggle-active" }
+  | { type: "change-global-role"; newRole: Role }
+);
+
+const ROLE_LABELS: Record<Role, string> = {
+  owner: "Owner",
+  admin: "Administrador",
+  member: "Miembro",
+};
+
+function messageOf(error: unknown) {
+  return error instanceof Error
+    ? error.message
+    : "No se pudo completar la operación.";
 }
 
-type RoleNow = "owner" | "admin" | "member" | null;
+function formatDate(value: number | string) {
+  const timestamp = Number(value);
+  const date = new Date(timestamp);
+
+  if (!Number.isFinite(timestamp) || Number.isNaN(date.getTime())) {
+    return "No disponible";
+  }
+
+  return date.toLocaleDateString("es-CL", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
 
 export default function AdminUsers() {
-  // Acceso según rol actual en el tenant
-  const [roleNow, setRoleNow] = useState<RoleNow>(null);
+  const [roleNow, setRoleNow] = useState<Role | null>(null);
   const [checkingRole, setCheckingRole] = useState(true);
-  const [roleError, setRoleError] = useState<string | null>(null);
-
-  // Datos
+  const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [updatingUserId, setUpdatingUserId] =
+    useState<string | null>(null);
+  const [confirmation, setConfirmation] =
+    useState<Confirmation | null>(null);
+  const [reload, setReload] = useState(0);
 
-  // Confirmaciones
-  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog>({
-    visible: false,
-    title: "",
-    message: "",
-    type: null,
-  });
-
-  /** ------------------------------------------
-   * Guardia de acceso por rol actual
-   * ------------------------------------------ */
-  const refreshRole = useCallback(async () => {
-    setCheckingRole(true);
-    setRoleError(null);
-    try {
-      // Debe existir endpoint que responda { tenant_id, role }
-      const res = await api.get<{ tenant_id: string | null; role: string | null }>(
-        "/tenants/role?_=" + Date.now()
-      );
-      const r = (res?.role || "").toLowerCase() as RoleNow;
-      if (r === "owner" || r === "admin" || r === "member") {
-        setRoleNow(r);
-      } else {
-        setRoleNow(null);
-      }
-    } catch (e: any) {
-      setRoleError(e?.message || "No se pudo verificar tu rol actual.");
-      setRoleNow(null);
-    } finally {
-      setCheckingRole(false);
-    }
-  }, []);
-
-  const hasAccess = useMemo(() => roleNow === "owner" || roleNow === "admin", [roleNow]);
-
-  /** ------------------------------------------
-   * Cargar usuarios
-   * ------------------------------------------ */
-  const loadUsers = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await api.get<{ users: User[] }>("/admin/users");
-      setUsers(data.users || []);
-    } catch (err: any) {
-      setError(err?.message || "Error al cargar usuarios");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  /** ------------------------------------------
-   * Ciclo de vida / foco
-   * ------------------------------------------ */
-  useEffect(() => {
-    refreshRole();
-  }, [refreshRole]);
+  const actionLock = useRef(false);
+  const hasAccess = roleNow === "owner" || roleNow === "admin";
 
   useFocusEffect(
     useCallback(() => {
-      // Al entrar en foco, revalida rol y recarga usuarios si corresponde
-      (async () => {
-        await refreshRole();
-        // Si tiene acceso, carga usuarios
-        // (si no, veremos la pantalla 403)
-        // Evita doble carga si refreshRole está lento:
-        setTimeout(() => {
-          if (hasAccess) loadUsers();
-        }, 0);
-      })();
-    }, [refreshRole, loadUsers, hasAccess])
+      let cancelled = false;
+
+      async function load() {
+        setCheckingRole(true);
+        setLoading(false);
+        setError(null);
+        setRoleNow(null);
+        setUsers([]);
+        setConfirmation(null);
+
+        try {
+          const response = await api.get<{
+            tenant_id: string | null;
+            role: string | null;
+          }>(`/tenants/role?_=${Date.now()}`);
+
+          if (cancelled) return;
+
+          const value = response.role?.toLowerCase();
+          const role: Role | null =
+            value === "owner" ||
+            value === "admin" ||
+            value === "member"
+              ? value
+              : null;
+
+          setRoleNow(role);
+          setCheckingRole(false);
+
+          if (role !== "owner" && role !== "admin") return;
+
+          setLoading(true);
+
+          const result = await api.get<{ users: User[] }>(
+            "/admin/users"
+          );
+
+          if (cancelled) return;
+
+          setUsers(result.users ?? []);
+        } catch (error: unknown) {
+          if (!cancelled) setError(messageOf(error));
+        } finally {
+          if (!cancelled) {
+            setCheckingRole(false);
+            setLoading(false);
+          }
+        }
+      }
+
+      void load();
+
+      return () => {
+        cancelled = true;
+      };
+    }, [reload])
   );
 
-  /** ------------------------------------------
-   * Acciones
-   * ------------------------------------------ */
-  const handleToggleActive = (userId: string, currentActive: boolean) => {
-    setConfirmDialog({
-      visible: true,
-      title: currentActive ? "Desactivar usuario" : "Activar usuario",
-      message: currentActive
-        ? "¿Estás seguro de desactivar este usuario? No podrá iniciar sesión."
-        : "¿Estás seguro de activar este usuario?",
+  function requestToggle(user: User) {
+    if (!hasAccess || actionLock.current) return;
+
+    setConfirmation({
       type: "toggle-active",
-      userId,
-      currentActive,
+      userId: user.id,
+      title: user.active ? "Desactivar usuario" : "Activar usuario",
+      message: user.active
+        ? `¿Quieres desactivar a ${user.name || user.email}? No podrá iniciar sesión.`
+        : `¿Quieres activar a ${user.name || user.email}?`,
     });
-  };
+  }
 
-  const executeToggleActive = async () => {
-    if (!confirmDialog.userId) return;
-    setConfirmDialog((d) => ({ ...d, visible: false }));
-
-    try {
-      setUpdatingUserId(confirmDialog.userId);
-      await api.post(`/admin/users/${confirmDialog.userId}/toggle-active`, {});
-      await loadUsers();
-    } catch (err: any) {
-      Alert.alert("Error", err?.message || "No se pudo cambiar el estado del usuario");
-    } finally {
-      setUpdatingUserId(null);
-    }
-  };
-
-  const handleChangeGlobalRole = (userId: string, currentRole: "owner" | "admin" | "member") => {
-    // Mostrar modal con opciones de rol
-    let newRole: "owner" | "admin" | "member";
-    let message: string;
-    
-    if (currentRole === "member") {
-      newRole = "admin";
-      message = "¿Promover este usuario a Admin? Podrá crear workspaces y ver todos los datos.";
-    } else if (currentRole === "admin") {
-      newRole = "member";
-      message = "¿Degradar este usuario a Member? Solo podrá ver sus propios datos.";
-    } else {
-      // owner - no debería llegar aquí
+  function requestRoleChange(user: User) {
+    if (
+      roleNow !== "owner" ||
+      user.role === "owner" ||
+      actionLock.current
+    ) {
       return;
     }
-    
-    setConfirmDialog({
-      visible: true,
-      title: "Cambiar Rol Global",
-      message,
+
+    const newRole: Role =
+      user.role === "member" ? "admin" : "member";
+
+    setConfirmation({
       type: "change-global-role",
-      userId,
-      currentRole,
+      userId: user.id,
       newRole,
+      title: "Cambiar rol global",
+      message:
+        newRole === "admin"
+          ? `¿Asignar el rol Administrador a ${user.name || user.email}? Este cambio afecta sus permisos globales en el CRM.`
+          : `¿Asignar el rol Miembro a ${user.name || user.email}? Perderá los permisos globales de administrador.`,
     });
-  };
-
- const executeChangeGlobalRole = async () => {
-  if (!confirmDialog.userId || !confirmDialog.newRole) return;
-
-  setConfirmDialog((d) => ({ ...d, visible: false }));
-
-  try {
-    setUpdatingUserId(confirmDialog.userId);
-
-    // 👇 Coincide con tu backend: POST + /change-role + body.newRole
-    await api.post(`/admin/users/${confirmDialog.userId}/change-role`, {
-      newRole: confirmDialog.newRole,
-    });
-
-    Alert.alert(
-      "Éxito",
-      `Usuario actualizado a ${
-        confirmDialog.newRole === "admin" ? "Admin 🔑" :
-        confirmDialog.newRole === "owner" ? "Owner 👑" :
-        "Member 👤"
-      }`
-    );
-
-    await loadUsers();
-  } catch (err: any) {
-    console.error("❌ Error cambiando rol global:", err);
-    Alert.alert("Error", err?.message || "No se pudo cambiar el rol");
-  } finally {
-    setUpdatingUserId(null);
   }
-};
 
+  async function executeAction() {
+    if (!confirmation || actionLock.current || !hasAccess) return;
 
-  const handleConfirm = () => {
-    if (confirmDialog.type === "toggle-active") executeToggleActive();
-    if (confirmDialog.type === "change-global-role") executeChangeGlobalRole();
-  };
+    const action = confirmation;
 
-  const handleCancel = () => {
-    setConfirmDialog({ visible: false, title: "", message: "", type: null });
-  };
-
-  /** ------------------------------------------
-   * Helpers UI
-   * ------------------------------------------ */
-  const getRoleBadgeColor = (role: string) => {
-    switch (role) {
-      case "owner":
-        return { bg: COLORS.tints.primary, text: COLORS.primary };
-      case "admin":
-        return { bg: COLORS.tints.primary, text: COLORS.primary };
-      default:
-        return { bg: COLORS.tints.neutral, text: COLORS.sub };
+    if (
+      action.type === "change-global-role" &&
+      roleNow !== "owner"
+    ) {
+      return;
     }
-  };
 
-  const formatDate = (timestamp: number) =>
-    new Date(timestamp).toLocaleDateString("es-ES", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+    actionLock.current = true;
+    setUpdatingUserId(action.userId);
+    setConfirmation(null);
+    setError(null);
+    setNotice(null);
 
-  /** ------------------------------------------
-   * Render
-   * ------------------------------------------ */
+    try {
+      const userId = encodeURIComponent(action.userId);
 
-  // Verificando permisos
-  if (checkingRole) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen
-          options={{
-            title: "Administrador",
-            headerStyle: { backgroundColor: COLORS.card },
-            headerTintColor: COLORS.text,
-          }}
-        />
-        <View style={styles.centerContent}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>Verificando permisos…</Text>
-        </View>
-      </View>
-    );
+      if (action.type === "toggle-active") {
+        await api.post(`/admin/users/${userId}/toggle-active`, {});
+        setNotice("Estado del usuario actualizado.");
+      } else {
+        await api.post(`/admin/users/${userId}/change-role`, {
+          newRole: action.newRole,
+        });
+
+        setNotice(
+          `Rol actualizado a ${ROLE_LABELS[action.newRole]}.`
+        );
+      }
+
+      // Volver a verificar permisos y cargar los datos guardados.
+      setReload((value) => value + 1);
+    } catch (error: unknown) {
+      setError(messageOf(error));
+    } finally {
+      actionLock.current = false;
+      setUpdatingUserId(null);
+    }
   }
 
-  // Sin acceso
-  if (!hasAccess) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen
-          options={{
-            title: "Administrador",
-            headerStyle: { backgroundColor: COLORS.card },
-            headerTintColor: COLORS.text,
-          }}
-        />
-        <View style={styles.centerContent}>
-          <Text style={styles.errorText}>
-            {roleError
-              ? roleError
-              : "No tienes permisos para acceder al panel de administración."}
-          </Text>
-          <Pressable
-            onPress={() => router.back()}
-            style={[styles.retryButton, { backgroundColor: COLORS.tints.neutral }]}
-          >
-            <Text style={[styles.retryButtonText, { color: COLORS.text }]}>Volver</Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
+  const busy = updatingUserId !== null;
 
-  // Cargando usuarios
-  if (loading) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen
-          options={{
-            title: "Administrador",
-            headerStyle: { backgroundColor: COLORS.card },
-            headerTintColor: COLORS.text,
-          }}
-        />
-        <View style={styles.centerContent}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.loadingText}>Cargando usuarios…</Text>
-        </View>
-      </View>
-    );
-  }
-
-  // Error al cargar
-  if (error) {
-    return (
-      <View style={styles.container}>
-        <Stack.Screen
-          options={{
-            title: "Administrador",
-            headerStyle: { backgroundColor: COLORS.card },
-            headerTintColor: COLORS.text,
-          }}
-        />
-        <View style={styles.centerContent}>
-          <Text style={styles.errorText}>{error}</Text>
-          <Pressable onPress={loadUsers} style={styles.retryButton}>
-            <Text style={styles.retryButtonText}>Reintentar</Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
-
-  // OK
   return (
-    <View style={styles.container}>
+    <View style={s.screen}>
       <Stack.Screen
         options={{
           title: "Administrador",
-          headerStyle: { backgroundColor: COLORS.card },
-          headerTintColor: COLORS.text,
+          headerStyle: { backgroundColor: "#ffffff" },
+          headerTintColor: "#202536",
         }}
       />
 
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Usuarios Registrados</Text>
-        <Text style={styles.headerSubtitle}>
-          {users.length} usuario{users.length !== 1 ? "s" : ""} en total
-        </Text>
-      </View>
+      <ScrollView
+        contentContainerStyle={s.content}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={s.header}>
+          <View style={s.heading}>
+            <Text style={s.eyebrow}>ADMINISTRACIÓN</Text>
+            <Text style={s.title}>Usuarios registrados</Text>
+            <Text style={s.subtitle}>
+              Gestiona el acceso y los roles globales del CRM.
+            </Text>
+          </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        {users.map((user) => (
-          <View key={user.id} style={styles.userCard}>
-            <View style={styles.userHeader}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>
-                  {user.name?.charAt(0)?.toUpperCase() ||
-                    user.email?.charAt(0)?.toUpperCase() ||
-                    "?"}
+          <Pressable
+            accessibilityRole="button"
+            disabled={checkingRole || loading || busy}
+            onPress={() => setReload((value) => value + 1)}
+            style={[
+              s.button,
+              (checkingRole || loading || busy) && s.disabled,
+            ]}
+          >
+            <Text style={s.buttonText}>Actualizar</Text>
+          </Pressable>
+        </View>
+
+        {!!notice && (
+          <View style={s.successBox}>
+            <Text accessibilityRole="alert" style={s.successText}>
+              {notice}
+            </Text>
+          </View>
+        )}
+
+        {!!error && (
+          <View style={s.errorBox}>
+            <Text accessibilityRole="alert" style={s.errorText}>
+              {error}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              disabled={checkingRole || loading || busy}
+              onPress={() => setReload((value) => value + 1)}
+              style={s.button}
+            >
+              <Text style={s.buttonText}>Reintentar carga</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {checkingRole || loading ? (
+          <View style={s.feedback}>
+            <ActivityIndicator color="#7551c8" />
+            <Text style={s.subtitle}>
+              {checkingRole
+                ? "Verificando permisos…"
+                : "Cargando usuarios…"}
+            </Text>
+          </View>
+        ) : !hasAccess ? (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Acceso restringido</Text>
+            <Text style={s.subtitle}>
+              {error
+                ? "No pudimos verificar tu acceso."
+                : "No tienes permisos para acceder al panel de administración."}
+            </Text>
+            <View style={s.actions}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => router.back()}
+                style={s.button}
+              >
+                <Text style={s.buttonText}>Volver</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <>
+            <Text style={s.count}>
+              {users.length} usuario{users.length === 1 ? "" : "s"}
+              {" "}en total
+            </Text>
+
+            {!error && users.length === 0 && (
+              <View style={s.card}>
+                <Text style={s.subtitle}>
+                  No hay usuarios para mostrar.
                 </Text>
               </View>
-              <View style={styles.userInfo}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Text style={styles.userName}>{user.name || "Sin nombre"}</Text>
-                  <View
+            )}
+
+            {users.map((user) => (
+              <View key={user.id} style={s.card}>
+                <View style={s.userHeader}>
+                  <View style={s.avatar}>
+                    <Text style={s.avatarText}>
+                      {(
+                        user.name?.trim().charAt(0) ||
+                        user.email?.charAt(0) ||
+                        "?"
+                      ).toUpperCase()}
+                    </Text>
+                  </View>
+
+                  <View style={s.userInfo}>
+                    <View style={s.nameRow}>
+                      <Text style={s.userName}>
+                        {user.name || "Sin nombre"}
+                      </Text>
+
+                      <View
+                        style={[
+                          s.badge,
+                          user.active
+                            ? s.activeBadge
+                            : s.inactiveBadge,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            s.badgeText,
+                            user.active
+                              ? s.activeText
+                              : s.inactiveText,
+                          ]}
+                        >
+                          {user.active ? "Activo" : "Inactivo"}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text selectable style={s.subtitle}>
+                      {user.email}
+                    </Text>
+                    <Text style={s.small}>
+                      Registro: {formatDate(user.created_at)}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={s.roleRow}>
+                  <Text style={s.label}>Rol global</Text>
+                  <View style={[s.badge, s.roleBadge]}>
+                    <Text style={s.roleText}>
+                      {ROLE_LABELS[user.role] || user.role}
+                    </Text>
+                  </View>
+
+                  {roleNow === "owner" && user.role !== "owner" && (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Cambiar rol de ${user.name || user.email}`}
+                      disabled={busy}
+                      onPress={() => requestRoleChange(user)}
+                      style={[s.button, busy && s.disabled]}
+                    >
+                      <Text style={s.buttonText}>Cambiar rol</Text>
+                    </Pressable>
+                  )}
+                </View>
+
+                <View style={s.footer}>
+                  <Text style={s.small}>
+                    Workspaces creados: {user.workspaces_created ?? 0}
+                  </Text>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${user.active ? "Desactivar" : "Activar"} a ${user.name || user.email}`}
+                    disabled={busy}
+                    onPress={() => requestToggle(user)}
                     style={[
-                      styles.statusBadge,
-                      {
-                        backgroundColor: user.active
-                          ? COLORS.tints.success
-                          : COLORS.tints.danger,
-                      },
+                      s.button,
+                      user.active ? s.dangerButton : s.successButton,
+                      busy && s.disabled,
                     ]}
                   >
                     <Text
                       style={[
-                        styles.statusText,
-                        { color: user.active ? COLORS.success : COLORS.danger },
+                        s.buttonText,
+                        user.active
+                          ? s.inactiveText
+                          : s.activeText,
                       ]}
                     >
-                      {user.active ? "Activo" : "Inactivo"}
+                      {updatingUserId === user.id
+                        ? "Procesando…"
+                        : user.active
+                        ? "Desactivar"
+                        : "Activar"}
                     </Text>
-                  </View>
+                  </Pressable>
                 </View>
-                <Text style={styles.userEmail}>{user.email}</Text>
-                <Text style={styles.userDate}>Registro: {formatDate(user.created_at)}</Text>
               </View>
-            </View>
-
-            {/* Botones de acción global (activar/desactivar) */}
-            <View style={styles.actionsContainer}>
-              <Pressable
-                onPress={() => handleToggleActive(user.id, user.active)}
-                disabled={updatingUserId === user.id}
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  {
-                    backgroundColor: user.active
-                      ? COLORS.tints.danger
-                      : COLORS.tints.success,
-                  },
-                  pressed && styles.actionButtonPressed,
-                  updatingUserId === user.id && styles.actionButtonDisabled,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.actionButtonText,
-                    { color: user.active ? COLORS.danger : COLORS.success },
-                  ]}
-                >
-                  {updatingUserId === user.id
-                    ? "Procesando…"
-                    : user.active
-                    ? "Desactivar"
-                    : "Activar"}
-                </Text>
-              </Pressable>
-            </View>
-
-            {/* Rol global del usuario */}
-            <View style={styles.roleContainer}>
-              <Text style={styles.roleLabel}>Rol Global:</Text>
-              <View
-                style={[
-                  styles.roleBadge,
-                  { backgroundColor: getRoleBadgeColor(user.role).bg },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.roleText,
-                    { color: getRoleBadgeColor(user.role).text },
-                  ]}
-                >
-                  {user.role === "owner"
-                    ? "👑 Owner"
-                    : user.role === "admin"
-                    ? "🔑 Admin"
-                    : "👤 Member"}
-                </Text>
-              </View>
-              
-              {/* Botón para cambiar rol */}
-              {roleNow === "owner" && user.role !== "owner" && (
-                <Pressable
-                  onPress={() => handleChangeGlobalRole(user.id, user.role)}
-                  disabled={updatingUserId === user.id}
-                  style={({ pressed }) => [
-                    styles.changeRoleButton,
-                    pressed && styles.changeRoleButtonPressed,
-                    updatingUserId === user.id && styles.actionButtonDisabled,
-                  ]}
-                >
-                  <Text style={styles.changeRoleButtonText}>Cambiar Rol</Text>
-                </Pressable>
-              )}
-            </View>
-
-            {/* Info de workspaces creados */}
-            <View style={styles.statsContainer}>
-              <Text style={styles.statsText}>
-                📁 Workspaces creados: {user.workspaces_created}
-              </Text>
-            </View>
-          </View>
-        ))}
+            ))}
+          </>
+        )}
       </ScrollView>
 
-      {/* Modal de confirmación */}
       <Modal
-        visible={confirmDialog.visible}
+        visible={confirmation !== null}
         transparent
         animationType="fade"
-        onRequestClose={handleCancel}
+        onRequestClose={() => setConfirmation(null)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{confirmDialog.title}</Text>
-            <Text style={styles.modalMessage}>{confirmDialog.message}</Text>
+        <View style={s.overlay}>
+          <View style={s.modal}>
+            <Text style={s.modalTitle}>{confirmation?.title}</Text>
+            <Text style={s.subtitle}>{confirmation?.message}</Text>
 
-            <View style={styles.modalButtons}>
+            <View style={s.modalActions}>
               <Pressable
-                onPress={handleCancel}
-                style={({ pressed }) => [
-                  styles.modalButton,
-                  styles.modalButtonCancel,
-                  pressed && styles.modalButtonPressed,
-                ]}
+                accessibilityRole="button"
+                onPress={() => setConfirmation(null)}
+                style={[s.button, s.modalButton]}
               >
-                <Text style={styles.modalButtonTextCancel}>Cancelar</Text>
+                <Text style={s.buttonText}>Cancelar</Text>
               </Pressable>
 
               <Pressable
-                onPress={handleConfirm}
-                style={({ pressed }) => [
-                  styles.modalButton,
-                  styles.modalButtonConfirm,
-                  pressed && styles.modalButtonPressed,
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={() => void executeAction()}
+                style={[
+                  s.button,
+                  s.primary,
+                  s.modalButton,
+                  busy && s.disabled,
                 ]}
               >
-                <Text style={styles.modalButtonTextConfirm}>
-                  {confirmDialog.type === "toggle-active" ? "Confirmar" : "Cambiar"}
-                </Text>
+                <Text style={s.primaryText}>Confirmar</Text>
               </Pressable>
             </View>
           </View>
@@ -515,281 +471,169 @@ export default function AdminUsers() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.bg,
-  },
-  centerContent: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
+const s = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: "#f5f6fa" },
+  content: {
+    width: "100%",
+    maxWidth: 1100,
+    alignSelf: "center",
     padding: 20,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 16,
-    color: COLORS.sub,
-  },
-  errorText: {
-    fontSize: 16,
-    color: COLORS.danger,
-    textAlign: "center",
-    marginBottom: 20,
-  },
-  retryButton: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: RADIUS.sm,
-  },
-  retryButtonText: {
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: "600",
+    paddingBottom: 48,
+    gap: 14,
   },
   header: {
-    backgroundColor: COLORS.card,
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: COLORS.sub,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  userCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: RADIUS.sm,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  userHeader: {
     flexDirection: "row",
-    marginBottom: 12,
-  },
-  avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: COLORS.primary,
-    justifyContent: "center",
+    flexWrap: "wrap",
     alignItems: "center",
-    marginRight: 12,
+    justifyContent: "space-between",
+    gap: 14,
+    marginBottom: 6,
   },
-  avatarText: {
-    color: COLORS.text,
-    fontSize: 20,
-    fontWeight: "600",
+  heading: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 230,
+    minWidth: 0,
+    gap: 7,
   },
-  userInfo: {
-    flex: 1,
+  eyebrow: {
+    color: "#8a819e",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+  },
+  title: { color: "#202536", fontSize: 25, fontWeight: "700" },
+  subtitle: { color: "#737b8e", fontSize: 12, lineHeight: 20 },
+  small: { color: "#8991a2", fontSize: 11, lineHeight: 18 },
+  count: { color: "#737b8e", fontSize: 12, marginBottom: 2 },
+  card: {
+    minWidth: 0,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e7e9f0",
+    borderRadius: 14,
+    padding: 20,
+    gap: 16,
+  },
+  cardTitle: { color: "#202536", fontSize: 16, fontWeight: "700" },
+  userHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+  avatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: "#eee8f9",
+    alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
+  },
+  avatarText: { color: "#7551c8", fontSize: 19, fontWeight: "700" },
+  userInfo: { flex: 1, minWidth: 0, gap: 4 },
+  nameRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
   },
   userName: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: COLORS.text,
-    marginBottom: 2,
-  },
-  userEmail: {
+    color: "#202536",
     fontSize: 14,
-    color: COLORS.sub,
-    marginBottom: 2,
+    lineHeight: 22,
+    fontWeight: "600",
+    flexShrink: 1,
   },
-  userDate: {
-    fontSize: 12,
-    color: COLORS.muted,
+  badge: {
+    alignSelf: "flex-start",
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
   },
-  workspacesContainer: {
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    paddingTop: 12,
-  },
-  roleContainer: {
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    paddingTop: 12,
+  badgeText: { fontSize: 10, fontWeight: "600" },
+  activeBadge: { backgroundColor: "#edf8f1" },
+  inactiveBadge: { backgroundColor: "#fff1f2" },
+  activeText: { color: "#23744d" },
+  inactiveText: { color: "#b42332" },
+  roleRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#eef0f5",
+    paddingTop: 14,
+    gap: 10,
+  },
+  label: { color: "#737b8e", fontSize: 11, fontWeight: "600" },
+  roleBadge: { backgroundColor: "#f1ecfa", alignSelf: "auto" },
+  roleText: { color: "#7551c8", fontSize: 11, fontWeight: "600" },
+  footer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  button: {
+    minHeight: 42,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ded5ef",
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  buttonText: { color: "#7551c8", fontSize: 12, fontWeight: "600" },
+  dangerButton: {
+    borderColor: "#f3d6db",
+    backgroundColor: "#fff3f3",
+  },
+  successButton: {
+    borderColor: "#cce8d7",
+    backgroundColor: "#edf8f1",
+  },
+  primary: { backgroundColor: "#7551c8", borderColor: "#7551c8" },
+  primaryText: { color: "#ffffff", fontSize: 12, fontWeight: "600" },
+  disabled: { opacity: 0.5 },
+  feedback: {
+    paddingVertical: 40,
     alignItems: "center",
     gap: 12,
-    marginBottom: 8,
   },
-  roleLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: COLORS.sub,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
+  errorBox: {
+    backgroundColor: "#fff3f3",
+    borderColor: "#f3d6db",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 16,
+    gap: 12,
+    alignItems: "flex-start",
   },
-  statsContainer: {
-    paddingTop: 8,
+  errorText: { color: "#b42332", fontSize: 12, lineHeight: 20 },
+  successBox: {
+    backgroundColor: "#edf8f1",
+    borderRadius: 10,
+    padding: 14,
   },
-  statsText: {
-    fontSize: 13,
-    color: COLORS.sub,
-  },
-  workspacesTitle: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: COLORS.sub,
-    marginBottom: 8,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  workspaceItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingVertical: 6,
-  },
-  workspaceName: {
+  successText: { color: "#23744d", fontSize: 12, lineHeight: 20 },
+  overlay: {
     flex: 1,
-    fontSize: 14,
-    color: COLORS.text,
-    marginRight: 8,
-  },
-  roleBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-  },
-  roleText: {
-    fontSize: 11,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.3,
-  },
-  noWorkspaces: {
-    fontSize: 14,
-    color: COLORS.muted,
-    fontStyle: "italic",
-    textAlign: "center",
-    paddingVertical: 8,
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: RADIUS.pill,
-  },
-  statusText: {
-    fontSize: 10,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.3,
-  },
-  actionsContainer: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 12,
-  },
-  actionButton: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: RADIUS.sm,
+    backgroundColor: "rgba(32,37,54,0.35)",
     alignItems: "center",
-  },
-  actionButtonPressed: {
-    opacity: 0.7,
-  },
-  actionButtonDisabled: {
-    opacity: 0.5,
-  },
-  actionButtonText: {
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  changeRoleButton: {
-    minWidth: 76,
-    height: 32,
-    borderRadius: RADIUS.sm,
-    backgroundColor: COLORS.tints.primary,
     justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 10,
-  },
-  changeRoleButtonPressed: {
-    opacity: 0.7,
-  },
-  changeRoleButtonText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: COLORS.primary,
-  },
-  // Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.6)",
-    justifyContent: "center",
-    alignItems: "center",
     padding: 20,
   },
-  modalContent: {
-    backgroundColor: COLORS.card,
-    borderRadius: RADIUS.md,
-    padding: 24,
+  modal: {
     width: "100%",
-    maxWidth: 400,
+    maxWidth: 440,
+    backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: "#e7e9f0",
+    borderRadius: 14,
+    padding: 22,
+    gap: 16,
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: COLORS.text,
-    marginBottom: 12,
-  },
-  modalMessage: {
-    fontSize: 16,
-    color: COLORS.sub,
-    marginBottom: 24,
-    lineHeight: 22,
-  },
-  modalButtons: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  modalButton: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: RADIUS.sm,
-    alignItems: "center",
-  },
-  modalButtonCancel: {
-    backgroundColor: COLORS.tints.neutral,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  modalButtonConfirm: {
-    backgroundColor: COLORS.primary,
-  },
-  modalButtonPressed: {
-    opacity: 0.7,
-  },
-  modalButtonTextCancel: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: COLORS.text,
-  },
-  modalButtonTextConfirm: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: COLORS.text,
-  },
+  modalTitle: { color: "#202536", fontSize: 18, fontWeight: "700" },
+  modalActions: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  modalButton: { flexGrow: 1 },
 });

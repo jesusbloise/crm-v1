@@ -1,7 +1,7 @@
 // app/index.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useQuery } from "@tanstack/react-query";
-import { Stack, useFocusEffect, useRouter } from "expo-router";
+import { Redirect, Stack, useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -58,17 +58,63 @@ const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 type ActivityStatusUI = "open" | "in_progress" | "done" | "canceled";
 type ActivityFilter = "all" | ActivityStatusUI;
 
-export default function Home() {
+export default function HomeEntry() {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      const hash = window.location.hash;
+      const oauthParams = new URLSearchParams(
+        hash.replace(/^#/, "")
+      );
+
+      if (oauthParams.get("access_token")) {
+        // Entregar la respuesta a la pantalla que guarda
+        // la conexión de Google Calendar.
+        // Se conserva el fragmento completo, incluido state.
+        window.location.replace(
+          `/calendar/google${window.location.search}${hash}`
+        );
+        return;
+      }
+    }
+
+    setReady(true);
+  }, []);
+
+  if (!ready) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "#f5f6fa",
+        }}
+      >
+        <ActivityIndicator color="#7551c8" />
+        <Text style={{ marginTop: 12, color: "#737b8e" }}>
+          Preparando la sesión…
+        </Text>
+      </View>
+    );
+  }
+
+  return <Redirect href="/tasks" />;
+}
+
+// Resumen conservado para una futura reactivación.
+function Home() {
   const router = useRouter();
 
   // Data conteos
-  const qDeals = useQuery({ queryKey: ["deals"], queryFn: listDeals });
-  const qAcc = useQuery({ queryKey: ["accounts"], queryFn: listAccounts });
+  const qDeals = useQuery({ queryKey: ["deals"], queryFn: () => listDeals() });
+  const qAcc = useQuery({ queryKey: ["accounts"], queryFn: () => listAccounts() });
   const qCon = useQuery({
   queryKey: ["contacts"],
   queryFn: () => listContacts(),
 });
-  const qLeads = useQuery({ queryKey: ["leads"], queryFn: listLeads });
+  const qLeads = useQuery({ queryKey: ["leads"], queryFn: () => listLeads() });
 
   // Data de actividades (para la lista principal)
   const qAct = useQuery<Activity[]>({

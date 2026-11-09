@@ -1,4 +1,18 @@
 // app/_layout.tsx
+import { listOpenActivitiesWithReminder } from "@/src/api/activities";
+import {
+  me as apiMe,
+  clearActiveTenant,
+  clearToken,
+  fetchTenants,
+  getActiveTenant,
+  getToken,
+  isAuthenticated,
+  setActiveTenant,
+  subscribeActiveTenant,
+} from "@/src/api/auth";
+import { ToastProvider } from "@/src/ui/Toast";
+import * as Notifs from "@/src/utils/notifications";
 import { Feather } from "@expo/vector-icons";
 import {
   QueryClient,
@@ -20,33 +34,9 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-
-import { listOpenActivitiesWithReminder } from "@/src/api/activities";
-import {
-  me as apiMe,
-  clearActiveTenant,
-  clearToken,
-  getActiveTenant,
-  getToken,
-  isAuthenticated,
-  setActiveTenant,
-} from "@/src/api/auth";
-import { ToastProvider } from "@/src/ui/Toast";
-import * as Notifs from "@/src/utils/notifications";
-
 if (__DEV__) {
   require("../src/utils/iosTextDetect");
 }
-
-const COLORS = {
-  bg: "#0b0c10",
-  card: "#14151a",
-  text: "#e8ecf1",
-  subtle: "#a9b0bd",
-  border: "#272a33",
-  accent: "#7c3aed",
-};
-
 const WEB = {
   background: "#f5f6fa",
   surface: "#ffffff",
@@ -56,77 +46,61 @@ const WEB = {
   accent: "#7551c8",
   accentSoft: "#f0ebfb",
 };
-
-const TAB_HEIGHT = 60;
+const TAB_HEIGHT = 64;
 const SIDEBAR_WIDTH = 224;
 const queryClient = new QueryClient();
-
 type MeInfo = {
   id?: string;
   name?: string;
   email?: string;
   role?: string;
 };
-
 type TenantInfo = {
   id: string;
   name?: string;
 };
-
 type NavItem = {
   href: string;
   label: string;
   icon: React.ComponentProps<typeof Feather>["name"];
 };
-
 const DESKTOP_ITEMS: NavItem[] = [
-  { href: "/", label: "Resumen", icon: "home" },
+  // { href: "/", label: "Resumen", icon: "home" },
   { href: "/contacts", label: "Contactos", icon: "users" },
-  { href: "/accounts", label: "Cuentas", icon: "folder" },
-  { href: "/leads", label: "Leads", icon: "user-plus" },
+  // { href: "/accounts", label: "Cuentas", icon: "folder" },
+  // { href: "/leads", label: "Leads", icon: "user-plus" },
   { href: "/deals", label: "Oportunidades", icon: "briefcase" },
   { href: "/tasks", label: "Actividades", icon: "check-square" },
   { href: "/calendar", label: "Calendario", icon: "calendar" },
 ];
-
 function routeIsActive(pathname: string, href: string) {
   if (href === "/") return pathname === "/" || pathname === "";
   return pathname === href || pathname.startsWith(`${href}/`);
 }
-
 function pageTitle(pathname: string) {
   if (pathname === "/contacts/new") return "Nuevo contacto";
   if (pathname === "/contacts/all") return "Listado de contactos";
   if (pathname.startsWith("/contacts/")) return "Detalle de contacto";
-
   if (pathname === "/accounts/new") return "Nueva cuenta";
   if (pathname.startsWith("/accounts/")) return "Detalle de cuenta";
-
   if (pathname === "/leads/new") return "Nuevo lead";
   if (pathname.startsWith("/leads/")) return "Detalle de lead";
-
   if (pathname === "/deals/new") return "Nueva oportunidad";
   if (pathname.startsWith("/deals/")) return "Detalle de oportunidad";
-
   if (pathname === "/tasks/new") return "Nueva actividad";
   if (pathname.startsWith("/tasks/")) return "Detalle de actividad";
-
   if (pathname === "/calendar/google") return "Google Calendar";
   if (pathname === "/calendar/ics") return "Calendario ICS";
-
   if (pathname === "/profile") return "Mi perfil";
   if (pathname.startsWith("/more")) return "Configuración";
-
   return (
     DESKTOP_ITEMS.find((item) =>
       routeIsActive(pathname, item.href)
     )?.label || "CRM"
   );
 }
-
 function userInitials(me: MeInfo | null) {
   const name = me?.name || me?.email || "Usuario";
-
   return name
     .trim()
     .split(/\s+/)
@@ -135,7 +109,6 @@ function userInitials(me: MeInfo | null) {
     .join("")
     .toUpperCase();
 }
-
 function roleLabel(role?: string) {
   switch ((role || "").toLowerCase()) {
     case "owner":
@@ -148,7 +121,6 @@ function roleLabel(role?: string) {
       return "Usuario";
   }
 }
-
 function useAppFocusSync() {
   useEffect(() => {
     const subscription = AppState.addEventListener(
@@ -159,14 +131,11 @@ function useAppFocusSync() {
         }
       }
     );
-
     return () => subscription.remove();
   }, []);
 }
-
 /** Conserva el ajuste de desarrollo para iOS en LAN. */
 let iosFetchShimInstalled = false;
-
 function setupIOSDevFetchShim() {
   if (
     !__DEV__ ||
@@ -175,76 +144,59 @@ function setupIOSDevFetchShim() {
   ) {
     return;
   }
-
   const originalFetch = global.fetch as typeof fetch;
-
   const hostUri =
     (Constants as any)?.expoConfig?.hostUri ||
     (Constants as any)?.manifest2?.extra?.expoGo?.hostUri ||
     (Constants as any)?.manifest?.debuggerHost ||
     "";
-
   const lanHost =
     typeof hostUri === "string" ? hostUri.split(":")[0] : null;
-
   if (!lanHost) return;
-
   const badHostnames = ["localhost", "127.0.0.1"];
   const hostPattern = /^https?:\/\/([^/:]+)(:\d+)?(\/.*)?$/i;
-
   global.fetch = (async (
     input: any,
     init?: RequestInit
   ) => {
     const url = typeof input === "string" ? input : input?.url;
-
     if (typeof url === "string") {
       const match = url.match(hostPattern);
-
       if (match && badHostnames.includes(match[1])) {
         const schema = url.startsWith("https://") ? "https" : "http";
         const rewritten =
           `${schema}://${lanHost}${match[2] || ""}${match[3] || "/"}`;
-
         input =
           typeof input === "string"
             ? rewritten
             : new Request(rewritten, input);
       }
     }
-
     return originalFetch(input, init);
   }) as typeof fetch;
-
   iosFetchShimInstalled = true;
 }
-
 /** JWT decode para presentación inicial. */
 function base64UrlToString(input: string) {
   const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
   const padding =
     base64.length % 4 ? "=".repeat(4 - (base64.length % 4)) : "";
   const value = base64 + padding;
-
   if (typeof globalThis.atob === "function") {
     return globalThis.atob(value);
   }
-
   const { Buffer } = require("buffer");
   return Buffer.from(value, "base64").toString("utf8");
 }
-
 function decodeJwt(token: string): any | null {
   try {
     const parts = token.split(".");
     if (parts.length < 2) return null;
-
     return JSON.parse(base64UrlToString(parts[1]));
   } catch {
     return null;
   }
 }
-
 /** Indicador que conserva la cabecera móvil. */
 function TenantPill({
   me,
@@ -256,7 +208,6 @@ function TenantPill({
   const userLabel = me?.name || me?.email || "Usuario";
   const workspaceLabel = tenant?.name || tenant?.id || "Workspace";
   const role = roleLabel(me?.role);
-
   return (
     <Pressable
       accessibilityRole="button"
@@ -277,7 +228,6 @@ function TenantPill({
       }}
     >
       <Feather name="user" size={16} color="#7551c8" />
-
       <View style={{ flexShrink: 1, minWidth: 0, gap: 2 }}>
         <Text
           numberOfLines={1}
@@ -289,7 +239,6 @@ function TenantPill({
         >
           {userLabel}
         </Text>
-
         <Text
           numberOfLines={1}
           style={{
@@ -314,10 +263,8 @@ function DesktopSidebar({
 }) {
   const workspaceLabel =
     tenant?.name || tenant?.id || "Workspace";
-
   const renderItem = (item: NavItem) => {
     const active = routeIsActive(pathname, item.href);
-
     return (
       <Pressable
         key={item.href}
@@ -336,7 +283,6 @@ function DesktopSidebar({
           size={18}
           color={active ? WEB.accent : WEB.muted}
         />
-
         <Text
           style={[
             styles.sideItemText,
@@ -345,30 +291,28 @@ function DesktopSidebar({
         >
           {item.label}
         </Text>
-
         {active && <View style={styles.activeDot} />}
       </Pressable>
     );
   };
-
   return (
     <View style={styles.sidebar}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Ir al resumen"
-        onPress={() => router.push("/")}
+        // accessibilityLabel="Ir al resumen"
+        // onPress={() => router.push("/")}
+        accessibilityLabel="Ir a actividades"
+        onPress={() => router.push("/tasks")}
         style={styles.brand}
       >
         <View style={styles.brandIcon}>
           <Feather name="layers" size={22} color="#fff" />
         </View>
-
         <View>
           <Text style={styles.brandName}>CRM</Text>
           <Text style={styles.brandSubtitle}>Gestión comercial</Text>
         </View>
       </Pressable>
-
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Administrar workspace"
@@ -381,17 +325,14 @@ function DesktopSidebar({
         <View style={styles.workspaceIcon}>
           <Feather name="briefcase" size={17} color={WEB.accent} />
         </View>
-
         <View style={styles.workspaceText}>
           <Text style={styles.workspaceCaption}>WORKSPACE ACTIVO</Text>
           <Text numberOfLines={1} style={styles.workspaceName}>
             {workspaceLabel}
           </Text>
         </View>
-
         <Feather name="chevron-down" size={15} color={WEB.muted} />
       </Pressable>
-
       <ScrollView
         style={styles.sidebarScroll}
         contentContainerStyle={styles.sidebarScrollContent}
@@ -399,24 +340,19 @@ function DesktopSidebar({
       >
         <Text style={styles.navigationCaption}>ESPACIO DE TRABAJO</Text>
         {DESKTOP_ITEMS.map(renderItem)}
-
         <View style={styles.navigationDivider} />
-
         <Text style={styles.navigationCaption}>PREFERENCIAS</Text>
-
         {renderItem({
           href: "/profile",
           label: "Mi perfil",
           icon: "user",
         })}
-
         {renderItem({
           href: "/more",
           label: "Configuración",
           icon: "settings",
         })}
       </ScrollView>
-
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Abrir mi perfil"
@@ -426,20 +362,17 @@ function DesktopSidebar({
         <View style={styles.userAvatar}>
           <Text style={styles.userAvatarText}>{userInitials(me)}</Text>
         </View>
-
         <View style={styles.workspaceText}>
           <Text numberOfLines={1} style={styles.userName}>
             {me?.name || me?.email || "Usuario"}
           </Text>
           <Text style={styles.userRole}>{roleLabel(me?.role)}</Text>
         </View>
-
         <Feather name="chevron-right" size={15} color={WEB.muted} />
       </Pressable>
     </View>
   );
 }
-
 function DesktopHeader({ pathname }: { pathname: string }) {
   const topLevelRoutes = [
     "/",
@@ -452,24 +385,19 @@ function DesktopHeader({ pathname }: { pathname: string }) {
     "/more",
     "/profile",
   ];
-
   const showBack = !topLevelRoutes.includes(pathname);
-
   const goBack = () => {
     if (router.canGoBack()) {
       router.back();
       return;
     }
-
     const section = DESKTOP_ITEMS.find(
       (item) =>
         item.href !== "/" &&
         routeIsActive(pathname, item.href)
     );
-
     router.replace((section?.href || "/") as any);
   };
-
   return (
     <View style={styles.desktopHeader}>
       <View style={styles.desktopHeaderLeft}>
@@ -486,12 +414,10 @@ function DesktopHeader({ pathname }: { pathname: string }) {
             <Feather name="arrow-left" size={18} color={WEB.text} />
           </Pressable>
         )}
-
         <Text numberOfLines={1} style={styles.desktopPageTitle}>
           {pageTitle(pathname)}
         </Text>
       </View>
-
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Abrir configuración del workspace"
@@ -504,38 +430,226 @@ function DesktopHeader({ pathname }: { pathname: string }) {
     </View>
   );
 }
+function CompactSidebar({ pathname, me }: { pathname: string; me: MeInfo | null }) {
+  const items: NavItem[] = [
+    ...DESKTOP_ITEMS,
+    { href: "/more", label: "Configuración", icon: "settings" },
+  ];
+  return (
+    <View style={styles.compactSidebar}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Ir a actividades"
+        onPress={() => router.push("/tasks")}
+        style={[styles.brandIcon, { marginTop: 18, marginBottom: 26 }]}
+      >
+        <Feather name="layers" size={22} color="#fff" />
+      </Pressable>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 8, paddingBottom: 12 }}>
+        {items.map((item) => {
+          const active = routeIsActive(pathname, item.href);
+          return (
+            <Pressable
+              key={item.href}
+              accessibilityRole="button"
+              accessibilityLabel={item.label}
+              accessibilityState={{ selected: active }}
+              onPress={() => router.push(item.href as any)}
+              style={[styles.compactItem, active && styles.sideItemActive]}
+            >
+              <Feather name={item.icon} size={21} color={active ? WEB.accent : WEB.muted} />
+              <Text style={[styles.compactLabel, active && { color: WEB.accent }]}>
+                {item.href === "/more" ? "Ajustes" : item.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Abrir mi perfil"
+        onPress={() => router.push("/profile")}
+        style={[styles.userAvatar, { marginVertical: 16 }]}
+      >
+        <Text style={styles.userAvatarText}>{userInitials(me)}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function MobileHeader({ pathname, me, tenant, topInset }: {
+  pathname: string;
+  me: MeInfo | null;
+  tenant: TenantInfo | null;
+  topInset: number;
+}) {
+  const topLevel = ["/", "/contacts", "/deals", "/tasks", "/calendar", "/more", "/profile", "/accounts", "/leads"].includes(pathname);
+  return (
+    <View style={[styles.mobileHeader, { paddingTop: topInset + 10 }]}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+        {!topLevel && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Volver"
+            hitSlop={6}
+            style={styles.backButton}
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else {
+                const section = DESKTOP_ITEMS.find((item) => routeIsActive(pathname, item.href));
+                router.replace((section?.href || "/tasks") as any);
+              }
+            }}
+          >
+            <Feather name="arrow-left" size={20} color={WEB.text} />
+          </Pressable>
+        )}
+        {topLevel && (
+          <View style={[styles.brandIcon, { width: 34, height: 34, borderRadius: 10 }]}>
+            <Feather name="layers" size={20} color="#fff" />
+          </View>
+        )}
+        <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+          <Text numberOfLines={1} style={{ color: WEB.text, fontSize: 14, fontWeight: "700" }}>
+            {topLevel ? "CRM" : pageTitle(pathname)}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Abrir configuración del workspace"
+            onPress={() => router.push("/more")}
+            hitSlop={5}
+            style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+          >
+            <Text numberOfLines={1} style={{ color: WEB.muted, fontSize: 11, flexShrink: 1 }}>
+              {tenant?.name || tenant?.id || "Workspace"}
+            </Text>
+            <Feather name="chevron-down" size={12} color={WEB.muted} />
+          </Pressable>
+        </View>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Abrir perfil de ${me?.name || me?.email || "usuario"}`}
+        onPress={() => router.push("/profile")}
+        style={styles.userAvatar}
+      >
+        <Text style={styles.userAvatarText}>{userInitials(me)}</Text>
+      </Pressable>
+    </View>
+  );
+}
 
 export default function RootLayout() {
   useAppFocusSync();
-
   const pathname = usePathname();
   const inAuthFlow = pathname.startsWith("/auth");
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-
   const desktop =
     Platform.OS === "web" && width >= 1100 && !inAuthFlow;
-
+  const compact = Platform.OS === "web" && width >= 760 && width < 1100 && !inAuthFlow;
+  const sideNavigation = desktop || compact;
   const [authReady, setAuthReady] = useState(false);
   const [me, setMe] = useState<MeInfo | null>(null);
   const [tenant, setTenant] = useState<TenantInfo | null>(null);
+    // Mantener la barra sincronizada con el workspace guardado.
+  useEffect(() => {
+    let disposed = false;
+    let revision = 0;
+
+    const unsubscribe = subscribeActiveTenant((tenantId) => {
+      const currentRevision = ++revision;
+
+      if (!tenantId) {
+        setTenant(null);
+        setMe(null);
+        return;
+      }
+
+      // Retirar inmediatamente el nombre del workspace anterior.
+      setTenant({ id: tenantId, name: tenantId });
+
+      async function refreshWorkspace() {
+        try {
+          await queryClient.cancelQueries();
+
+          const [info, workspaces] = await Promise.all([
+            apiMe(),
+            fetchTenants(),
+          ]);
+
+          const activeTenant = await getActiveTenant();
+
+          if (
+            disposed ||
+            currentRevision !== revision ||
+            activeTenant !== tenantId
+          ) {
+            return;
+          }
+
+          const workspace = workspaces.items?.find(
+            (item) => item.id === tenantId
+          );
+
+          const serverTenant =
+            info.tenant?.id === tenantId
+              ? info.tenant
+              : null;
+
+          setTenant({
+            id: tenantId,
+            name:
+              serverTenant?.name ||
+              workspace?.name ||
+              tenantId,
+          });
+
+          setMe({
+            ...(info.user || {}),
+            role: info.role || workspace?.role,
+          });
+
+          // Volver a consultar los datos usando el nuevo workspace.
+          await queryClient.invalidateQueries({
+            refetchType: "active",
+          });
+        } catch {
+          if (
+            disposed ||
+            currentRevision !== revision
+          ) {
+            return;
+          }
+
+          console.warn(
+            "No se pudo actualizar la información del workspace."
+          );
+        }
+      }
+
+      void refreshWorkspace();
+    });
+
+    return () => {
+      disposed = true;
+      revision += 1;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     setupIOSDevFetchShim();
   }, []);
-
   // Conserva la inicialización existente de notificaciones.
   useEffect(() => {
     Notifs.initNotifications?.().catch(() => {});
   }, []);
-
   // Conserva la sincronización existente de recordatorios.
   useEffect(() => {
     if (typeof Notifs.reensurePendingReminders !== "function") return;
-
     Notifs.reensurePendingReminders(async () => {
       const list = await listOpenActivitiesWithReminder(Date.now());
-
       return list.map((activity) => ({
         id: activity.id,
         title: activity.title,
@@ -544,31 +658,24 @@ export default function RootLayout() {
       }));
     }).catch(() => {});
   }, []);
-
   // Presentación inicial desde JWT y actualización desde backend.
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       try {
         const hasSession = await isAuthenticated();
-
         if (!hasSession) {
           if (!inAuthFlow) router.replace("/auth/login");
           return;
         }
-
         const token = await getToken();
-
         if (token) {
           const decoded = decodeJwt(token);
           const jwtEmail = decoded?.email;
           const jwtRole = decoded?.role;
           const jwtTenant = decoded?.active_tenant;
-
           const storedTenant = await getActiveTenant();
-          const effectiveTenant = jwtTenant || storedTenant;
-
+          const effectiveTenant = storedTenant || jwtTenant;
           if (!cancelled) {
             setMe({ email: jwtEmail, role: jwtRole });
             setTenant(
@@ -577,12 +684,10 @@ export default function RootLayout() {
                 : null
             );
           }
-
           if (effectiveTenant && effectiveTenant !== storedTenant) {
             await setActiveTenant(effectiveTenant);
           }
         }
-
         const info = await apiMe().catch((error) => {
           console.log(
             "ME ERROR (boot) =>",
@@ -590,16 +695,13 @@ export default function RootLayout() {
           );
           return null;
         });
-
         if (!info) {
           await clearToken().catch(() => {});
           await clearActiveTenant().catch(() => {});
           if (!inAuthFlow) router.replace("/auth/login");
           return;
         }
-
         const roleFromServer = info.role;
-
         if (!cancelled) {
           setMe({
             ...(info.user || {}),
@@ -607,7 +709,6 @@ export default function RootLayout() {
           });
           setTenant(info.tenant || null);
         }
-
         if (info.active_tenant) {
           await setActiveTenant(info.active_tenant);
         }
@@ -615,54 +716,43 @@ export default function RootLayout() {
         if (!cancelled) setAuthReady(true);
       }
     })();
-
     return () => {
       cancelled = true;
     };
     // Conserva el bootstrap de una ejecución del layout actual.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   // Conserva el control de navegación según sesión.
   useEffect(() => {
     if (!authReady) return;
-
     (async () => {
       const hasSession = await isAuthenticated();
-
       if (!hasSession && !inAuthFlow) {
         router.replace("/auth/login");
       }
-
       if (hasSession && inAuthFlow) {
         router.replace("/");
       }
     })();
   }, [authReady, inAuthFlow, pathname]);
-
   if (!authReady) {
     return (
       <View
         style={{
           flex: 1,
-          backgroundColor:
-            Platform.OS === "web" && width >= 1100
-              ? WEB.background
-              : COLORS.bg,
+          backgroundColor: WEB.background,
         }}
       />
     );
   }
-
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <StatusBar style={desktop ? "dark" : "light"} />
-
+        <StatusBar style="dark" />
         <View
           style={[
             styles.appContainer,
-            desktop && styles.desktopContainer,
+            sideNavigation && styles.desktopContainer,
           ]}
         >
           {desktop && (
@@ -673,28 +763,30 @@ export default function RootLayout() {
               tenant={tenant}
             />
           )}
-
-          <View key="main-content" style={styles.mainContent}>
-            {desktop && <DesktopHeader pathname={pathname} />}
-
+          {compact && <CompactSidebar pathname={pathname} me={me} />}
+          <View
+            key={`main-content:${tenant?.id || "sin-workspace"}`}
+            style={styles.mainContent}
+          >
+            {sideNavigation && <DesktopHeader pathname={pathname} />}
+            {!inAuthFlow && !sideNavigation && (
+              <MobileHeader pathname={pathname} me={me} tenant={tenant} topInset={insets.top} />
+            )}
             <Stack
               screenOptions={{
-                headerShown: !desktop,
+                headerShown: inAuthFlow,
                 contentStyle: {
-                  backgroundColor: desktop ? WEB.background : COLORS.bg,
-                  paddingBottom:
-                    inAuthFlow || desktop
-                      ? 0
-                      : TAB_HEIGHT + Math.max(insets.bottom, 8),
+                  backgroundColor: WEB.background,
+                  paddingBottom: 0,
                 },
                 headerStyle: {
-                  backgroundColor: COLORS.bg,
+                  backgroundColor: WEB.surface,
                 },
                 headerTitleStyle: {
-                  color: COLORS.text,
+                  color: WEB.text,
                   fontWeight: "800",
                 },
-                headerTintColor: COLORS.text,
+                headerTintColor: WEB.text,
                 headerShadowVisible: false,
                 headerRight: () =>
                   inAuthFlow ? null : (
@@ -718,8 +810,7 @@ export default function RootLayout() {
                 options={{ title: "Google Calendar" }}
               />
             </Stack>
-
-            {!inAuthFlow && !desktop && (
+            {!inAuthFlow && !sideNavigation && (
               <BottomBar bottomInset={insets.bottom} />
             )}
           </View>
@@ -728,19 +819,23 @@ export default function RootLayout() {
     </QueryClientProvider>
   );
 }
-
 function BottomBar({ bottomInset }: { bottomInset: number }) {
   const pathname = usePathname();
-
-  const items: NavItem[] = [
-    { href: "/", label: "Resumen", icon: "home" },
-    { href: "/contacts", label: "Contactos", icon: "users" },
-    { href: "/deals", label: "Oportun.", icon: "briefcase" },
-    { href: "/tasks", label: "Activ.", icon: "check-square" },
-    { href: "/calendar", label: "Calend.", icon: "calendar" },
-    { href: "/more", label: "Más", icon: "grid" },
-  ];
-
+const items: NavItem[] = [
+  { href: "/contacts", label: "Contactos", icon: "users" },
+  { href: "/deals", label: "Oportunidades", icon: "briefcase" },
+  { href: "/tasks", label: "Actividades", icon: "check-square" },
+  { href: "/calendar", label: "Calendario", icon: "calendar" },
+  { href: "/more", label: "Más", icon: "grid" },
+];
+  // const items: NavItem[] = [
+  //   { href: "/", label: "Resumen", icon: "home" },
+  //   { href: "/contacts", label: "Contactos", icon: "users" },
+  //   { href: "/deals", label: "Oportunidades", icon: "briefcase" },
+  //   { href: "/tasks", label: "Actividades", icon: "check-square" },
+  //   { href: "/calendar", label: "Calendario", icon: "calendar" },
+  //   { href: "/more", label: "Más", icon: "grid" },
+  // ];
   return (
     <View
       style={[
@@ -753,7 +848,6 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
     >
       {items.map((item) => {
         const active = routeIsActive(pathname, item.href);
-
         return (
           <Pressable
             key={item.href}
@@ -767,24 +861,23 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
               pressed && !active && { opacity: 0.88 },
             ]}
             android_ripple={{
-              color: "rgba(255,255,255,0.06)",
+              color: "rgba(117,81,200,0.08)",
               borderless: false,
             }}
           >
             <Feather
               name={item.icon}
               size={20}
-              color={active ? COLORS.accent : COLORS.subtle}
+              color={active ? WEB.accent : WEB.muted}
             />
-
             <Text
               numberOfLines={1}
               style={[
                 styles.tabLabel,
                 {
                   color: active
-                    ? COLORS.accent
-                    : COLORS.subtle,
+                    ? WEB.accent
+                    : WEB.muted,
                 },
               ]}
             >
@@ -796,24 +889,43 @@ function BottomBar({ bottomInset }: { bottomInset: number }) {
     </View>
   );
 }
-
 const shadow = Platform.select({
   ios: {
     shadowColor: "#000",
-    shadowOpacity: 0.28,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: -2 },
   },
-  android: { elevation: 16 },
+  android: { elevation: 3 },
   web: {
-    boxShadow: "0 -10px 24px rgba(0,0,0,0.35)",
+    boxShadow: "0 -2px 10px rgba(32,37,54,0.04)",
   } as any,
 });
-
 const styles = StyleSheet.create({
+  compactSidebar: {
+    width: 88,
+    backgroundColor: WEB.surface,
+    borderRightWidth: 1,
+    borderRightColor: WEB.border,
+    alignItems: "center",
+  },
+  compactItem: { width: 76, minHeight: 62, alignItems: "center", justifyContent: "center", borderRadius: 10, gap: 7, paddingHorizontal: 2 },
+  compactLabel: { color: WEB.muted, fontSize: 9, textAlign: "center" },
+  mobileHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    gap: 16,
+    backgroundColor: WEB.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: WEB.border,
+    flexShrink: 0,
+  },
   appContainer: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: WEB.surface,
   },
   desktopContainer: {
     flexDirection: "row",
@@ -824,7 +936,6 @@ const styles = StyleSheet.create({
     minWidth: 0,
     minHeight: 0,
   },
-
   sidebar: {
     width: SIDEBAR_WIDTH,
     backgroundColor: WEB.surface,
@@ -976,7 +1087,6 @@ const styles = StyleSheet.create({
     color: WEB.muted,
     fontSize: 10,
   },
-
   desktopHeader: {
     height: 64,
     backgroundColor: WEB.surface,
@@ -1020,7 +1130,6 @@ const styles = StyleSheet.create({
     color: WEB.muted,
     fontSize: 12,
   },
-
   tenantPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -1037,23 +1146,19 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   tenantPillUser: {
-    color: COLORS.text,
+    color: WEB.text,
     fontWeight: "700",
     fontSize: 12,
   },
   tenantPillWorkspace: {
-    color: COLORS.accent,
+    color: WEB.accent,
     fontSize: 11,
   },
-
   tabBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: COLORS.bg,
+    flexShrink: 0,
+    backgroundColor: WEB.surface,
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    borderTopColor: WEB.border,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-around",
@@ -1066,17 +1171,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 4,
     paddingVertical: 6,
-    marginHorizontal: 4,
-    borderRadius: 12,
+    marginHorizontal: 2,
+    minWidth: 0,
+    borderRadius: 10,
   },
   tabItemActive: {
-    backgroundColor: "rgba(124,58,237,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(124,58,237,0.35)",
+    backgroundColor: WEB.accentSoft,
   },
   tabLabel: {
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.2,
+    fontSize: 9,
+    fontWeight: "600",
+    textAlign: "center",
   },
 });

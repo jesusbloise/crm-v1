@@ -72,9 +72,16 @@ async function request<T = Json>(
     ...provided,
   });
 
+  // FormData necesita que el navegador genere Content-Type y boundary.
+// authHeaders puede haber añadido Content-Type: application/json.
+const finalHeaders = new Headers(headers);
+
+if (isFormData(init.body)) {
+  finalHeaders.delete("Content-Type");
+}
   const finalInit: RequestInit = {
     ...init,
-    headers,
+    headers: finalHeaders,
     signal: controller.signal,
   };
   if (init.body != null && !isFormData(init.body)) {

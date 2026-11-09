@@ -1,10 +1,18 @@
 // app/tasks/index.tsx
-import { listActivities, type Activity } from "@/src/api/activities";
-import { fetchTenants, getActiveTenant, switchTenant } from "@/src/api/auth";
+import {
+  listActivitiesPage,
+  type Activity,
+  type ActivityPageFilters,
+} from "@/src/api/activities";
+import { fetchTenants, getActiveTenant } from "@/src/api/auth";
 import { api } from "@/src/api/http";
-import { listTenantMembers, type TenantMember } from "@/src/api/tenants";
+import {
+  listTenantMembers,
+  type TenantMember,
+} from "@/src/api/tenants";
+import ActivityStatsPanel from "@/src/components/ActivityStatsPanel";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -13,6 +21,7 @@ import {
   Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,7 +29,6 @@ import {
   View,
 } from "react-native";
 
-/* Paleta */
 const BG = "#f5f6fa";
 const CARD = "#ffffff";
 const BORDER = "#e7e9f0";
@@ -28,37 +36,26 @@ const TEXT = "#202536";
 const SUBTLE = "#737b8e";
 const PRIMARY = "#7551c8";
 const SUCCESS = "#23744d";
-/* Maestro de completadas locales */
-const MASTER_COMPLETED_KEY = "completedActivities:v1:all";
-/* Maestro de EN PROCESO locales */
-const MASTER_INPROGRESS_KEY = "inProgressActivities:v1:all";
 
-/* ✅ evento local fallback */
+const PAGE_SIZE = 50;
 const LOCAL_EVENT_MAP_KEY = "activityEventLocal:v1";
 
 type Filter = "all" | "open" | "in_progress" | "done" | "canceled";
+type TimeFilter = "all" | "day" | "week" | "month";
+type QuickFilter = "all" | "overdue" | "undated";
+type ActivityScope = "team" | "mine";
 
-type ActivityWithCreator = Activity & {
-  created_by?: string | null;
-  created_by_name?: string | null;
-  created_by_email?: string | null;
-  assigned_to_name?: string | null;
-  assigned_to_2?: string | null;
-  assigned_to_2_name?: string | null;
-
-  // Contacto relacionado
-  contact_id?: string | null;
+type ActivityWithCreator = Omit<Activity, "due_date"> & {
+  due_date?: number | string | null;
   contact_name?: string | null;
   contact_title?: string | null;
-
-  // Fecha evento (si existe)
+  contact?: {
+    name?: string | null;
+  } | null;
   event_at?: number | string | null;
   event_start?: number | string | null;
   calendar_start?: number | string | null;
-
-  // por si tu API lo manda
-  due_date?: number | string | null;
-  time_str?: string | null;
+  calendar_event_start?: number | string | null;
 };
 
 type MemberChip = {
@@ -66,327 +63,446 @@ type MemberChip = {
   label: string;
 };
 
-type TenantItem = {
-  id: string;
-  name?: string;
-};
-
-type TimeFilter = "all" | "day" | "week" | "month";
-
 export default function TasksList() {
+  const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
-  const desktop = Platform.OS === "web" && width >= 1100;
+
+  const [contentWidth, setContentWidth] = useState(0);
+  const [showStats, setShowStats] = useState(false);
+  const [activityScope, setActivityScope] =
+    useState<ActivityScope>("team");
+  const [filterMenu, setFilterMenu] =
+    useState<"status" | "period" | null>(null);
+
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
-  const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
-
-  const [completedMaster, setCompletedMaster] = useState<Set<string>>(new Set());
-  const [inProgressMaster, setInProgressMaster] = useState<Set<string>>(new Set());
-
-  // ✅ mapa local de eventos
-  const [localEventMap, setLocalEventMap] = useState<Record<string, number>>({});
-
-  // Filtros por persona / workspace (dropdowns)
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
-  const [wsMenuOpen, setWsMenuOpen] = useState(false);
 
-  // Filtro de tiempo
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
   const [timeFilterDateStr, setTimeFilterDateStr] = useState("");
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
 
-  // Rol global + workspaces
-  const [currentRole, setCurrentRole] = useState<"owner" | "admin" | "member" | null>(null);
+  const [currentRole, setCurrentRole] =
+    useState<"owner" | "admin" | "member" | null>(null);
   const [loadingRole, setLoadingRole] = useState(true);
-  const [tenants, setTenants] = useState<TenantItem[]>([]);
   const [activeTenant, setActiveTenant] = useState<string | null>(null);
-  const [busyWs, setBusyWs] = useState<string | null>(null);
 
-  const isAdminOrOwner = currentRole === "owner" || currentRole === "admin";
+  const [localEventMap, setLocalEventMap] =
+    useState<Record<string, number>>({});
+  const [agendaNow, setAgendaNow] = useState(() => Date.now());
 
-  const parseDateStr = (s: string): Date | null => {
-    const trimmed = s.trim();
-    if (!trimmed) return null;
-    const m = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!m) return null;
-    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-    return Number.isNaN(d.getTime()) ? null : d;
-  };
+  const availableWidth = contentWidth || Math.max(0, width - 260);
 
-  const getRefDateMs = (a: ActivityWithCreator): number | null => {
-    const raw = (a as any).due_date ?? a.created_at ?? a.updated_at;
-    const ms = parseEventDateToMs(raw);
-    if (ms != null) return ms;
+  const sidePanel =
+    Platform.OS === "web" && availableWidth >= 1120;
 
-    const n = typeof raw === "string" ? Number(raw) : raw;
-    if (!Number.isFinite(n)) return null;
-    return n as number;
-  };
+  const statsWidth = Math.min(
+    400,
+    Math.max(320, availableWidth * 0.28)
+  );
 
-  const loadCompletedMaster = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem(MASTER_COMPLETED_KEY);
-      setCompletedMaster(new Set<string>(raw ? JSON.parse(raw) : []));
-    } catch {
-      setCompletedMaster(new Set());
-    }
+  const listWidth = sidePanel
+    ? availableWidth - statsWidth - 20
+    : availableWidth;
+
+  const desktop = Platform.OS === "web" && listWidth >= 760;
+
+  const isAdminOrOwner =
+    currentRole === "owner" || currentRole === "admin";
+
+  const effectiveScope: ActivityScope =
+    isAdminOrOwner ? activityScope : "mine";
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setAgendaNow(Date.now());
+    }, 60_000);
+
+    return () => clearInterval(timer);
   }, []);
 
-  const loadInProgressMaster = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem(MASTER_INPROGRESS_KEY);
-      setInProgressMaster(new Set<string>(raw ? JSON.parse(raw) : []));
-    } catch {
-      setInProgressMaster(new Set());
-    }
-  }, []);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search.trim());
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [search]);
 
   const loadLocalEventMap = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(LOCAL_EVENT_MAP_KEY);
-      const map = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+      const map = raw
+        ? (JSON.parse(raw) as Record<string, number>)
+        : {};
+
       setLocalEventMap(map || {});
     } catch {
       setLocalEventMap({});
     }
   }, []);
 
-  const loadRoleAndTenants = useCallback(async () => {
+  const loadRoleAndTenant = useCallback(async () => {
     setLoadingRole(true);
+
     try {
-      const resRole = await api.get<{ tenant_id: string | null; role: string | null }>(
-        "/tenants/role"
+      const response = await api.get<{
+        tenant_id: string | null;
+        role: string | null;
+      }>("/tenants/role");
+
+      const role = (response?.role || "").toLowerCase();
+
+      setCurrentRole(
+        role === "owner" || role === "admin" || role === "member"
+          ? role
+          : null
       );
-      const r = (resRole?.role || "").toLowerCase() as "owner" | "admin" | "member" | "";
-      setCurrentRole(r || null);
+
+      const storedTenant = await getActiveTenant();
+
+      if (storedTenant) {
+        setActiveTenant(storedTenant);
+      }
+
+      const tenantData = await fetchTenants();
+
+      const confirmedTenant =
+        tenantData?.active_tenant ||
+        response?.tenant_id ||
+        storedTenant ||
+        null;
+
+      setActiveTenant(confirmedTenant);
     } catch {
       setCurrentRole(null);
+      setActiveTenant(null);
     } finally {
       setLoadingRole(false);
     }
-
-    try {
-      const localActive = await getActiveTenant();
-      if (localActive) setActiveTenant(localActive);
-
-      const data = await fetchTenants();
-      if (data?.items?.length) {
-        setTenants(
-          data.items.map((t) => ({
-            id: t.id,
-            name: t.name,
-          }))
-        );
-      }
-      if (data?.active_tenant) {
-        setActiveTenant(data.active_tenant);
-      }
-    } catch {}
   }, []);
-
-  useEffect(() => {
-    loadCompletedMaster();
-    loadInProgressMaster();
-    loadLocalEventMap();
-    loadRoleAndTenants();
-  }, [loadCompletedMaster, loadInProgressMaster, loadLocalEventMap, loadRoleAndTenants]);
 
   useFocusEffect(
     useCallback(() => {
-      loadCompletedMaster();
-      loadInProgressMaster();
-      loadLocalEventMap();
-      loadRoleAndTenants();
-    }, [loadCompletedMaster, loadInProgressMaster, loadLocalEventMap, loadRoleAndTenants])
+      void loadLocalEventMap();
+      void loadRoleAndTenant();
+    }, [loadLocalEventMap, loadRoleAndTenant])
   );
 
-  const q = useQuery<ActivityWithCreator[]>({
-    queryKey: ["activities-all"],
-    queryFn: () => listActivities() as Promise<ActivityWithCreator[]>,
+  const agendaDay = new Date(agendaNow).toLocaleDateString("en-CA");
+
+  const serverFilters = useMemo<ActivityPageFilters>(() => {
+    const result: ActivityPageFilters = {
+      limit: PAGE_SIZE,
+      scope: effectiveScope,
+      sort: quickFilter === "all" ? "updated" : "due",
+    };
+
+    if (debouncedSearch) {
+      result.q = debouncedSearch;
+    }
+
+    if (filter !== "all") {
+      result.status = filter;
+    }
+
+    if (
+      effectiveScope === "team" &&
+      assigneeFilter !== "all"
+    ) {
+      result.person_id = assigneeFilter;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (quickFilter !== "all") {
+      result.pending = true;
+
+      if (quickFilter === "undated") {
+        result.undated = true;
+      } else {
+        result.due_before = today.getTime();
+      }
+
+      return result;
+    }
+
+    if (timeFilter !== "all") {
+      let base = new Date(today);
+
+      const match = timeFilterDateStr
+        .trim()
+        .match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+      if (match) {
+        const year = Number(match[1]);
+        const month = Number(match[2]) - 1;
+        const day = Number(match[3]);
+        const candidate = new Date(year, month, day);
+
+        if (
+          candidate.getFullYear() === year &&
+          candidate.getMonth() === month &&
+          candidate.getDate() === day
+        ) {
+          base = candidate;
+        }
+      }
+
+      const start = new Date(base);
+      start.setHours(0, 0, 0, 0);
+
+      if (timeFilter === "week") {
+        const daysSinceMonday = (start.getDay() + 6) % 7;
+        start.setDate(start.getDate() - daysSinceMonday);
+      } else if (timeFilter === "month") {
+        start.setDate(1);
+      }
+
+      const end = new Date(start);
+
+      if (timeFilter === "day") {
+        end.setDate(end.getDate() + 1);
+      } else if (timeFilter === "week") {
+        end.setDate(end.getDate() + 7);
+      } else {
+        end.setMonth(end.getMonth() + 1, 1);
+      }
+
+      result.due_from = start.getTime();
+      result.due_before = end.getTime();
+    }
+
+    return result;
+  }, [
+    effectiveScope,
+    debouncedSearch,
+    filter,
+    assigneeFilter,
+    quickFilter,
+    timeFilter,
+    timeFilterDateStr,
+    agendaDay,
+  ]);
+
+  const paginationKey = JSON.stringify([
+    activeTenant,
+    serverFilters,
+  ]);
+
+  const [pagination, setPagination] = useState({
+    key: "",
+    offset: 0,
+  });
+
+  const offset =
+    pagination.key === paginationKey ? pagination.offset : 0;
+
+  const queryEnabled =
+    Boolean(activeTenant) &&
+    !loadingRole &&
+    currentRole !== null;
+
+  const q = useQuery({
+    queryKey: [
+      "activities-all",
+      activeTenant,
+      serverFilters,
+      offset,
+    ],
+    queryFn: () =>
+      listActivitiesPage({
+        ...serverFilters,
+        offset,
+      }),
+    enabled: queryEnabled,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
 
-  const qMembers = useQuery<TenantMember[]>({
-    queryKey: ["tenant-members"],
-    queryFn: listTenantMembers,
-  });
+  const refetchActivities = q.refetch;
 
-  const memberChips: MemberChip[] = useMemo(() => {
-    const base: MemberChip[] = [{ id: "all", label: "Todos" }];
-
-    if (!qMembers.data || qMembers.data.length === 0) return base;
-
-    const seen = new Set<string>();
-    for (const m of qMembers.data) {
-      const label = m.name || m.email || m.id;
-      if (!label) continue;
-      if (seen.has(m.id)) continue;
-      seen.add(m.id);
-      base.push({ id: m.id, label });
-    }
-
-    return base;
-  }, [qMembers.data]);
-
-  const onRefresh = useCallback(() => {
-    loadCompletedMaster();
-    loadInProgressMaster();
-    loadLocalEventMap();
-    q.refetch();
-  }, [q, loadCompletedMaster, loadInProgressMaster, loadLocalEventMap]);
-
-  const data = useMemo(() => {
-    let items: ActivityWithCreator[] = (q.data ?? [])
-      .slice()
-      .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
-
-    // 0) Filtro por rango de tiempo
-    if (timeFilter !== "all") {
-      let baseDate: Date | null = null;
-      if (timeFilterDateStr.trim()) {
-        baseDate = parseDateStr(timeFilterDateStr);
-      }
-      if (!baseDate) baseDate = new Date(); // hoy
-
-      const start = new Date(baseDate);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(start);
-
-      if (timeFilter === "day") {
-        end.setDate(start.getDate() + 1);
-      } else if (timeFilter === "week") {
-        const day = start.getDay(); // 0 = domingo
-        const diff = (day + 6) % 7;
-        start.setDate(start.getDate() - diff);
-        end.setTime(start.getTime());
-        end.setDate(start.getDate() + 7);
-      } else if (timeFilter === "month") {
-        start.setDate(1);
-        end.setMonth(start.getMonth() + 1, 1);
+  useFocusEffect(
+    useCallback(() => {
+      if (
+        !activeTenant ||
+        loadingRole ||
+        currentRole === null
+      ) {
+        return;
       }
 
-      const startMs = start.getTime();
-      const endMs = end.getTime();
+      void refetchActivities();
 
-      items = items.filter((a) => {
-        const ref = getRefDateMs(a);
-        if (ref == null) return false;
-        return ref >= startMs && ref < endMs;
+      void queryClient.invalidateQueries({
+        queryKey: ["activity-stats", activeTenant],
       });
-    }
 
-    // 1) Filtro por estado (UI)
-    items = items.filter((a) => {
-      const isDoneUI = a.status === "done" || completedMaster.has(a.id as string);
-      const isInProgressUI = !isDoneUI && inProgressMaster.has(a.id as string);
-
-      switch (filter) {
-        case "open":
-          return !isDoneUI && !isInProgressUI;
-        case "in_progress":
-          return isInProgressUI;
-        case "done":
-          return isDoneUI;
-        case "canceled":
-          return a.status === "canceled";
-        case "all":
-        default:
-          return true;
-      }
-    });
-
-    // 2) Filtro por persona (solo admin/owner)
-    if (assigneeFilter !== "all" && isAdminOrOwner) {
-      const selected = memberChips.find((m) => m.id === assigneeFilter);
-      if (selected) {
-        const term = selected.label.toLowerCase();
-
-        items = items.filter((a) => {
-          const created = (a.created_by_name || "").toLowerCase();
-          const assigned1 = (a.assigned_to_name || "").toLowerCase();
-          const assigned2 = (a.assigned_to_2_name || "").toLowerCase();
-
-          return created.includes(term) || assigned1.includes(term) || assigned2.includes(term);
-        });
-      }
-    }
-
-    // 3) Filtro de texto libre
-    const termText = search.trim().toLowerCase();
-    if (termText) {
-      items = items.filter((a) => {
-        const title = (a.title || "").toLowerCase();
-        const type = (a.type || "").toLowerCase();
-        const created = (a.created_by_name || "").toLowerCase();
-        const assigned1 = (a.assigned_to_name || "").toLowerCase();
-        const assigned2 = (a.assigned_to_2_name || "").toLowerCase();
-        const contact = (
-          (a as any).contact_name ||
-          (a as any).contact_title ||
-          (a as any).contact?.name ||
-          (a as any).contact_id ||
-          ""
-        )
-          .toString()
-          .toLowerCase();
-
-        return (
-          title.includes(termText) ||
-          type.includes(termText) ||
-          created.includes(termText) ||
-          assigned1.includes(termText) ||
-          assigned2.includes(termText) ||
-          contact.includes(termText)
-        );
+      void queryClient.invalidateQueries({
+        queryKey: ["activity-trend", activeTenant],
       });
-    }
-
-    return items;
-  }, [
-    q.data,
-    filter,
-    search,
-    assigneeFilter,
-    completedMaster,
-    inProgressMaster,
-    isAdminOrOwner,
-    memberChips,
-    timeFilter,
-    timeFilterDateStr,
-  ]);
-
-  const onSelectWorkspace = useCallback(
-    async (tenantId: string) => {
-      if (!isAdminOrOwner) return;
-      if (busyWs || tenantId === activeTenant) return;
-
-      setBusyWs(tenantId);
-      try {
-        const res = await switchTenant(tenantId);
-        const confirmed = (res as any)?.active_tenant || tenantId;
-        setActiveTenant(confirmed);
-        await q.refetch();
-      } catch {
-      } finally {
-        setBusyWs(null);
-      }
-    },
-    [isAdminOrOwner, busyWs, activeTenant, q]
+    }, [
+      activeTenant,
+      loadingRole,
+      currentRole,
+      refetchActivities,
+      queryClient,
+    ])
   );
 
-  const assigneeActiveLabel = useMemo(() => {
-    const opt = memberChips.find((m) => m.id === assigneeFilter);
-    if (!opt) return "Todas las personas";
-    return assigneeFilter === "all" ? "Todas las personas" : opt.label;
-  }, [assigneeFilter, memberChips]);
+  const total = q.data?.total ?? 0;
+  const data: ActivityWithCreator[] = q.data?.items ?? [];
 
-  const wsActiveLabel = useMemo(() => {
-    if (!tenants.length) return "Sin workspaces";
-    const t = tenants.find((tt) => tt.id === activeTenant);
-    if (t?.name) return `Workspace: ${t.name}`;
-    if (t?.id) return `Workspace: ${t.id}`;
-    return "Seleccionar workspace";
-  }, [tenants, activeTenant]);
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+
+  useEffect(() => {
+    if (
+      !q.data ||
+      q.isFetching ||
+      offset === 0 ||
+      offset < q.data.total
+    ) {
+      return;
+    }
+
+    const lastOffset =
+      Math.max(0, Math.ceil(q.data.total / PAGE_SIZE) - 1) *
+      PAGE_SIZE;
+
+    setPagination({
+      key: paginationKey,
+      offset: lastOffset,
+    });
+  }, [q.data, q.isFetching, offset, paginationKey]);
+
+  const changePage = (direction: -1 | 1) => {
+    if (q.isFetching) return;
+
+    setPagination({
+      key: paginationKey,
+      offset: Math.max(0, offset + direction * PAGE_SIZE),
+    });
+  };
+
+  const qMembers = useQuery<TenantMember[]>({
+    queryKey: ["tenant-members", activeTenant],
+    queryFn: listTenantMembers,
+    enabled: queryEnabled && isAdminOrOwner,
+  });
+
+  const memberChips = useMemo<MemberChip[]>(() => {
+    const result: MemberChip[] = [
+      {
+        id: "all",
+        label: "Todos los responsables",
+      },
+    ];
+
+    const seen = new Set<string>();
+
+    for (const member of qMembers.data ?? []) {
+      if (seen.has(member.id)) continue;
+
+      seen.add(member.id);
+
+      result.push({
+        id: member.id,
+        label: member.name || member.email || member.id,
+      });
+    }
+
+    return result;
+  }, [qMembers.data]);
+
+  const assigneeActiveLabel = useMemo(() => {
+    return (
+      memberChips.find(
+        (member) => member.id === assigneeFilter
+      )?.label || "Todos los responsables"
+    );
+  }, [memberChips, assigneeFilter]);
+
+  const onRefresh = useCallback(() => {
+    void loadLocalEventMap();
+    void refetchActivities();
+
+    if (!activeTenant) return;
+
+    void queryClient.invalidateQueries({
+      queryKey: ["activity-stats", activeTenant],
+    });
+
+    void queryClient.invalidateQueries({
+      queryKey: ["activity-trend", activeTenant],
+    });
+  }, [
+    loadLocalEventMap,
+    refetchActivities,
+    activeTenant,
+    queryClient,
+  ]);
+
+  const clearFilters = () => {
+    setSearch("");
+    setDebouncedSearch("");
+    setFilter("all");
+    setTimeFilter("all");
+    setTimeFilterDateStr("");
+    setQuickFilter("all");
+    setAssigneeFilter("all");
+    setFilterMenu(null);
+    setAssigneeMenuOpen(false);
+  };
+
+  const hasFilters =
+    search.trim() !== "" ||
+    filter !== "all" ||
+    timeFilter !== "all" ||
+    quickFilter !== "all" ||
+    (
+      effectiveScope === "team" &&
+      assigneeFilter !== "all"
+    ) ||
+    timeFilterDateStr !== "";
+
+  const statisticsPanel = (
+    <ActivityStatsPanel
+      tenantId={activeTenant}
+      enabled={queryEnabled}
+      filters={{
+        scope: effectiveScope,
+        person_id:
+          effectiveScope === "team" &&
+          assigneeFilter !== "all"
+            ? assigneeFilter
+            : undefined,
+        q: serverFilters.q,
+        pending: serverFilters.pending,
+        undated: serverFilters.undated,
+        due_from: serverFilters.due_from,
+        due_before: serverFilters.due_before,
+      }}
+      onSelectStatus={(status) => {
+        setFilter(status);
+
+        if (status === "done" || status === "canceled") {
+          setQuickFilter("all");
+        }
+
+        setShowStats(false);
+      }}
+      onSelectPerson={(id) => {
+        setActivityScope("team");
+        setAssigneeFilter(id);
+        setAssigneeMenuOpen(false);
+        setShowStats(false);
+      }}
+    />
+  );
 
   return (
     <>
@@ -395,11 +511,19 @@ export default function TasksList() {
           title: "Actividades",
           headerStyle: { backgroundColor: BG },
           headerTintColor: TEXT,
-          headerTitleStyle: { color: TEXT, fontWeight: "800" },
+          headerTitleStyle: {
+            color: TEXT,
+            fontWeight: "800",
+          },
         }}
       />
 
-            <View style={styles.screen}>
+      <View
+        style={[
+          styles.screen,
+          { padding: width < 600 ? 12 : 20 },
+        ]}
+      >
         <View style={styles.pageHeader}>
           <View style={styles.pageHeading}>
             <Text style={styles.pageTitle}>Actividades</Text>
@@ -413,390 +537,790 @@ export default function TasksList() {
             onPress={() => router.push("/tasks/new")}
             style={styles.createButton}
           >
-            <Text style={styles.createButtonText}>+ Nueva actividad</Text>
+            <Text style={styles.createButtonText}>
+              + Nueva actividad
+            </Text>
           </Pressable>
         </View>
 
-        <View style={styles.filters}>
-          {(["all", "open", "in_progress", "done", "canceled"] as Filter[]).map((f) => {
-            const active = filter === f;
-            return (
-              <Pressable
-                key={f}
-                onPress={() => setFilter(f)}
-                style={[styles.chip, active && styles.chipActive]}
-                accessibilityRole="button"
-              >
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                  {labelFilter(f)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        {isAdminOrOwner && (
+          <View style={styles.scopeBar}>
+            {(
+              [
+                ["team", "Equipo"],
+                ["mine", "Mis actividades"],
+              ] as const
+            ).map(([value, label]) => {
+              const selected = effectiveScope === value;
 
-        <View style={styles.timeFiltersRow}>
-          {(["all", "day", "week", "month"] as TimeFilter[]).map((tf) => {
-            const active = timeFilter === tf;
-            return (
-              <Pressable
-                key={tf}
-                onPress={() => setTimeFilter(tf)}
-                style={[styles.timeChip, active && styles.timeChipActive]}
-              >
-                <Text style={[styles.timeChipText, active && styles.timeChipTextActive]}>
-                  {tf === "all" ? "Todas" : tf === "day" ? "Día" : tf === "week" ? "Semana" : "Mes"}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {timeFilter !== "all" && (
-          <TextInput
-            value={timeFilterDateStr}
-            onChangeText={setTimeFilterDateStr}
-            placeholder="Fecha base (YYYY-MM-DD). Vacío = hoy"
-            placeholderTextColor={SUBTLE}
-            style={styles.dateFilterInput}
-            autoCapitalize="none"
-            keyboardType="numbers-and-punctuation"
-          />
+              return (
+                <Pressable
+                  key={value}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  onPress={() => {
+                    setActivityScope(value);
+                    setAssigneeFilter("all");
+                    setAssigneeMenuOpen(false);
+                    setFilterMenu(null);
+                  }}
+                  style={[
+                    styles.scopeButton,
+                    selected && styles.scopeButtonActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.scopeText,
+                      selected && styles.scopeTextActive,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         )}
-                <View
-          style={[
-            styles.searchToolbar,
-            desktop && styles.searchToolbarDesktop,
-          ]}
-        >
+
+        <View style={styles.filterCard}>
           <TextInput
             value={search}
             onChangeText={setSearch}
-            placeholder="Buscar por título, usuario, cliente..."
+            placeholder="Buscar actividad, persona o contacto…"
             placeholderTextColor={SUBTLE}
-            style={[
-              styles.searchInput,
-              desktop && styles.searchInputDesktop,
-            ]}
+            style={styles.searchInput}
             autoCapitalize="none"
             autoCorrect={false}
+            maxLength={200}
+            accessibilityLabel="Buscar actividades"
           />
 
-          {isAdminOrOwner && memberChips.length > 0 && (
-            <View
-              style={[
-                styles.dropdownRow,
-                desktop && styles.dropdownRowDesktop,
-              ]}
-            >
-              <View style={styles.dropdownWrapper}>
+          <View style={styles.filterControls}>
+            <View style={styles.filterControl}>
+              <Text style={styles.filterCaption}>ESTADO</Text>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  expanded: filterMenu === "status",
+                }}
+                style={styles.dropdownTrigger}
+                onPress={() => {
+                  setFilterMenu(
+                    filterMenu === "status" ? null : "status"
+                  );
+                  setAssigneeMenuOpen(false);
+                }}
+              >
+                <Text style={styles.dropdownText}>
+                  {labelFilter(filter)}
+                </Text>
+                <Text style={styles.dropdownArrow}>▾</Text>
+              </Pressable>
+
+              {filterMenu === "status" && (
+                <View style={styles.dropdownMenu}>
+                  {(
+                    [
+                      "all",
+                      "open",
+                      "in_progress",
+                      "done",
+                      "canceled",
+                    ] as Filter[]
+                  ).map((value) => (
+                    <Pressable
+                      key={value}
+                      accessibilityRole="button"
+                      accessibilityState={{
+                        selected: filter === value,
+                      }}
+                      style={[
+                        styles.dropdownOption,
+                        filter === value &&
+                          styles.dropdownOptionActive,
+                      ]}
+                      onPress={() => {
+                        setFilter(value);
+
+                        if (
+                          value === "done" ||
+                          value === "canceled"
+                        ) {
+                          setQuickFilter("all");
+                        }
+
+                        setFilterMenu(null);
+                      }}
+                    >
+                      <Text style={styles.dropdownOptionText}>
+                        {labelFilter(value)}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </View>
+
+            <View style={styles.filterControl}>
+              <Text style={styles.filterCaption}>
+                PERIODO PROGRAMADO
+              </Text>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  expanded: filterMenu === "period",
+                }}
+                style={styles.dropdownTrigger}
+                onPress={() => {
+                  setFilterMenu(
+                    filterMenu === "period" ? null : "period"
+                  );
+                  setAssigneeMenuOpen(false);
+                }}
+              >
+                <Text style={styles.dropdownText}>
+                  {labelTimeFilter(timeFilter)}
+                </Text>
+                <Text style={styles.dropdownArrow}>▾</Text>
+              </Pressable>
+
+              {filterMenu === "period" && (
+                <View style={styles.dropdownMenu}>
+                  {(
+                    ["all", "day", "week", "month"] as TimeFilter[]
+                  ).map((value) => (
+                    <Pressable
+                      key={value}
+                      accessibilityRole="button"
+                      accessibilityState={{
+                        selected: timeFilter === value,
+                      }}
+                      style={[
+                        styles.dropdownOption,
+                        timeFilter === value &&
+                          styles.dropdownOptionActive,
+                      ]}
+                      onPress={() => {
+                        setTimeFilter(value);
+                        setQuickFilter("all");
+                        setFilterMenu(null);
+                      }}
+                    >
+                      <Text style={styles.dropdownOptionText}>
+                        {labelTimeFilter(value)}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </View>
+
+            {isAdminOrOwner && effectiveScope === "team" && (
+              <View style={styles.filterControl}>
+                <Text style={styles.filterCaption}>
+                  RESPONSABLE
+                </Text>
+
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{
+                    expanded: assigneeMenuOpen,
+                  }}
                   style={styles.dropdownTrigger}
-                  onPress={() => setAssigneeMenuOpen((v) => !v)}
+                  onPress={() => {
+                    setAssigneeMenuOpen((value) => !value);
+                    setFilterMenu(null);
+                  }}
                 >
-                  <Text style={styles.dropdownText} numberOfLines={1}>
+                  <Text
+                    style={styles.dropdownText}
+                    numberOfLines={1}
+                  >
                     {assigneeActiveLabel}
                   </Text>
-                  <Text style={styles.dropdownArrow}>
-                    {assigneeMenuOpen ? "▲" : "▼"}
-                  </Text>
+                  <Text style={styles.dropdownArrow}>▾</Text>
                 </Pressable>
 
                 {assigneeMenuOpen && (
                   <View style={styles.dropdownMenu}>
-                    {memberChips.map((m) => {
-                      const active = assigneeFilter === m.id;
-
-                      return (
-                        <Pressable
-                          key={m.id}
-                          style={[
-                            styles.dropdownOption,
-                            active && styles.dropdownOptionActive,
-                          ]}
-                          onPress={() => {
-                            setAssigneeFilter(m.id);
-                            setAssigneeMenuOpen(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.dropdownOptionText,
-                              active && styles.dropdownOptionTextActive,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {m.id === "all" ? "Todas las personas" : m.label}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
+                    {memberChips.map((member) => (
+                      <Pressable
+                        key={member.id}
+                        accessibilityRole="button"
+                        accessibilityState={{
+                          selected: assigneeFilter === member.id,
+                        }}
+                        style={[
+                          styles.dropdownOption,
+                          assigneeFilter === member.id &&
+                            styles.dropdownOptionActive,
+                        ]}
+                        onPress={() => {
+                          setAssigneeFilter(member.id);
+                          setAssigneeMenuOpen(false);
+                        }}
+                      >
+                        <Text style={styles.dropdownOptionText}>
+                          {member.label}
+                        </Text>
+                      </Pressable>
+                    ))}
                   </View>
                 )}
               </View>
+            )}
+          </View>
+
+          {timeFilter !== "all" && (
+            <View style={{ gap: 5 }}>
+              <Text style={styles.filterCaption}>
+                FECHA BASE · VACÍO = HOY
+              </Text>
+              <TextInput
+                value={timeFilterDateStr}
+                onChangeText={setTimeFilterDateStr}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={SUBTLE}
+                style={styles.dateFilterInput}
+                autoCapitalize="none"
+                keyboardType="numbers-and-punctuation"
+                accessibilityLabel="Fecha base del periodo"
+              />
             </View>
           )}
 
-          {isAdminOrOwner && tenants.length > 0 && (
-            <View
-              style={[
-                styles.dropdownRow,
-                desktop && styles.dropdownRowDesktop,
-              ]}
-            >
-              <View style={styles.dropdownWrapper}>
+          <View style={styles.filterShortcuts}>
+            <Text style={{ color: SUBTLE, fontSize: 12 }}>
+              Pendientes:
+            </Text>
+
+            {(
+              [
+                ["overdue", "De días anteriores"],
+                ["undated", "Sin fecha"],
+              ] as const
+            ).map(([value, label]) => {
+              const active = quickFilter === value;
+
+              return (
                 <Pressable
-                  style={styles.dropdownTrigger}
-                  onPress={() => setWsMenuOpen((v) => !v)}
+                  key={value}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  style={[
+                    styles.chip,
+                    active && styles.chipActive,
+                  ]}
+                  onPress={() => {
+                    const next = active ? "all" : value;
+                    setQuickFilter(next);
+
+                    if (next !== "all") {
+                      setTimeFilter("all");
+                      setTimeFilterDateStr("");
+
+                      if (
+                        filter === "done" ||
+                        filter === "canceled"
+                      ) {
+                        setFilter("all");
+                      }
+                    }
+
+                    setFilterMenu(null);
+                    setAssigneeMenuOpen(false);
+                  }}
                 >
-                  <Text style={styles.dropdownText} numberOfLines={1}>
-                    {wsActiveLabel}
-                  </Text>
-                  <Text style={styles.dropdownArrow}>
-                    {wsMenuOpen ? "▲" : "▼"}
+                  <Text
+                    style={[
+                      styles.chipText,
+                      active && styles.chipTextActive,
+                    ]}
+                  >
+                    {label}
+                    {active ? " ×" : ""}
                   </Text>
                 </Pressable>
+              );
+            })}
 
-                {wsMenuOpen && (
-                  <View style={styles.dropdownMenu}>
-                    {tenants.map((t) => {
-                      const active = activeTenant === t.id;
-                      const busy = busyWs === t.id;
-
-                      return (
-                        <Pressable
-                          key={t.id}
-                          style={[
-                            styles.dropdownOption,
-                            active && styles.dropdownOptionActive,
-                            busy && { opacity: 0.5 },
-                          ]}
-                          onPress={async () => {
-                            await onSelectWorkspace(t.id);
-                            setWsMenuOpen(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.dropdownOptionText,
-                              active && styles.dropdownOptionTextActive,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {t.name || t.id}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                )}
-              </View>
-            </View>
-          )}
+            {hasFilters && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={clearFilters}
+                style={styles.clearFiltersButton}
+              >
+                <Text style={styles.clearFiltersText}>
+                  Limpiar filtros
+                </Text>
+              </Pressable>
+            )}
+          </View>
         </View>
 
-
         {loadingRole && (
-          <View style={{ marginTop: 6 }}>
-            <Text style={{ color: SUBTLE, fontSize: 11 }}>Verificando permisos…</Text>
-          </View>
+          <Text style={styles.permissionsText}>
+            Verificando permisos…
+          </Text>
         )}
 
-        {q.isLoading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={PRIMARY} />
-            <Text style={styles.subtle}>Cargando actividades…</Text>
-          </View>
-        ) : q.isError ? (
-          <Text style={{ color: "#fecaca" }}>
-            Error: {String((q.error as any)?.message || q.error)}
-          </Text>
-        ) : (
-          <FlatList
-            data={data}
-            keyExtractor={(item) => item.id}
-                        style={styles.list}
-            ListHeaderComponent={
-              <View>
-                <Text style={styles.resultCount}>
-                  {data.length} actividades en el resultado
-                </Text>
+        {!sidePanel && (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setShowStats((value) => !value)}
+            style={styles.chip}
+          >
+            <Text style={styles.chipText}>
+              {showStats ? "Volver al listado" : "Ver estadísticas"}
+            </Text>
+          </Pressable>
+        )}
 
-                {desktop && (
-                  <View style={styles.tableHeader}>
-                    <Text style={[styles.columnHeading, styles.activityColumn]}>
-                      Actividad
-                    </Text>
-                    <Text style={[styles.columnHeading, styles.personColumn]}>
-                      Responsables
-                    </Text>
-                    <Text style={[styles.columnHeading, styles.contactColumn]}>
-                      Contacto
-                    </Text>
-                    <Text style={[styles.columnHeading, styles.dateColumn]}>
-                      Fecha del evento
-                    </Text>
-                    <Text style={[styles.columnHeading, styles.statusColumn]}>
-                      Estado
-                    </Text>
-                  </View>
-                )}
+        <View
+          onLayout={(event) => {
+            const nextWidth = Math.round(
+              event.nativeEvent.layout.width
+            );
+
+            setContentWidth((previous) =>
+              previous === nextWidth ? previous : nextWidth
+            );
+          }}
+          style={[
+            styles.contentColumns,
+            { gap: sidePanel ? 20 : 0 },
+          ]}
+        >
+          <View
+            style={[
+              styles.listColumn,
+              {
+                display:
+                  !sidePanel && showStats ? "none" : "flex",
+              },
+            ]}
+          >
+            {loadingRole ? (
+              <View style={styles.center}>
+                <ActivityIndicator color={PRIMARY} />
+                <Text style={styles.subtle}>
+                  Preparando actividades…
+                </Text>
               </View>
-            }
-            refreshControl={<RefreshControl refreshing={q.isFetching} onRefresh={onRefresh} />}
-            ListEmptyComponent={<Text style={styles.subtle}>No hay actividades</Text>}
-            renderItem={({ item }) => (
-              <TaskCard
-                item={item}
-                completedMaster={completedMaster}
-                inProgressMaster={inProgressMaster}
-                localEventMap={localEventMap}
+            ) : !queryEnabled ? (
+              <View style={styles.center}>
+                <Text style={styles.subtle}>
+                  No pudimos cargar el workspace o verificar
+                  tus permisos.
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void loadRoleAndTenant()}
+                  style={styles.chip}
+                >
+                  <Text style={styles.chipText}>Reintentar</Text>
+                </Pressable>
+              </View>
+            ) : q.isLoading ? (
+              <View style={styles.center}>
+                <ActivityIndicator color={PRIMARY} />
+                <Text style={styles.subtle}>
+                  Cargando actividades…
+                </Text>
+              </View>
+            ) : q.isError ? (
+              <View style={styles.center}>
+                <Text style={styles.errorText}>
+                  No pudimos cargar las actividades.
+                </Text>
+                <Text style={styles.subtle}>
+                  {q.error instanceof Error
+                    ? q.error.message
+                    : String(q.error)}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void q.refetch()}
+                  style={styles.chip}
+                >
+                  <Text style={styles.chipText}>Reintentar</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <FlatList
+                key={`${paginationKey}:${offset}`}
+                data={data}
+                keyExtractor={(item) => item.id}
+                style={styles.list}
+                ListHeaderComponent={
+                  <View>
+                    <Text style={styles.resultCount}>
+                      {total === 0
+                        ? "0 actividades"
+                        : `${offset + 1}–${
+                            offset + data.length
+                          } de ${total} actividades`}
+                    </Text>
+
+                    {desktop && (
+                      <View style={styles.tableHeader}>
+                        <Text
+                          style={[
+                            styles.columnHeading,
+                            styles.activityColumn,
+                          ]}
+                        >
+                          Actividad
+                        </Text>
+                        <Text
+                          style={[
+                            styles.columnHeading,
+                            styles.personColumn,
+                          ]}
+                        >
+                          Responsables
+                        </Text>
+                        <Text
+                          style={[
+                            styles.columnHeading,
+                            styles.contactColumn,
+                          ]}
+                        >
+                          Contacto
+                        </Text>
+                        <Text
+                          style={[
+                            styles.columnHeading,
+                            styles.dateColumn,
+                          ]}
+                        >
+                          Fecha del evento
+                        </Text>
+                        <Text
+                          style={[
+                            styles.columnHeading,
+                            styles.statusColumn,
+                          ]}
+                        >
+                          Estado
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                }
+                refreshControl={
+                  <RefreshControl
+                    refreshing={q.isFetching}
+                    onRefresh={onRefresh}
+                  />
+                }
+                ListEmptyComponent={
+                  <Text style={styles.subtle}>
+                    No hay actividades para estos filtros.
+                  </Text>
+                }
+                renderItem={({ item }) => (
+                  <TaskCard
+                    item={item}
+                    desktop={desktop}
+                    localEventMap={localEventMap}
+                  />
+                )}
+                contentContainerStyle={{
+                  gap: desktop ? 0 : 10,
+                  paddingBottom: 20,
+                }}
               />
             )}
-                        contentContainerStyle={{
-              gap: desktop ? 0 : 10,
-              paddingBottom: 20,
-            }}
-          />
-        )}
+
+            {queryEnabled && q.data && !q.isError && (
+              <View style={styles.pagination}>
+                <Text style={styles.paginationText}>
+                  Página {currentPage} de {pageCount}
+                  {q.isFetching ? " · Actualizando…" : ""}
+                </Text>
+
+                <View style={styles.paginationButtons}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Página anterior"
+                    accessibilityState={{
+                      disabled: offset === 0 || q.isFetching,
+                    }}
+                    disabled={offset === 0 || q.isFetching}
+                    onPress={() => changePage(-1)}
+                    style={[
+                      styles.chip,
+                      (offset === 0 || q.isFetching) &&
+                        styles.disabled,
+                    ]}
+                  >
+                    <Text style={styles.chipText}>
+                      ← Anterior
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Página siguiente"
+                    accessibilityState={{
+                      disabled: !q.data.has_more || q.isFetching,
+                    }}
+                    disabled={!q.data.has_more || q.isFetching}
+                    onPress={() => changePage(1)}
+                    style={[
+                      styles.chip,
+                      (!q.data.has_more || q.isFetching) &&
+                        styles.disabled,
+                    ]}
+                  >
+                    <Text style={styles.chipText}>
+                      Siguiente →
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
+          </View>
+
+          {(sidePanel || showStats) && (
+            <ScrollView
+              style={{
+                flexGrow: sidePanel ? 0 : 1,
+                flexShrink: sidePanel ? 0 : 1,
+                flexBasis: sidePanel ? statsWidth : 0,
+                width: sidePanel ? statsWidth : undefined,
+                maxWidth: sidePanel ? statsWidth : undefined,
+                minWidth: 0,
+                minHeight: 0,
+              }}
+              contentContainerStyle={{
+                paddingBottom: 20,
+                width: "100%",
+              }}
+            >
+              {statisticsPanel}
+            </ScrollView>
+          )}
+        </View>
       </View>
     </>
   );
 }
 
-function getLastNoteBlock(notes?: string | null): string | null {
+function getLastNoteBlock(
+  notes?: string | null
+): string | null {
   if (!notes) return null;
 
   const blocks = notes
     .split(/\n{2,}/)
-    .map((b) => b.trim())
+    .map((block) => block.trim())
     .filter(Boolean);
 
-  if (blocks.length === 0) return null;
-  return blocks[blocks.length - 1];
+  return blocks.length ? blocks[blocks.length - 1] : null;
 }
 
-/**
- * - Si NO viene contact_name/contact_title/contact.name,
- *   mostramos el contact_id para que nunca desaparezca.
- */
-function getContactLabel(a: ActivityWithCreator): string | null {
+function getContactLabel(
+  activity: ActivityWithCreator
+): string | null {
   const name =
-    (a as any).contact_name ||
-    (a as any).contact_title ||
-    (a as any).contact?.name ||
+    activity.contact_name ||
+    activity.contact_title ||
+    activity.contact?.name ||
     null;
 
-  if (name && String(name).trim()) return String(name).trim();
-
-  return null;
+  return name && String(name).trim()
+    ? String(name).trim()
+    : null;
 }
 
-function parseEventDateToMs(raw: any): number | null {
+function parseEventDateToMs(raw: unknown): number | null {
   if (raw == null) return null;
 
   if (typeof raw === "number" && Number.isFinite(raw)) {
     return raw < 1e12 ? raw * 1000 : raw;
   }
 
-  if (typeof raw === "string") {
-    const s = raw.trim();
-    if (!s) return null;
+  if (typeof raw !== "string") return null;
 
-    const asNum = Number(s);
-    if (Number.isFinite(asNum)) {
-      return asNum < 1e12 ? asNum * 1000 : asNum;
-    }
+  const value = raw.trim();
+  if (!value) return null;
 
-    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (m) {
-      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
-      return Number.isNaN(d.getTime()) ? null : d.getTime();
-    }
+  const numeric = Number(value);
 
-    const t = Date.parse(s);
-    if (!Number.isNaN(t)) return t;
-
-    return null;
+  if (Number.isFinite(numeric)) {
+    return numeric < 1e12 ? numeric * 1000 : numeric;
   }
 
-  return null;
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (match) {
+    const date = new Date(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      0,
+      0,
+      0,
+      0
+    );
+
+    return Number.isNaN(date.getTime()) ? null : date.getTime();
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : timestamp;
 }
 
-function formatEventLabelFromMs(ms: number): string {
-  const dt = new Date(ms);
-  const hasTime = !(dt.getHours() === 0 && dt.getMinutes() === 0 && dt.getSeconds() === 0);
+function formatEventLabelFromMs(milliseconds: number): string {
+  const date = new Date(milliseconds);
+
+  const hasTime = !(
+    date.getHours() === 0 &&
+    date.getMinutes() === 0 &&
+    date.getSeconds() === 0
+  );
 
   return hasTime
-    ? dt.toLocaleString("es-CL", {
+    ? date.toLocaleString("es-CL", {
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
         hour: "2-digit",
         minute: "2-digit",
       })
-    : dt.toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric" });
+    : date.toLocaleDateString("es-CL", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      });
 }
 
-function getEventDateLabel(a: ActivityWithCreator): string | null {
+function getEventDateLabel(
+  activity: ActivityWithCreator
+): string | null {
   const raw =
-    (a as any).event_at ??
-    (a as any).event_start ??
-    (a as any).calendar_start ??
-    (a as any).calendar_event_start ??
-    (a as any).due_date ??
+    activity.event_at ??
+    activity.event_start ??
+    activity.calendar_start ??
+    activity.calendar_event_start ??
+    activity.due_date ??
     null;
 
-  const ms = parseEventDateToMs(raw);
-  if (!ms) return null;
-  return formatEventLabelFromMs(ms);
+  const milliseconds = parseEventDateToMs(raw);
+
+  return milliseconds === null
+    ? null
+    : formatEventLabelFromMs(milliseconds);
+}
+
+function formatDate(
+  value: number | string | null | undefined
+): string {
+  const milliseconds = parseEventDateToMs(value);
+  if (milliseconds === null) return "—";
+
+  const date = new Date(milliseconds);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  return date.toLocaleDateString("es-CL", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function labelFilter(filter: Filter): string {
+  switch (filter) {
+    case "open":
+      return "Abiertas";
+    case "in_progress":
+      return "En proceso";
+    case "done":
+      return "Hechas";
+    case "canceled":
+      return "Canceladas";
+    default:
+      return "Todos los estados";
+  }
+}
+
+function labelTimeFilter(filter: TimeFilter): string {
+  switch (filter) {
+    case "day":
+      return "Día";
+    case "week":
+      return "Semana";
+    case "month":
+      return "Mes";
+    default:
+      return "Cualquier fecha";
+  }
 }
 
 function TaskCard({
   item,
-  completedMaster,
-  inProgressMaster,
+  desktop,
   localEventMap,
 }: {
   item: ActivityWithCreator;
-  completedMaster: Set<string>;
-  inProgressMaster: Set<string>;
+  desktop: boolean;
   localEventMap: Record<string, number>;
 }) {
-  const isDoneUI = item.status === "done" || completedMaster.has(item.id);
-    const { width } = useWindowDimensions();
-  const desktop = Platform.OS === "web" && width >= 1100;
-  const isInProgressUI = !isDoneUI && inProgressMaster.has(item.id);
+  const isDone = item.status === "done";
+  const isInProgress = item.status === "in_progress";
 
-  const statusLabel = isDoneUI ? "Realizada" : isInProgressUI ? "En proceso" : "Abierta";
-  const createdByLabel = item.created_by_name ? `por ${item.created_by_name}` : "";
+  const statusLabel =
+    item.status === "done"
+      ? "Realizada"
+      : item.status === "in_progress"
+        ? "En proceso"
+        : item.status === "canceled"
+          ? "Cancelada"
+          : "Abierta";
+
+  const createdByLabel = item.created_by_name
+    ? `por ${item.created_by_name}`
+    : "";
 
   const assignedNames: string[] = [];
 
-  if ((item as any).assigned_to_name) assignedNames.push((item as any).assigned_to_name);
-  else if ((item as any).assigned_to) assignedNames.push(String((item as any).assigned_to));
+  if (item.assigned_to_name) {
+    assignedNames.push(item.assigned_to_name);
+  } else if (item.assigned_to) {
+    assignedNames.push(String(item.assigned_to));
+  }
 
-  if ((item as any).assigned_to_2_name) assignedNames.push((item as any).assigned_to_2_name);
-  else if ((item as any).assigned_to_2) assignedNames.push(String((item as any).assigned_to_2));
+  if (item.assigned_to_2_name) {
+    assignedNames.push(item.assigned_to_2_name);
+  } else if (item.assigned_to_2) {
+    assignedNames.push(String(item.assigned_to_2));
+  }
 
-  const assignedInfo =
-    assignedNames.length === 0
-      ? " · sin asignar"
-      : assignedNames.length === 1
-      ? ` · asignada a ${assignedNames[0]}`
-      : ` · asignada a ${assignedNames[0]} y ${assignedNames[1]}`;
+  const assignedInfo = assignedNames.length === 0
+    ? " · sin asignar"
+    : ` · asignada a ${assignedNames.join(" y ")}`;
 
-  const createdLabel =
-    item.created_at != null ? ` · creada el ${formatDate(item.created_at as any)}` : "";
+  const createdLabel = item.created_at != null
+    ? ` · creada el ${formatDate(item.created_at)}`
+    : "";
 
-  const lastNoteBlock = getLastNoteBlock((item as any).notes);
+  const lastNoteBlock = getLastNoteBlock(item.notes);
   const contactLabel = getContactLabel(item);
 
   const eventDateLabel =
     getEventDateLabel(item) ||
-    (localEventMap?.[item.id] ? formatEventLabelFromMs(localEventMap[item.id]) : null);
+    (
+      localEventMap[item.id]
+        ? formatEventLabelFromMs(localEventMap[item.id])
+        : null
+    );
 
-      if (desktop) {
+  if (desktop) {
     return (
       <Pressable
         accessibilityRole="link"
@@ -830,7 +1354,9 @@ function TaskCard({
           style={[styles.tableCell, styles.personColumn]}
           numberOfLines={2}
         >
-          {assignedNames.length ? assignedNames.join(" y ") : "Sin asignar"}
+          {assignedNames.length
+            ? assignedNames.join(" y ")
+            : "Sin asignar"}
         </Text>
 
         <Text
@@ -851,53 +1377,72 @@ function TaskCard({
           <View
             style={[
               styles.statusBadge,
-              isDoneUI
+              isDone
                 ? styles.statusBadgeDone
-                : isInProgressUI
-                ? styles.statusBadgeProgress
-                : styles.statusBadgeOpen,
+                : isInProgress
+                  ? styles.statusBadgeProgress
+                  : styles.statusBadgeOpen,
             ]}
           >
-            <Text style={styles.statusBadgeText}>{statusLabel}</Text>
+            <Text style={styles.statusBadgeText}>
+              {statusLabel}
+            </Text>
           </View>
         </View>
       </Pressable>
     );
   }
+
   return (
-    <Link href={{ pathname: "/tasks/[id]", params: { id: item.id } }} asChild>
-      <Pressable accessibilityRole="link" hitSlop={8}>
+    <Link
+      href={{
+        pathname: "/tasks/[id]",
+        params: { id: item.id },
+      }}
+      asChild
+    >
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={`Abrir actividad: ${item.title}`}
+        hitSlop={8}
+      >
         <View
           style={[
             styles.row,
-            isDoneUI && styles.rowDone,
-            !isDoneUI && isInProgressUI && styles.rowInProgress,
+            isDone && styles.rowDone,
+            !isDone && isInProgress && styles.rowInProgress,
           ]}
         >
           <View style={styles.titleRow}>
             <Text
               style={[
                 styles.title,
-                isDoneUI && styles.titleDone,
-                !isDoneUI && isInProgressUI && styles.titleInProgress,
+                isDone && styles.titleDone,
+                !isDone && isInProgress && styles.titleInProgress,
               ]}
               numberOfLines={1}
             >
-              {item.title}
+              {item.title || "Sin título"}
             </Text>
 
             <View style={styles.rightMeta}>
-              {contactLabel && (
+              {!!contactLabel && (
                 <View style={styles.contactChip}>
-                  <Text style={styles.contactChipText} numberOfLines={1}>
+                  <Text
+                    style={styles.contactChipText}
+                    numberOfLines={1}
+                  >
                     Contacto: {contactLabel}
                   </Text>
                 </View>
               )}
 
-              {eventDateLabel && (
+              {!!eventDateLabel && (
                 <View style={styles.eventChip}>
-                  <Text style={styles.eventChipText} numberOfLines={1}>
+                  <Text
+                    style={styles.eventChipText}
+                    numberOfLines={1}
+                  >
                     Evento para: {eventDateLabel}
                   </Text>
                 </View>
@@ -908,8 +1453,8 @@ function TaskCard({
           <Text
             style={[
               styles.sub,
-              isDoneUI && styles.subDone,
-              !isDoneUI && isInProgressUI && styles.subInProgress,
+              isDone && styles.subDone,
+              !isDone && isInProgress && styles.subInProgress,
             ]}
             numberOfLines={3}
           >
@@ -919,18 +1464,20 @@ function TaskCard({
               (createdByLabel ? ` · ${createdByLabel}` : "") +
               assignedInfo +
               createdLabel +
-              (isDoneUI ? " · tarea completada" : "")}
+              (isDone ? " · tarea completada" : "")}
           </Text>
 
-          {lastNoteBlock && (
+          {!!lastNoteBlock && (
             <Text style={styles.lastNoteText} numberOfLines={2}>
               {lastNoteBlock}
             </Text>
           )}
 
-          {isDoneUI && (
+          {isDone && (
             <View style={styles.badgeDone}>
-              <Text style={styles.badgeDoneText}>Tarea completada</Text>
+              <Text style={styles.badgeDoneText}>
+                Tarea completada
+              </Text>
             </View>
           )}
         </View>
@@ -939,51 +1486,7 @@ function TaskCard({
   );
 }
 
-function labelFilter(f: Filter) {
-  switch (f) {
-    case "all":
-      return "Todas";
-    case "open":
-      return "Abiertas";
-    case "in_progress":
-      return "En proceso";
-    case "done":
-      return "Hechas";
-    case "canceled":
-      return "Canceladas";
-  }
-}
-
-function formatDate(value: number | string | null | undefined): string {
-  if (value == null) return "—";
-  const ms = parseEventDateToMs(value);
-  if (ms == null) return "—";
-  const dt = new Date(ms);
-  if (Number.isNaN(dt.getTime())) return "—";
-  return dt.toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric" });
-}
-
 const styles = StyleSheet.create({
-  searchToolbar: {
-    gap: 10,
-    minWidth: 0,
-  },
-
-  searchToolbarDesktop: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-  },
-
-  searchInputDesktop: {
-    flex: 1,
-    minWidth: 0,
-  },
-
-  dropdownRowDesktop: {
-    width: 220,
-    flexShrink: 0,
-  },
-
   screen: {
     flex: 1,
     minWidth: 0,
@@ -991,7 +1494,6 @@ const styles = StyleSheet.create({
     padding: 20,
     gap: 12,
   },
-
   pageHeader: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1006,8 +1508,16 @@ const styles = StyleSheet.create({
     minWidth: 0,
     gap: 5,
   },
-  pageTitle: { color: TEXT, fontSize: 25, fontWeight: "700" },
-  pageDescription: { color: SUBTLE, fontSize: 13, lineHeight: 20 },
+  pageTitle: {
+    color: TEXT,
+    fontSize: 25,
+    fontWeight: "700",
+  },
+  pageDescription: {
+    color: SUBTLE,
+    fontSize: 13,
+    lineHeight: 20,
+  },
   createButton: {
     backgroundColor: PRIMARY,
     borderRadius: 8,
@@ -1016,54 +1526,66 @@ const styles = StyleSheet.create({
     minHeight: 42,
     justifyContent: "center",
   },
-  createButtonText: { color: "#ffffff", fontSize: 13, fontWeight: "600" },
-
-  filters: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: 8,
-  },
-  chip: {
-    paddingHorizontal: 13,
-    paddingVertical: 10,
-    borderRadius: 7,
-    backgroundColor: CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-  },
-  chipActive: { backgroundColor: "#eee8f8", borderColor: "#b49bdc" },
-  chipText: { color: SUBTLE, fontWeight: "600", fontSize: 12 },
-  chipTextActive: { color: PRIMARY },
-
-  timeFiltersRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: 8,
-  },
-  timeChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 7,
-    borderWidth: 1,
-    borderColor: BORDER,
-    backgroundColor: CARD,
-  },
-  timeChipActive: { backgroundColor: "#eee8f8", borderColor: "#b49bdc" },
-  timeChipText: { color: SUBTLE, fontSize: 12, fontWeight: "500" },
-  timeChipTextActive: { color: PRIMARY },
-
-  dateFilterInput: {
-    minHeight: 42,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#dce0e9",
-    backgroundColor: CARD,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: TEXT,
+  createButtonText: {
+    color: "#ffffff",
     fontSize: 13,
+    fontWeight: "600",
+  },
+  scopeBar: {
+    flexDirection: "row",
+    gap: 4,
+    padding: 4,
+    borderRadius: 10,
+    backgroundColor: "#eeedf4",
+    alignSelf: "flex-start",
+  },
+  scopeButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: "transparent",
+  },
+  scopeButtonActive: {
+    backgroundColor: CARD,
+  },
+  scopeText: {
+    color: SUBTLE,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  scopeTextActive: {
+    color: PRIMARY,
+  },
+  filterCard: {
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    padding: 14,
+    gap: 12,
+  },
+  filterControls: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  filterControl: {
+    flexGrow: 1,
+    flexBasis: 180,
+    minWidth: 160,
+    gap: 6,
+  },
+  filterCaption: {
+    color: SUBTLE,
+    fontSize: 10,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+  },
+  filterShortcuts: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
   },
   searchInput: {
     minHeight: 44,
@@ -1076,9 +1598,17 @@ const styles = StyleSheet.create({
     color: TEXT,
     fontSize: 14,
   },
-
-  dropdownRow: { minWidth: 0 },
-  dropdownWrapper: { width: "100%", maxWidth: 360 },
+  dateFilterInput: {
+    minHeight: 42,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#dce0e9",
+    backgroundColor: CARD,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: TEXT,
+    fontSize: 13,
+  },
   dropdownTrigger: {
     minHeight: 42,
     flexDirection: "row",
@@ -1099,7 +1629,10 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  dropdownArrow: { color: SUBTLE, fontSize: 10 },
+  dropdownArrow: {
+    color: SUBTLE,
+    fontSize: 10,
+  },
   dropdownMenu: {
     marginTop: 6,
     borderRadius: 8,
@@ -1114,11 +1647,61 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER,
   },
-  dropdownOptionActive: { backgroundColor: "#f1ecfa" },
-  dropdownOptionText: { color: TEXT, fontSize: 12 },
-  dropdownOptionTextActive: { color: PRIMARY, fontWeight: "600" },
-
-  list: { flex: 1, minHeight: 0 },
+  dropdownOptionActive: {
+    backgroundColor: "#f1ecfa",
+  },
+  dropdownOptionText: {
+    color: TEXT,
+    fontSize: 12,
+  },
+  chip: {
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 7,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  chipActive: {
+    backgroundColor: "#eee8f8",
+    borderColor: "#b49bdc",
+  },
+  chipText: {
+    color: SUBTLE,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  chipTextActive: {
+    color: PRIMARY,
+  },
+  clearFiltersButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  clearFiltersText: {
+    color: PRIMARY,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  permissionsText: {
+    color: SUBTLE,
+    fontSize: 11,
+  },
+  contentColumns: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+    flexDirection: "row",
+  },
+  listColumn: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+  },
+  list: {
+    flex: 1,
+    minHeight: 0,
+  },
   resultCount: {
     color: SUBTLE,
     fontSize: 12,
@@ -1136,7 +1719,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER,
   },
-  columnHeading: { color: "#596274", fontSize: 11, fontWeight: "600" },
+  columnHeading: {
+    color: "#596274",
+    fontSize: 11,
+    fontWeight: "600",
+  },
   tableRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1147,26 +1734,65 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER,
   },
-  tableRowHover: { backgroundColor: "#faf8fe" },
-  activityColumn: { flex: 3, minWidth: 0, gap: 5 },
-  personColumn: { flex: 1.7, minWidth: 0 },
-  contactColumn: { flex: 1.5, minWidth: 0 },
-  dateColumn: { flex: 1.5, minWidth: 0 },
-  statusColumn: { width: 100 },
-  tableTitle: { color: TEXT, fontSize: 13, lineHeight: 20, fontWeight: "600" },
-  tableSecondary: { color: SUBTLE, fontSize: 11, lineHeight: 17 },
-  tableCell: { color: "#475467", fontSize: 12, lineHeight: 19 },
+  tableRowHover: {
+    backgroundColor: "#faf8fe",
+  },
+  activityColumn: {
+    flex: 3,
+    minWidth: 0,
+    gap: 5,
+  },
+  personColumn: {
+    flex: 1.7,
+    minWidth: 0,
+  },
+  contactColumn: {
+    flex: 1.5,
+    minWidth: 0,
+  },
+  dateColumn: {
+    flex: 1.5,
+    minWidth: 0,
+  },
+  statusColumn: {
+    width: 100,
+  },
+  tableTitle: {
+    color: TEXT,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "600",
+  },
+  tableSecondary: {
+    color: SUBTLE,
+    fontSize: 11,
+    lineHeight: 17,
+  },
+  tableCell: {
+    color: "#475467",
+    fontSize: 12,
+    lineHeight: 19,
+  },
   statusBadge: {
     alignSelf: "flex-start",
     paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 6,
   },
-  statusBadgeOpen: { backgroundColor: "#eef0f5" },
-  statusBadgeProgress: { backgroundColor: "#e8f0ff" },
-  statusBadgeDone: { backgroundColor: "#e3f4e9" },
-  statusBadgeText: { color: "#344054", fontSize: 11, fontWeight: "500" },
-
+  statusBadgeOpen: {
+    backgroundColor: "#eef0f5",
+  },
+  statusBadgeProgress: {
+    backgroundColor: "#e8f0ff",
+  },
+  statusBadgeDone: {
+    backgroundColor: "#e3f4e9",
+  },
+  statusBadgeText: {
+    color: "#344054",
+    fontSize: 11,
+    fontWeight: "500",
+  },
   row: {
     backgroundColor: CARD,
     borderWidth: 1,
@@ -1175,8 +1801,14 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 9,
   },
-  rowDone: { borderColor: "#badfc8", backgroundColor: "#f4fbf6" },
-  rowInProgress: { borderColor: "#bed0f1", backgroundColor: "#f4f7fe" },
+  rowDone: {
+    borderColor: "#badfc8",
+    backgroundColor: "#f4fbf6",
+  },
+  rowInProgress: {
+    borderColor: "#bed0f1",
+    backgroundColor: "#f4f7fe",
+  },
   titleRow: {
     width: "100%",
     flexDirection: "row",
@@ -1191,8 +1823,12 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     minWidth: 0,
   },
-  titleDone: { color: SUCCESS },
-  titleInProgress: { color: "#2858a5" },
+  titleDone: {
+    color: SUCCESS,
+  },
+  titleInProgress: {
+    color: "#2858a5",
+  },
   rightMeta: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1208,7 +1844,11 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     maxWidth: "100%",
   },
-  contactChipText: { color: "#596274", fontSize: 11, fontWeight: "500" },
+  contactChipText: {
+    color: "#596274",
+    fontSize: 11,
+    fontWeight: "500",
+  },
   eventChip: {
     borderWidth: 1,
     borderColor: "#e2d9f2",
@@ -1218,16 +1858,37 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     maxWidth: "100%",
   },
-  eventChipText: { color: PRIMARY, fontSize: 11, fontWeight: "500" },
-  sub: { color: SUBTLE, fontSize: 12, lineHeight: 20 },
-  subDone: { color: "#587a65" },
-  subInProgress: { color: "#526d96" },
-  subtle: { color: SUBTLE, textAlign: "center", marginTop: 8 },
+  eventChipText: {
+    color: PRIMARY,
+    fontSize: 11,
+    fontWeight: "500",
+  },
+  sub: {
+    color: SUBTLE,
+    fontSize: 12,
+    lineHeight: 20,
+  },
+  subDone: {
+    color: "#587a65",
+  },
+  subInProgress: {
+    color: "#526d96",
+  },
+  subtle: {
+    color: SUBTLE,
+    textAlign: "center",
+    marginTop: 8,
+  },
   center: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
+  },
+  errorText: {
+    color: "#b54738",
+    fontSize: 13,
+    textAlign: "center",
   },
   badgeDone: {
     alignSelf: "flex-start",
@@ -1236,6 +1897,33 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 8,
   },
-  badgeDoneText: { color: SUCCESS, fontWeight: "600", fontSize: 11 },
-  lastNoteText: { color: SUBTLE, fontSize: 12, lineHeight: 19 },
+  badgeDoneText: {
+    color: SUCCESS,
+    fontWeight: "600",
+    fontSize: 11,
+  },
+  lastNoteText: {
+    color: SUBTLE,
+    fontSize: 12,
+    lineHeight: 19,
+  },
+  pagination: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingVertical: 8,
+  },
+  paginationText: {
+    color: SUBTLE,
+    fontSize: 12,
+  },
+  paginationButtons: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  disabled: {
+    opacity: 0.45,
+  },
 });

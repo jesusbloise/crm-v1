@@ -230,62 +230,75 @@ r.get("/tenants/role", async (req, res) => {
  * GET /me/profile
  * Devuelve los datos del usuario + contadores de workspaces.
  */
-r.get("/me/profile", (req, res) => {
+r.get("/me/profile", async (req, res) => {
   const userId = resolveUserId(req);
-  if (!userId) return res.status(401).json({ error: "unauthorized" });
 
-  const user = db
-    .prepare(
-      `
-      SELECT
-        id,
-        name,
-        email,
-        role,
-        avatar_url,
-        headline,
-        bio,
-        location,
-        company,
-        website,
-        twitter,
-        linkedin,
-        github,
-        phone,
-        timezone,
-        last_login_at,
-        created_at,
-        updated_at,
-        google_email,
-        google_refresh_token,
-        google_calendar_id,
-        google_connected_at,
-        google_ics_url
-      FROM users
-      WHERE id = ?
-      LIMIT 1
-      `
-    )
-    .get(userId);
+  if (!userId) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
 
-  if (!user) return res.status(404).json({ error: "user_not_found" });
+  try {
+    const user = await db
+      .prepare(`
+        SELECT
+          id,
+          name,
+          email,
+          role,
+          avatar_url,
+          headline,
+          bio,
+          location,
+          company,
+          website,
+          twitter,
+          linkedin,
+          github,
+          phone,
+          timezone,
+          last_login_at,
+          created_at,
+          updated_at,
+          google_email,
+          google_calendar_id,
+          google_connected_at,
+          google_ics_url
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `)
+      .get(userId);
 
-  const counts = db
-    .prepare(
-      `
-      SELECT
-        (SELECT COUNT(*) FROM tenant_memberships WHERE user_id = ?) AS workspaces_count,
-        (SELECT COUNT(*) FROM tenant_memberships WHERE user_id = ? AND role = 'owner') AS owner_count
-      `
-    )
-    .get(userId, userId);
+    if (!user) {
+      return res.status(404).json({ error: "user_not_found" });
+    }
 
-  const profile = { ...user, ...counts };
+    const counts = await db
+      .prepare(`
+        SELECT
+          (
+            SELECT COUNT(*)
+            FROM tenant_memberships
+            WHERE user_id = ?
+          ) AS workspaces_count,
+          (
+            SELECT COUNT(*)
+            FROM tenant_memberships
+            WHERE user_id = ? AND role = 'owner'
+          ) AS owner_count
+      `)
+      .get(userId, userId);
 
-  // 🔹 Importante: devolvemos un OBJETO PLANO, no { user: ... }
-  return res.json(profile);
+    return res.json({
+      ...user,
+      workspaces_count: Number(counts?.workspaces_count ?? 0),
+      owner_count: Number(counts?.owner_count ?? 0),
+    });
+  } catch (error) {
+    console.error("GET /me/profile error:", error);
+    return res.status(500).json({ error: "internal_error" });
+  }
 });
-
 /**
  * PUT /me/profile
  * Actualiza campos básicos del perfil.
@@ -373,7 +386,6 @@ r.put("/me/profile", async (req, res) => {
           created_at,
           updated_at,
           google_email,
-          google_refresh_token,
           google_calendar_id,
           google_connected_at,
           google_ics_url
@@ -384,7 +396,7 @@ r.put("/me/profile", async (req, res) => {
       )
       .get(userId);
 
-    const counts = db
+        const counts = await db
       .prepare(
         `
         SELECT
@@ -394,7 +406,11 @@ r.put("/me/profile", async (req, res) => {
       )
       .get(userId, userId);
 
-    const profile = { ...fresh, ...counts };
+        const profile = {
+      ...fresh,
+      workspaces_count: Number(counts?.workspaces_count ?? 0),
+      owner_count: Number(counts?.owner_count ?? 0),
+    };
 
     return res.json({ ok: true, user: profile });
   } catch (e) {

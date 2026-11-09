@@ -10,6 +10,10 @@ export type Note = {
   deal_id?: string | null;
   created_at: number;
   updated_at: number;
+
+  created_by?: string | null;
+  created_by_name?: string | null;
+  created_by_email?: string | null;
 };
 
 /** Lista genérica con filtros opcionales. */

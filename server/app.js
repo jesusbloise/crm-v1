@@ -64,6 +64,7 @@ app.use(require("./routes/leads"));
 app.use(require("./routes/contacts"));
 app.use(require("./routes/accounts"));
 app.use(require("./routes/deals"));
+app.use(require("./routes/dealDocuments"));
 app.use(require("./routes/activities"));
 app.use(require("./routes/notes"));
 

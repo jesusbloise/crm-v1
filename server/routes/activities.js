@@ -1,22 +1,21 @@
 // server/routes/activities.js
 const { Router } = require("express");
+const crypto = require("crypto");
 const db = require("../db/connection");
 const wrap = require("../lib/wrap");
+
 const {
   resolveUserId,
-  canRead,
   canWrite,
   canDelete,
+  getUserRole,
 } = require("../lib/authorize");
-const { getUserRole } = require("../lib/authorize");
+
 const {
   linkedContactVisibilityFilter,
   canAccessContactLinks,
 } = require("../lib/contactAccess");
 
-const crypto = require("crypto");
-
-// mailers
 const {
   notifyActivityCreated,
   notifyActivityReassigned,
@@ -24,64 +23,85 @@ const {
 
 const router = Router();
 
-const coerceStr = (v) => (typeof v === "string" ? v.trim() : null);
-const coerceNum = (v) =>
-  v === null || v === undefined || v === "" ? null : Number(v);
-const VALID_STATUS = new Set(["open", "done", "canceled"]);
+const coerceStr = (value) =>
+  typeof value === "string" ? value.trim() : null;
 
-// Nuevo enfoque: resolver SIEMPRE row aunque el driver sea sync/async o venga envuelto
+const coerceNum = (value) =>
+  value === null || value === undefined || value === ""
+    ? null
+    : Number(value);
+
+const VALID_STATUS = new Set([
+  "open",
+  "in_progress",
+  "done",
+  "canceled",
+]);
+
 async function resolveRow(maybe) {
-  const v = await Promise.resolve(maybe);
-  if (!v) return null;
+  const value = await Promise.resolve(maybe);
 
-  // Caso: drivers/wrappers que devuelven { rows: [...] }
-  if (Array.isArray(v.rows)) return v.rows[0] ?? null;
+  if (!value) return null;
+  if (Array.isArray(value.rows)) return value.rows[0] ?? null;
 
-  // Caso: drivers/wrappers que devuelven { row: {...} }
-  if (v.row && typeof v.row === "object") return v.row;
-
-  // Caso: row plano
-  return v;
-}
-
-// Mantengo tu unwrapRow (por si ya lo usabas), pero el flujo principal usa resolveRow
-function unwrapRow(x) {
-  if (!x) return null;
-  if (Array.isArray(x?.rows)) return x.rows[0] ?? null;
-  if (x?.row) return x.row;
-  return x;
-}
-
-// Normaliza asignación (evita duplicados, huecos, swaps)
-function normalizeAssignees(assigned_to, assigned_to_2) {
-  let a1 = assigned_to ? String(assigned_to).trim() : null;
-  let a2 = assigned_to_2 ? String(assigned_to_2).trim() : null;
-
-  if (a1 === "") a1 = null;
-  if (a2 === "") a2 = null;
-
-  if (a1 && a2 && a1 === a2) a2 = null;
-
-  if (!a1 && a2) {
-    a1 = a2;
-    a2 = null;
+  if (value.row && typeof value.row === "object") {
+    return value.row;
   }
 
-  return { assigned_to: a1, assigned_to_2: a2 };
+  return value;
 }
 
-function assigneeSet(obj) {
-  const s = new Set();
-  if (obj?.assigned_to) s.add(String(obj.assigned_to));
-  if (obj?.assigned_to_2) s.add(String(obj.assigned_to_2));
-  return s;
+function normalizeAssignees(assigned_to, assigned_to_2) {
+  let first = assigned_to
+    ? String(assigned_to).trim()
+    : null;
+
+  let second = assigned_to_2
+    ? String(assigned_to_2).trim()
+    : null;
+
+  if (first === "") first = null;
+  if (second === "") second = null;
+
+  if (first && second && first === second) {
+    second = null;
+  }
+
+  if (!first && second) {
+    first = second;
+    second = null;
+  }
+
+  return {
+    assigned_to: first,
+    assigned_to_2: second,
+  };
 }
 
-function setsEqual(a, b) {
-  if (a.size !== b.size) return false;
-  for (const v of a) if (!b.has(v)) return false;
+function assigneeSet(activity) {
+  const result = new Set();
+
+  if (activity?.assigned_to) {
+    result.add(String(activity.assigned_to));
+  }
+
+  if (activity?.assigned_to_2) {
+    result.add(String(activity.assigned_to_2));
+  }
+
+  return result;
+}
+
+function setsEqual(first, second) {
+  if (first.size !== second.size) return false;
+
+  for (const value of first) {
+    if (!second.has(value)) return false;
+  }
+
   return true;
 }
+
 const ACTIVITY_SELECT = `
   SELECT
     a.*,
@@ -109,12 +129,12 @@ async function activityReadFilter(req) {
   }
 
   const linked = linkedContactVisibilityFilter(req, "a");
+
   const role = String(
     (await getUserRole(userId)) || ""
   ).toLowerCase();
 
   if (role === "admin" || role === "owner") {
-    // Consulta general, respetando la privacidad del contacto.
     return linked;
   }
 
@@ -141,18 +161,19 @@ async function activityReadFilter(req) {
     ],
   };
 }
+
 /**
- * Valida acceso del autor y de los usuarios asignados.
- * No comparte el contacto automáticamente.
+ * Comprueba los vínculos privados y el acceso de los asignados.
+ * No comparte contactos automáticamente.
  */
 async function validateActivityAccess(req, activity) {
   const userId = resolveUserId(req);
 
   if (!userId || !req.tenantId) {
-    const err = new Error("unauthorized");
-    err.status = 401;
-    err.code = "unauthorized";
-    throw err;
+    const error = new Error("unauthorized");
+    error.status = 401;
+    error.code = "unauthorized";
+    throw error;
   }
 
   const canAccess = await canAccessContactLinks(
@@ -162,20 +183,24 @@ async function validateActivityAccess(req, activity) {
   );
 
   if (!canAccess) {
-    const err = new Error("Contacto u oportunidad inexistente o sin acceso.");
-    err.status = 400;
-    err.code = "invalid_contact_links";
-    throw err;
+    const error = new Error(
+      "Contacto u oportunidad inexistente o sin acceso."
+    );
+    error.status = 400;
+    error.code = "invalid_contact_links";
+    throw error;
   }
 
   const assignedIds = [
     ...new Set(
-      [activity.assigned_to, activity.assigned_to_2].filter(Boolean)
+      [
+        activity.assigned_to,
+        activity.assigned_to_2,
+      ].filter(Boolean)
     ),
   ];
 
   for (const assignedId of assignedIds) {
-    // El asignado debe estar activo y pertenecer al workspace.
     const member = await db.prepare(`
       SELECT u.id
       FROM users u
@@ -185,17 +210,20 @@ async function validateActivityAccess(req, activity) {
           EXISTS (
             SELECT 1
             FROM tenant_memberships tm
-            WHERE tm.tenant_id = ? AND tm.user_id = u.id
+            WHERE tm.tenant_id = ?
+              AND tm.user_id = u.id
           )
           OR EXISTS (
             SELECT 1
             FROM memberships m
-            WHERE m.tenant_id = ? AND m.user_id = u.id
+            WHERE m.tenant_id = ?
+              AND m.user_id = u.id
           )
           OR EXISTS (
             SELECT 1
             FROM tenants t
-            WHERE t.id = ? AND t.created_by = u.id
+            WHERE t.id = ?
+              AND t.created_by = u.id
           )
         )
       LIMIT 1
@@ -207,15 +235,14 @@ async function validateActivityAccess(req, activity) {
     );
 
     if (!member) {
-      const err = new Error(
+      const error = new Error(
         "Los usuarios asignados deben estar activos y pertenecer al workspace."
       );
-      err.status = 400;
-      err.code = "invalid_assignees";
-      throw err;
+      error.status = 400;
+      error.code = "invalid_assignees";
+      throw error;
     }
 
-    // Consulta los permisos del asignado, sin darle privilegios de admin.
     const recipientReq = {
       tenantId: req.tenantId,
       user: { id: assignedId },
@@ -229,15 +256,53 @@ async function validateActivityAccess(req, activity) {
     );
 
     if (!recipientCanAccess) {
-      const err = new Error(
+      const error = new Error(
         "Comparte primero el contacto con todos los usuarios asignados."
       );
-      err.status = 400;
-      err.code = "assignee_without_contact_access";
-      throw err;
+      error.status = 400;
+      error.code = "assignee_without_contact_access";
+      throw error;
     }
   }
 }
+
+/**
+ * Búsqueda literal compartida por listado y estadísticas.
+ * Los SELECT que la usan deben incluir los JOIN de ACTIVITY_SELECT.
+ */
+function appendActivitySearch(req, clauses, params) {
+  const search = coerceStr(req.query.q);
+
+  if (!search) return;
+
+  if (search.length > 200) {
+    const error = new Error("search_too_long");
+    error.status = 400;
+    error.code = "search_too_long";
+    throw error;
+  }
+
+  clauses.push(`
+    STRPOS(
+      LOWER(CONCAT_WS(
+        ' ',
+        a.title,
+        a.type,
+        cu.name,
+        cu.email,
+        au.name,
+        au.email,
+        au2.name,
+        au2.email,
+        ct.name
+      )),
+      LOWER(?)
+    ) > 0
+  `);
+
+  params.push(search);
+}
+
 /** GET /activities */
 router.get(
   "/activities",
@@ -246,10 +311,39 @@ router.get(
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    const requestedLimit = Number.parseInt(req.query.limit, 10);
-    const limit = Number.isFinite(requestedLimit)
-      ? Math.max(1, Math.min(requestedLimit, 200))
-      : 100;
+    const paginated = req.query.paginated === "1";
+
+    const readInteger = (name, fallback, min, max) => {
+      const raw = req.query[name];
+
+      if (raw === undefined) return fallback;
+
+      if (
+        typeof raw !== "string" ||
+        !/^\d+$/.test(raw) ||
+        !Number.isSafeInteger(Number(raw)) ||
+        Number(raw) < min ||
+        Number(raw) > max
+      ) {
+        const error = new Error(
+          `Parámetro inválido: ${name}`
+        );
+        error.status = 400;
+        error.code = `invalid_${name}`;
+        throw error;
+      }
+
+      return Number(raw);
+    };
+
+    const limit = readInteger("limit", 100, 1, 200);
+
+    const offset = readInteger(
+      "offset",
+      0,
+      0,
+      Number.MAX_SAFE_INTEGER
+    );
 
     const filter = await activityReadFilter(req);
     const clauses = [filter.sql];
@@ -264,35 +358,671 @@ router.get(
     ]) {
       const value = coerceStr(req.query[field]);
 
-      if (value) {
-        clauses.push(`a.${field} = ?`);
-        params.push(value);
+      if (!value) continue;
+
+      if (
+        field === "status" &&
+        !VALID_STATUS.has(value)
+      ) {
+        return res.status(400).json({
+          error: "invalid_status",
+        });
       }
+
+      clauses.push(`a.${field} = ?`);
+      params.push(value);
     }
 
-    if (
-      req.query.remind_after !== undefined &&
-      req.query.remind_after !== ""
-    ) {
-      const value = Number(req.query.remind_after);
+    const personId = coerceStr(req.query.person_id);
 
-      if (!Number.isFinite(value)) {
-        return res.status(400).json({ error: "invalid_remind_after" });
+    if (req.query.scope !== undefined) {
+      const scope = req.query.scope;
+
+      if (scope !== "team" && scope !== "mine") {
+        return res.status(400).json({
+          error: "invalid_scope",
+        });
       }
 
+      const userId = resolveUserId(req);
+
+      const role = String(
+        (await getUserRole(userId)) || ""
+      ).toLowerCase();
+
+      const canViewTeam =
+        role === "admin" || role === "owner";
+
+      if (scope === "team" && !canViewTeam) {
+        return res.status(403).json({
+          error: "forbidden",
+        });
+      }
+
+      if (
+        scope === "mine" &&
+        personId &&
+        personId !== userId
+      ) {
+        return res.status(400).json({
+          error: "incompatible_person_scope",
+        });
+      }
+
+      const assignedPerson =
+        scope === "mine" ? userId : personId;
+
+      if (assignedPerson) {
+        clauses.push(
+          "(a.assigned_to = ? OR a.assigned_to_2 = ?)"
+        );
+        params.push(assignedPerson, assignedPerson);
+      }
+    } else if (personId) {
+      // Compatibilidad con consultas anteriores sin scope.
+      clauses.push(`
+        (
+          a.created_by = ?
+          OR a.assigned_to = ?
+          OR a.assigned_to_2 = ?
+        )
+      `);
+      params.push(personId, personId, personId);
+    }
+
+    appendActivitySearch(req, clauses, params);
+
+    const readTimestamp = (name) => {
+      const raw = req.query[name];
+
+      if (raw === undefined || raw === "") {
+        return null;
+      }
+
+      if (
+        typeof raw !== "string" ||
+        !/^-?\d+$/.test(raw) ||
+        !Number.isSafeInteger(Number(raw))
+      ) {
+        const error = new Error(
+          `Fecha inválida: ${name}`
+        );
+        error.status = 400;
+        error.code = `invalid_${name}`;
+        throw error;
+      }
+
+      return Number(raw);
+    };
+
+    const remindAfter = readTimestamp("remind_after");
+
+    if (remindAfter !== null) {
       clauses.push("a.remind_at_ms > ?");
-      params.push(value);
+      params.push(remindAfter);
+    }
+
+    const dueFrom = readTimestamp("due_from");
+    const dueBefore = readTimestamp("due_before");
+
+    if (
+      dueFrom !== null &&
+      dueBefore !== null &&
+      dueFrom >= dueBefore
+    ) {
+      return res.status(400).json({
+        error: "invalid_date_range",
+      });
+    }
+
+    if (dueFrom !== null) {
+      clauses.push("a.due_date >= ?");
+      params.push(dueFrom);
+    }
+
+    if (dueBefore !== null) {
+      clauses.push("a.due_date < ?");
+      params.push(dueBefore);
+    }
+
+    if (req.query.undated === "1") {
+      if (dueFrom !== null || dueBefore !== null) {
+        return res.status(400).json({
+          error: "incompatible_date_filters",
+        });
+      }
+
+      clauses.push("a.due_date IS NULL");
+    }
+
+    if (req.query.pending === "1") {
+      clauses.push(
+        "a.status IN ('open', 'in_progress')"
+      );
+    }
+
+    const order =
+      req.query.sort === "due"
+        ? "a.due_date ASC NULLS LAST, a.id ASC"
+        : "a.updated_at DESC, a.id ASC";
+
+    const where = clauses.join(" AND ");
+
+    if (paginated) {
+      const result = await db.prepare(`
+        WITH filtered AS (
+          ${ACTIVITY_SELECT}
+          WHERE ${where}
+        ),
+        page AS (
+          SELECT a.*
+          FROM filtered a
+          ORDER BY ${order}
+          LIMIT ? OFFSET ?
+        )
+        SELECT
+          (SELECT COUNT(*) FROM filtered) AS total,
+          COALESCE(
+            (
+              SELECT json_agg(ordered_page)
+              FROM (
+                SELECT a.*
+                FROM page a
+                ORDER BY ${order}
+              ) ordered_page
+            ),
+            '[]'::json
+          ) AS items
+      `).get(...params, limit, offset);
+
+      const total = Number(result.total);
+      const items = result.items;
+
+      res.setHeader("Cache-Control", "no-store");
+
+      return res.json({
+        items,
+        total,
+        limit,
+        offset,
+        has_more: offset + items.length < total,
+      });
     }
 
     const rows = await db.prepare(`
       ${ACTIVITY_SELECT}
-      WHERE ${clauses.join(" AND ")}
-      ORDER BY a.updated_at DESC, a.id ASC
-      LIMIT ?
-    `).all(...params, limit);
+      WHERE ${where}
+      ORDER BY ${order}
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
 
     res.setHeader("Cache-Control", "no-store");
     return res.json(rows);
+  })
+);
+
+/** GET /activities/stats */
+router.get(
+  "/activities/stats",
+  wrap(async (req, res) => {
+    const userId = resolveUserId(req);
+
+    if (!userId || !req.tenantId) {
+      return res.status(401).json({
+        error: "unauthorized",
+      });
+    }
+
+    const role = String(
+      (await getUserRole(userId)) || ""
+    ).toLowerCase();
+
+    const canViewTeam =
+      role === "admin" || role === "owner";
+
+    const scope =
+      req.query.scope === undefined
+        ? canViewTeam
+          ? "team"
+          : "mine"
+        : req.query.scope;
+
+    if (scope !== "team" && scope !== "mine") {
+      return res.status(400).json({
+        error: "invalid_scope",
+      });
+    }
+
+    if (scope === "team" && !canViewTeam) {
+      return res.status(403).json({
+        error: "forbidden",
+      });
+    }
+
+    const readTimestamp = (name) => {
+      const raw = req.query[name];
+
+      if (raw === undefined) return null;
+
+      if (
+        typeof raw !== "string" ||
+        !/^-?\d+$/.test(raw) ||
+        !Number.isSafeInteger(Number(raw))
+      ) {
+        const error = new Error(
+          `Fecha inválida: ${name}`
+        );
+        error.status = 400;
+        throw error;
+      }
+
+      return Number(raw);
+    };
+
+    const dueFrom = readTimestamp("due_from");
+    const dueBefore = readTimestamp("due_before");
+
+    if (
+      dueFrom !== null &&
+      dueBefore !== null &&
+      dueFrom >= dueBefore
+    ) {
+      return res.status(400).json({
+        error: "invalid_date_range",
+      });
+    }
+
+    const personId = coerceStr(req.query.person_id);
+
+    if (
+      personId &&
+      !canViewTeam &&
+      personId !== userId
+    ) {
+      return res.status(403).json({
+        error: "forbidden",
+      });
+    }
+
+    const access = await activityReadFilter(req);
+
+    const clauses = [
+      "a.tenant_id = ?",
+      access.sql,
+    ];
+
+    const params = [
+      req.tenantId,
+      ...access.params,
+    ];
+
+    appendActivitySearch(req, clauses, params);
+
+    const assignedPerson =
+      scope === "mine" ? userId : personId;
+
+    if (assignedPerson) {
+      clauses.push(
+        "(a.assigned_to = ? OR a.assigned_to_2 = ?)"
+      );
+      params.push(assignedPerson, assignedPerson);
+    }
+
+    if (dueFrom !== null) {
+      clauses.push("a.due_date >= ?");
+      params.push(dueFrom);
+    }
+
+    if (dueBefore !== null) {
+      clauses.push("a.due_date < ?");
+      params.push(dueBefore);
+    }
+
+    if (req.query.undated === "1") {
+      if (dueFrom !== null || dueBefore !== null) {
+        return res.status(400).json({
+          error: "incompatible_date_filters",
+        });
+      }
+
+      clauses.push("a.due_date IS NULL");
+    }
+
+    if (req.query.pending === "1") {
+      clauses.push(
+        "a.status IN ('open', 'in_progress')"
+      );
+    }
+
+    const now = Date.now();
+
+    const result = await db.prepare(`
+      WITH filtered AS (
+        ${ACTIVITY_SELECT}
+        WHERE ${clauses.join(" AND ")}
+      ),
+      summary AS (
+        SELECT
+          COUNT(*)::INTEGER AS total,
+          COUNT(*) FILTER (
+            WHERE status = 'open'
+          )::INTEGER AS open,
+          COUNT(*) FILTER (
+            WHERE status = 'in_progress'
+          )::INTEGER AS in_progress,
+          COUNT(*) FILTER (
+            WHERE status = 'done'
+          )::INTEGER AS done,
+          COUNT(*) FILTER (
+            WHERE status = 'canceled'
+          )::INTEGER AS canceled,
+          COUNT(*) FILTER (
+            WHERE status IN ('open', 'in_progress')
+              AND due_date < ?
+          )::INTEGER AS overdue,
+          COUNT(*) FILTER (
+            WHERE status IN ('open', 'in_progress')
+              AND due_date IS NULL
+          )::INTEGER AS undated,
+          COUNT(*) FILTER (
+            WHERE status = 'done'
+              AND completed_at IS NULL
+          )::INTEGER AS done_without_completion_date
+        FROM filtered
+      ),
+      assignments AS (
+        SELECT
+          f.id,
+          f.status,
+          f.assigned_to AS user_id
+        FROM filtered f
+        WHERE f.assigned_to IS NOT NULL
+          AND f.assigned_to <> ''
+
+        UNION
+
+        SELECT
+          f.id,
+          f.status,
+          f.assigned_to_2 AS user_id
+        FROM filtered f
+        WHERE f.assigned_to_2 IS NOT NULL
+          AND f.assigned_to_2 <> ''
+      ),
+      per_user AS (
+        SELECT
+          x.user_id,
+          COALESCE(
+            NULLIF(u.name, ''),
+            NULLIF(u.email, ''),
+            'Usuario'
+          ) AS name,
+          COUNT(*)::INTEGER AS total,
+          COUNT(*) FILTER (
+            WHERE x.status = 'open'
+          )::INTEGER AS open,
+          COUNT(*) FILTER (
+            WHERE x.status = 'in_progress'
+          )::INTEGER AS in_progress,
+          COUNT(*) FILTER (
+            WHERE x.status = 'done'
+          )::INTEGER AS done,
+          COUNT(*) FILTER (
+            WHERE x.status = 'canceled'
+          )::INTEGER AS canceled
+        FROM assignments x
+        LEFT JOIN users u ON u.id = x.user_id
+        WHERE (? = 'team' OR x.user_id = ?)
+        GROUP BY x.user_id, u.name, u.email
+      )
+      SELECT
+        (
+          SELECT row_to_json(s)
+          FROM summary s
+        ) AS summary,
+        COALESCE(
+          (
+            SELECT json_agg(
+              p ORDER BY p.total DESC, p.name, p.user_id
+            )
+            FROM per_user p
+          ),
+          '[]'::json
+        ) AS users,
+        (
+          SELECT COUNT(*)::INTEGER
+          FROM filtered
+          WHERE NULLIF(assigned_to, '') IS NULL
+            AND NULLIF(assigned_to_2, '') IS NULL
+        ) AS unassigned
+    `).get(...params, now, scope, userId);
+
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.json({
+      scope,
+      can_view_team: canViewTeam,
+      date_basis: "due_date",
+      generated_at: now,
+      summary: result.summary,
+      users: result.users,
+      unassigned: result.unassigned,
+    });
+  })
+);
+
+/** GET /activities/trend */
+router.get(
+  "/activities/trend",
+  wrap(async (req, res) => {
+    const userId = resolveUserId(req);
+
+    if (!userId || !req.tenantId) {
+      return res.status(401).json({
+        error: "unauthorized",
+      });
+    }
+
+    const role = String(
+      (await getUserRole(userId)) || ""
+    ).toLowerCase();
+
+    const canViewTeam =
+      role === "admin" || role === "owner";
+
+    const scope =
+      req.query.scope ??
+      (canViewTeam ? "team" : "mine");
+
+    if (scope !== "team" && scope !== "mine") {
+      return res.status(400).json({
+        error: "invalid_scope",
+      });
+    }
+
+    if (scope === "team" && !canViewTeam) {
+      return res.status(403).json({
+        error: "forbidden",
+      });
+    }
+
+    const parseTimestamp = (raw) => {
+      if (
+        typeof raw !== "string" ||
+        !/^-?\d+$/.test(raw) ||
+        !Number.isSafeInteger(Number(raw))
+      ) {
+        return null;
+      }
+
+      return Number(raw);
+    };
+
+    const from = parseTimestamp(req.query.from);
+    const before = parseTimestamp(req.query.before);
+
+    if (
+      from === null ||
+      before === null ||
+      from < 0 ||
+      from >= before ||
+      before - from > 367 * 86400000
+    ) {
+      return res.status(400).json({
+        error: "invalid_date_range",
+      });
+    }
+
+    const timezone =
+      req.query.timezone ?? "America/Santiago";
+
+    if (
+      typeof timezone !== "string" ||
+      timezone.length > 100
+    ) {
+      return res.status(400).json({
+        error: "invalid_timezone",
+      });
+    }
+
+    const zone = await db.prepare(`
+      SELECT name
+      FROM pg_timezone_names
+      WHERE name = ?
+      LIMIT 1
+    `).get(timezone);
+
+    if (!zone) {
+      return res.status(400).json({
+        error: "invalid_timezone",
+      });
+    }
+
+    const personId = coerceStr(req.query.person_id);
+
+    if (
+      personId &&
+      !canViewTeam &&
+      personId !== userId
+    ) {
+      return res.status(403).json({
+        error: "forbidden",
+      });
+    }
+
+    const access = await activityReadFilter(req);
+
+    const clauses = [
+      "a.tenant_id = ?",
+      access.sql,
+    ];
+
+    const params = [
+      req.tenantId,
+      ...access.params,
+    ];
+
+    appendActivitySearch(req, clauses, params);
+
+    const assignedPerson =
+      scope === "mine" ? userId : personId;
+
+    if (assignedPerson) {
+      clauses.push(
+        "(a.assigned_to = ? OR a.assigned_to_2 = ?)"
+      );
+      params.push(assignedPerson, assignedPerson);
+    }
+
+    const result = await db.prepare(`
+      WITH config AS (
+        SELECT
+          ?::BIGINT AS start_ms,
+          ?::BIGINT AS end_ms,
+          ?::TEXT AS tz
+      ),
+      visible AS (
+        ${ACTIVITY_SELECT}
+        WHERE ${clauses.join(" AND ")}
+      ),
+      days AS (
+        SELECT series.day::DATE AS day
+        FROM config c
+        CROSS JOIN LATERAL generate_series(
+          (
+            to_timestamp(c.start_ms / 1000.0)
+            AT TIME ZONE c.tz
+          )::DATE::TIMESTAMP,
+          (
+            to_timestamp((c.end_ms - 1) / 1000.0)
+            AT TIME ZONE c.tz
+          )::DATE::TIMESTAMP,
+          INTERVAL '1 day'
+        ) AS series(day)
+      ),
+      scheduled AS (
+        SELECT
+          (
+            to_timestamp(a.due_date / 1000.0)
+            AT TIME ZONE c.tz
+          )::DATE AS day,
+          COUNT(*)::INTEGER AS count
+        FROM visible a
+        CROSS JOIN config c
+        WHERE a.due_date >= c.start_ms
+          AND a.due_date < c.end_ms
+          AND a.status <> 'canceled'
+        GROUP BY 1
+      ),
+      completed AS (
+        SELECT
+          (
+            to_timestamp(a.completed_at / 1000.0)
+            AT TIME ZONE c.tz
+          )::DATE AS day,
+          COUNT(*)::INTEGER AS count
+        FROM visible a
+        CROSS JOIN config c
+        WHERE a.status = 'done'
+          AND a.completed_at >= c.start_ms
+          AND a.completed_at < c.end_ms
+        GROUP BY 1
+      )
+      SELECT
+        COALESCE(
+          (
+            SELECT json_agg(
+              json_build_object(
+                'date', to_char(d.day, 'YYYY-MM-DD'),
+                'scheduled', COALESCE(s.count, 0),
+                'completed', COALESCE(f.count, 0)
+              )
+              ORDER BY d.day
+            )
+            FROM days d
+            LEFT JOIN scheduled s ON s.day = d.day
+            LEFT JOIN completed f ON f.day = d.day
+          ),
+          '[]'::json
+        ) AS days,
+        (
+          SELECT COUNT(*)::INTEGER
+          FROM visible
+          WHERE status = 'done'
+            AND completed_at IS NULL
+        ) AS undated_completions
+    `).get(from, before, timezone, ...params);
+
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.json({
+      scope,
+      from,
+      before,
+      timezone,
+      days: result.days,
+      undated_completions: result.undated_completions,
+    });
   })
 );
 
@@ -301,7 +1031,9 @@ router.get(
   "/activities/:id",
   wrap(async (req, res) => {
     if (!resolveUserId(req) || !req.tenantId) {
-      return res.status(401).json({ error: "unauthorized" });
+      return res.status(401).json({
+        error: "unauthorized",
+      });
     }
 
     const filter = await activityReadFilter(req);
@@ -314,7 +1046,9 @@ router.get(
     `).get(req.params.id, ...filter.params);
 
     if (!row) {
-      return res.status(404).json({ error: "not_found" });
+      return res.status(404).json({
+        error: "not_found",
+      });
     }
 
     res.setHeader("Cache-Control", "no-store");
@@ -322,11 +1056,10 @@ router.get(
   })
 );
 
-/** POST /activities (id en servidor) */
+/** POST /activities */
 router.post(
   "/activities",
   wrap(async (req, res) => {
-
     let {
       type,
       title,
@@ -356,22 +1089,33 @@ router.post(
     remind_at_ms = coerceNum(remind_at_ms);
 
     if (!type || !title) {
-      return res.status(400).json({ error: "type_title_required" });
+      return res.status(400).json({
+        error: "type_title_required",
+      });
     }
-    if (!VALID_STATUS.has(status)) status = "open";
+
+    if (!VALID_STATUS.has(status)) {
+      status = "open";
+    }
 
     const id = crypto.randomUUID();
 
     const checkFk = async (table, value, field) => {
       if (!value) return;
+
       const exists = await resolveRow(
-        db
-          .prepare(
-            `SELECT 1 FROM ${table} WHERE id = ? AND tenant_id = ? LIMIT 1`
-          )
-          .get(value, req.tenantId)
+        db.prepare(`
+          SELECT 1
+          FROM ${table}
+          WHERE id = ?
+            AND tenant_id = ?
+          LIMIT 1
+        `).get(value, req.tenantId)
       );
-      if (!exists) throw new Error(`invalid_${field}`);
+
+      if (!exists) {
+        throw new Error(`invalid_${field}`);
+      }
     };
 
     try {
@@ -379,52 +1123,66 @@ router.post(
       await checkFk("contacts", contact_id, "contact_id");
       await checkFk("leads", lead_id, "lead_id");
       await checkFk("deals", deal_id, "deal_id");
-    } catch (e) {
-      return res.status(400).json({ error: e.message });
+    } catch (error) {
+      return res.status(400).json({
+        error: error.message,
+      });
     }
 
     const userId = resolveUserId(req);
     const now = Date.now();
 
-    const norm = normalizeAssignees(assigned_to, assigned_to_2);
+    const norm = normalizeAssignees(
+      assigned_to,
+      assigned_to_2
+    );
 
     await validateActivityAccess(req, {
-  contact_id,
-  deal_id,
-  assigned_to: norm.assigned_to,
-  assigned_to_2: norm.assigned_to_2,
-});
+      contact_id,
+      deal_id,
+      assigned_to: norm.assigned_to,
+      assigned_to_2: norm.assigned_to_2,
+    });
 
-    await db
-      .prepare(
-        `
-        INSERT INTO activities (
-          id, type, title, due_date, remind_at_ms, status, notes,
-          account_id, contact_id, lead_id, deal_id,
-          tenant_id, created_by, created_at, updated_at,
-          assigned_to, assigned_to_2
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      `
-      )
-      .run(
+    await db.prepare(`
+      INSERT INTO activities (
         id,
         type,
         title,
-        due_date ?? null,
-        remind_at_ms ?? null,
+        due_date,
+        remind_at_ms,
         status,
-        notes ?? null,
-        account_id ?? null,
-        contact_id ?? null,
-        lead_id ?? null,
-        deal_id ?? null,
-        req.tenantId,
-        userId,
-        now,
-        now,
-        norm.assigned_to ?? null,
-        norm.assigned_to_2 ?? null
-      );
+        notes,
+        account_id,
+        contact_id,
+        lead_id,
+        deal_id,
+        tenant_id,
+        created_by,
+        created_at,
+        updated_at,
+        assigned_to,
+        assigned_to_2
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      id,
+      type,
+      title,
+      due_date ?? null,
+      remind_at_ms ?? null,
+      status,
+      notes ?? null,
+      account_id ?? null,
+      contact_id ?? null,
+      lead_id ?? null,
+      deal_id ?? null,
+      req.tenantId,
+      userId,
+      now,
+      now,
+      norm.assigned_to ?? null,
+      norm.assigned_to_2 ?? null
+    );
 
     const created = {
       id,
@@ -443,11 +1201,129 @@ router.post(
       created_at: now,
       updated_at: now,
     };
-    notifyActivityCreated(created).catch((err) => {
-      console.error("Error enviando emails de actividad:", err);
+
+    notifyActivityCreated(created).catch((error) => {
+      console.error(
+        "Error enviando emails de actividad:",
+        error
+      );
     });
 
-    res.status(201).json(created);
+    return res.status(201).json(created);
+  })
+);
+
+/** PATCH /activities/:id/status */
+router.patch(
+  "/activities/:id/status",
+  wrap(async (req, res) => {
+    if (!resolveUserId(req) || !req.tenantId) {
+      return res.status(401).json({
+        error: "unauthorized",
+      });
+    }
+
+    const body = req.body || {};
+
+    const allowedFields = new Set([
+      "status",
+      "expected_updated_at",
+    ]);
+
+    if (
+      Object.keys(body).some(
+        (key) => !allowedFields.has(key)
+      )
+    ) {
+      return res.status(400).json({
+        error: "invalid_status_fields",
+        message:
+          "Esta operación solo permite cambiar el estado.",
+      });
+    }
+
+    const status = coerceStr(body.status);
+    const expected = body.expected_updated_at;
+
+    if (!VALID_STATUS.has(status)) {
+      return res.status(400).json({
+        error: "invalid_status",
+      });
+    }
+
+    if (
+      !["string", "number"].includes(typeof expected) ||
+      String(expected).trim() === "" ||
+      !Number.isSafeInteger(Number(expected)) ||
+      Number(expected) < 0
+    ) {
+      return res.status(400).json({
+        error: "expected_updated_at_required",
+        message:
+          "Actualiza la actividad antes de cambiar su estado.",
+      });
+    }
+
+    const filter = await activityReadFilter(req);
+
+    const updatedAt = Math.max(
+      Date.now(),
+      Number(expected) + 1
+    );
+
+    const result = await db.prepare(`
+      UPDATE activities AS a
+      SET status = ?, updated_at = ?
+      WHERE a.id = ?
+        AND a.updated_at = ?
+        AND ${filter.sql}
+      RETURNING a.id
+    `).get(
+      status,
+      updatedAt,
+      req.params.id,
+      Number(expected),
+      ...filter.params
+    );
+
+    if (!result) {
+      const currentFilter = await activityReadFilter(req);
+
+      const current = await db.prepare(`
+        SELECT a.id
+        FROM activities a
+        WHERE a.id = ?
+          AND ${currentFilter.sql}
+        LIMIT 1
+      `).get(req.params.id, ...currentFilter.params);
+
+      return res.status(current ? 409 : 404).json({
+        error: current
+          ? "activity_changed"
+          : "not_found",
+        message: current
+          ? "La actividad cambió. Actualiza antes de volver a intentarlo."
+          : "Actividad inexistente o sin acceso.",
+      });
+    }
+
+    const responseFilter = await activityReadFilter(req);
+
+    const updated = await db.prepare(`
+      ${ACTIVITY_SELECT}
+      WHERE a.id = ?
+        AND ${responseFilter.sql}
+      LIMIT 1
+    `).get(req.params.id, ...responseFilter.params);
+
+    if (!updated) {
+      return res.status(404).json({
+        error: "not_found",
+      });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(updated);
   })
 );
 
@@ -467,10 +1343,13 @@ router.patch(
     `).get(req.params.id, ...readFilter.params);
 
     if (!found) {
-      return res.status(404).json({ error: "not_found" });
+      return res.status(404).json({
+        error: "not_found",
+      });
     }
 
     const body = req.body || {};
+
     const hasProp = (name) =>
       Object.prototype.hasOwnProperty.call(body, name);
 
@@ -514,6 +1393,7 @@ router.patch(
 
     if (hasProp("status")) {
       const value = coerceStr(body.status);
+
       if (value && VALID_STATUS.has(value)) {
         final.status = value;
       }
@@ -536,8 +1416,7 @@ router.patch(
       }
     }
 
-    // Mantener los vínculos que determinan la privacidad.
-    // Una actividad sin vínculo sí puede recibir uno.
+    // Los vínculos existentes determinan la privacidad.
     for (const field of ["contact_id", "deal_id"]) {
       const previous = found[field] || null;
       const next = final[field] || null;
@@ -586,12 +1465,30 @@ router.patch(
       }
     };
 
-    await checkFk("accounts", final.account_id, "account_id");
-    await checkFk("contacts", final.contact_id, "contact_id");
-    await checkFk("leads", final.lead_id, "lead_id");
-    await checkFk("deals", final.deal_id, "deal_id");
+    await checkFk(
+      "accounts",
+      final.account_id,
+      "account_id"
+    );
 
-    // Comprueba acceso del actor y de los usuarios asignados.
+    await checkFk(
+      "contacts",
+      final.contact_id,
+      "contact_id"
+    );
+
+    await checkFk(
+      "leads",
+      final.lead_id,
+      "lead_id"
+    );
+
+    await checkFk(
+      "deals",
+      final.deal_id,
+      "deal_id"
+    );
+
     await validateActivityAccess(req, final);
 
     const updatedAt = Math.max(
@@ -599,8 +1496,6 @@ router.patch(
       Number(found.updated_at) + 1
     );
 
-    // Volver a comprobar visibilidad al escribir.
-    // updated_at evita sobrescribir otra edición concurrente.
     const writeFilter = await activityReadFilter(req);
 
     const info = await db.prepare(`
@@ -653,7 +1548,9 @@ router.patch(
       `).get(req.params.id, ...currentFilter.params);
 
       if (!current) {
-        return res.status(404).json({ error: "not_found" });
+        return res.status(404).json({
+          error: "not_found",
+        });
       }
 
       return res.status(409).json({
@@ -667,36 +1564,23 @@ router.patch(
     const responseFilter = await activityReadFilter(req);
 
     const updated = await db.prepare(`
-      SELECT
-        a.*,
-        cu.name AS created_by_name,
-        cu.email AS created_by_email,
-        au.name AS assigned_to_name,
-        au.email AS assigned_to_email,
-        au2.name AS assigned_to_2_name,
-        au2.email AS assigned_to_2_email,
-        ct.name AS contact_name
-      FROM activities a
-      LEFT JOIN users cu ON cu.id = a.created_by
-      LEFT JOIN users au ON au.id = a.assigned_to
-      LEFT JOIN users au2 ON au2.id = a.assigned_to_2
-      LEFT JOIN contacts ct
-        ON ct.id = a.contact_id
-        AND ct.tenant_id = a.tenant_id
+      ${ACTIVITY_SELECT}
       WHERE a.id = ?
         AND ${responseFilter.sql}
       LIMIT 1
     `).get(req.params.id, ...responseFilter.params);
 
-    // Nunca devolver una copia anterior sin comprobar permisos.
     if (!updated) {
-      return res.status(404).json({ error: "not_found" });
+      return res.status(404).json({
+        error: "not_found",
+      });
     }
 
     const afterNorm = normalizeAssignees(
       updated.assigned_to ?? null,
       updated.assigned_to_2 ?? null
     );
+
     const assignmentChanged = !setsEqual(
       assigneeSet(beforeNorm),
       assigneeSet(afterNorm)
@@ -706,7 +1590,10 @@ router.patch(
       if (value == null || value === "") return null;
 
       const number = Number(value);
-      return Number.isFinite(number) ? number : null;
+
+      return Number.isFinite(number)
+        ? number
+        : null;
     };
 
     const dateChanged =
@@ -715,10 +1602,11 @@ router.patch(
       normalizeTimestamp(found.remind_at_ms) !==
         normalizeTimestamp(updated.remind_at_ms);
 
-    // Reprogramar siempre avisa a los asignados actuales.
-    // Reasignar sin cambiar fechas conserva la confirmación existente.
     if (
-      (dateChanged || (assignmentChanged && notifyAssignees)) &&
+      (
+        dateChanged ||
+        (assignmentChanged && notifyAssignees)
+      ) &&
       typeof notifyActivityReassigned === "function"
     ) {
       notifyActivityReassigned({
@@ -735,16 +1623,19 @@ router.patch(
           remind_at_ms: updated.remind_at_ms,
         },
         changed_by: resolveUserId(req),
-      }).catch((err) => {
+      }).catch((error) => {
         console.error(
           "Error enviando correo de actualización:",
-          err.message
+          error.message
         );
       });
     }
+
     return res.json(updated);
   })
 );
+
+/** DELETE /activities/:id */
 router.delete(
   "/activities/:id",
   canDelete("activities"),
@@ -758,7 +1649,9 @@ router.delete(
     `).run(req.params.id, ...filter.params);
 
     if (info.changes === 0) {
-      return res.status(404).json({ error: "not_found" });
+      return res.status(404).json({
+        error: "not_found",
+      });
     }
 
     return res.json({ ok: true });
@@ -766,4 +1659,3 @@ router.delete(
 );
 
 module.exports = router;
-
