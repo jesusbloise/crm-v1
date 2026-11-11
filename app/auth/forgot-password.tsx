@@ -1,45 +1,70 @@
 // app/auth/forgot-password.tsx
 import { api } from "@/src/api/http";
 import { router, Stack } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
 const COLORS = {
-  bg: "#0b0c10",
-  text: "#e8ecf1",
-  subtle: "#a9b0bd",
-  border: "#272a33",
-  accent: "#7C3AED",
+  bg: "#f5f6fa",
+  card: "#ffffff",
+  text: "#202536",
+  subtle: "#737b8e",
+  placeholder: "#98a0af",
+  border: "#dce0e9",
+  accent: "#7551c8",
+  error: "#b42332",
 };
 
 export default function ForgotPasswordScreen() {
+  const submitting = useRef(false);
+
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  const canSubmit = Boolean(email.trim());
+
   const onSubmit = async () => {
+    if (submitting.current) return;
+
+    const trimmedEmail = email.trim().toLowerCase();
+
+    if (!trimmedEmail) {
+      setErr("Ingresa tu correo electrónico.");
+      return;
+    }
+
+    submitting.current = true;
+    setErr(null);
+    setLoading(true);
+
     try {
-      setErr(null);
-      setMsg(null);
-      setLoading(true);
+      await api.post("/auth/forgot-password", {
+        email: trimmedEmail,
+      });
 
-      const res = await api.post("/auth/forgot-password", { email });
-
-      setMsg(res?.message || "Si el correo existe, te enviamos un código.");
-      // Lo mandamos directo a reset para que pegue el token
-      router.push({ pathname: "/auth/reset-password", params: { email } });
-    } catch (e: any) {
-      setErr(e?.message || "No se pudo enviar la solicitud");
+      router.push({
+        pathname: "/auth/reset-password",
+        params: { email: trimmedEmail },
+      });
+    } catch (error: unknown) {
+      setErr(
+        error instanceof Error
+          ? error.message
+          : "No se pudo enviar la solicitud. Inténtalo nuevamente."
+      );
     } finally {
+      submitting.current = false;
       setLoading(false);
     }
   };
@@ -47,85 +72,227 @@ export default function ForgotPasswordScreen() {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={{ flex: 1, backgroundColor: COLORS.bg }}
+      style={styles.screen}
     >
-      <Stack.Screen
-        options={{
-          title: "Recuperar contraseña",
-          headerStyle: { backgroundColor: COLORS.bg },
-          headerTintColor: COLORS.text,
-        }}
-      />
+      <Stack.Screen options={{ headerShown: false }} />
 
-      <View
-        style={{
-          flex: 1,
-          padding: 16,
-          justifyContent: "center",
-          gap: 12,
-          maxWidth: 520,
-          width: "100%",
-          alignSelf: "center",
-        }}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
       >
-        <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 22 }}>
-          Recuperar contraseña
-        </Text>
+        <View style={styles.container}>
+          <View style={styles.brand}>
+            <View style={styles.brandBadge}>
+              <Text style={styles.brandBadgeText}>CRM</Text>
+            </View>
 
-        <Text style={{ color: COLORS.subtle }}>
-          Ingresa tu email. Si existe una cuenta, te enviaremos un código/token
-          de recuperación.
-        </Text>
+            <Text style={styles.brandCaption}>Gestión comercial</Text>
+          </View>
 
-        <Text style={{ color: COLORS.text }}>Email</Text>
-        <TextInput
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          keyboardType="email-address"
-          placeholder="tu@correo.com"
-          placeholderTextColor={COLORS.subtle}
-          style={{
-            borderWidth: 1,
-            borderColor: COLORS.border,
-            padding: 12,
-            borderRadius: 10,
-            color: COLORS.text,
-            backgroundColor: "rgba(255,255,255,0.02)",
-          }}
-        />
+          <View style={styles.card}>
+            <View style={styles.heading}>
+              <Text style={styles.title}>Recuperar contraseña</Text>
 
-        {msg ? <Text style={{ color: COLORS.subtle }}>{msg}</Text> : null}
-        {err ? <Text style={{ color: "salmon" }}>{err}</Text> : null}
+              <Text style={styles.subtitle}>
+                Ingresa tu correo electrónico. Si existe una cuenta asociada,
+                recibirás un código para restablecer tu contraseña.
+              </Text>
+            </View>
 
-        <Pressable
-          onPress={onSubmit}
-          disabled={loading}
-          style={{
-            padding: 14,
-            backgroundColor: COLORS.accent,
-            borderRadius: 12,
-            alignItems: "center",
-            marginTop: 4,
-            opacity: loading ? 0.7 : 1,
-          }}
-        >
-          {loading ? (
-            <ActivityIndicator />
-          ) : (
-            <Text style={{ color: "white", fontWeight: "900" }}>
-              Enviar código
-            </Text>
-          )}
-        </Pressable>
+            <View style={styles.field}>
+              <Text style={styles.label}>Correo electrónico</Text>
 
-        <Pressable
-          onPress={() => router.back()}
-          style={{ alignItems: "center", marginTop: 8 }}
-        >
-          <Text style={{ color: COLORS.subtle }}>Volver</Text>
-        </Pressable>
-      </View>
+              <TextInput
+                accessibilityLabel="Correo electrónico"
+                value={email}
+                onChangeText={setEmail}
+                editable={!loading}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="email"
+                keyboardType="email-address"
+                returnKeyType="go"
+                onSubmitEditing={() => void onSubmit()}
+                placeholder="tu@correo.com"
+                placeholderTextColor={COLORS.placeholder}
+                style={styles.input}
+              />
+            </View>
+
+            {!!err && (
+              <View style={styles.errorBox}>
+                <Text accessibilityRole="alert" style={styles.errorText}>
+                  {err}
+                </Text>
+              </View>
+            )}
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Enviar código de recuperación"
+              disabled={!canSubmit || loading}
+              onPress={() => void onSubmit()}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                (!canSubmit || loading) && styles.disabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              {loading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator size="small" color="#ffffff" />
+                  <Text style={styles.primaryText}>Enviando…</Text>
+                </View>
+              ) : (
+                <Text style={styles.primaryText}>Enviar código</Text>
+              )}
+            </Pressable>
+
+            <View style={styles.backSection}>
+              <Pressable
+                accessibilityRole="link"
+                disabled={loading}
+                onPress={() => router.replace("/auth/login")}
+                style={styles.backButton}
+              >
+                <Text style={styles.link}>Volver a iniciar sesión</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
+
+const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 40,
+  },
+  container: {
+    width: "100%",
+    maxWidth: 460,
+    alignSelf: "center",
+    gap: 24,
+  },
+  brand: {
+    alignItems: "center",
+    gap: 10,
+  },
+  brandBadge: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+  },
+  brandBadgeText: {
+    color: "#ffffff",
+    fontSize: 23,
+    fontWeight: "700",
+    letterSpacing: 1,
+  },
+  brandCaption: {
+    color: COLORS.subtle,
+    fontSize: 12,
+  },
+  card: {
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: "#e7e9f0",
+    borderRadius: 16,
+    padding: 24,
+    gap: 20,
+  },
+  heading: {
+    gap: 8,
+    marginBottom: 4,
+  },
+  title: {
+    color: COLORS.text,
+    fontSize: 26,
+    fontWeight: "700",
+  },
+  subtitle: {
+    color: COLORS.subtle,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  field: {
+    gap: 8,
+  },
+  label: {
+    color: "#475467",
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  input: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: COLORS.card,
+    color: COLORS.text,
+    fontSize: 14,
+  },
+  errorBox: {
+    backgroundColor: "#fff3f3",
+    borderWidth: 1,
+    borderColor: "#f3d6d6",
+    borderRadius: 8,
+    padding: 12,
+  },
+  errorText: {
+    color: COLORS.error,
+    fontSize: 12,
+    lineHeight: 19,
+  },
+  primaryButton: {
+    minHeight: 48,
+    backgroundColor: COLORS.accent,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  primaryText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  loadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  disabled: {
+    opacity: 0.5,
+  },
+  pressed: {
+    opacity: 0.85,
+  },
+  backSection: {
+    borderTopWidth: 1,
+    borderTopColor: "#e7e9f0",
+    paddingTop: 16,
+    alignItems: "center",
+  },
+  backButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  link: {
+    color: COLORS.accent,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+});
